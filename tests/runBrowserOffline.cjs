@@ -1,0 +1,15 @@
+const fs=require('node:fs');
+const os=require('node:os');
+const path=require('node:path');
+const {pathToFileURL}=require('node:url');
+const {spawnSync}=require('node:child_process');
+const {buildSync}=require('esbuild');
+const folder=fs.mkdtempSync(path.join(os.tmpdir(),'pv-browser-tests-'));
+const bundled=buildSync({entryPoints:['tests/browserOffline.ts'],bundle:true,write:false,format:'iife',platform:'browser'}).outputFiles[0].text;
+const page=path.join(folder,'offline-test.html');
+fs.writeFileSync(page,'<!DOCTYPE html><title>RUNNING</title><pre>RUNNING</pre><script>'+bundled.replaceAll('</script','<\\/script')+'</script>');
+const browser=process.env.CHROME_PATH||'C:/Program Files/Google/Chrome/Application/chrome.exe';
+const result=spawnSync(browser,['--headless','--disable-gpu','--no-first-run','--no-default-browser-check','--user-data-dir='+path.join(folder,'profile'),'--virtual-time-budget=20000','--dump-dom',pathToFileURL(page).href],{encoding:'utf8',timeout:45000,windowsHide:true,maxBuffer:1024*1024});
+const summary=(result.stdout||'').match(/<pre>([\s\S]*?)<\/pre>/)?.[1]||'';
+console.log(summary||result.error?.message||result.stderr||JSON.stringify({status:result.status,signal:result.signal,stdout:result.stdout}));
+if(!result.stdout?.includes('<title>TESTS_PASSED</title>'))process.exitCode=1;

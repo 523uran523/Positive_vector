@@ -1,0 +1,87 @@
+# Позитив Вектор — CRM/ERP-система
+
+Адаптивная CRM/ERP-система в формате PWA для компании по изготовлению и монтажу рекламных баннеров, декораций, вывесок и металлоконструкций.
+
+## Стек технологий
+
+- **Frontend**: React 19, TypeScript, Vite, Tailwind CSS v4, `vite-plugin-pwa`, `lucide-react`
+- **Backend**: Node.js (`>= 22.13` со встроенным `node:sqlite`), Express, TypeScript (`tsx`)
+- **База данных**: SQLite (`node:sqlite`, режим `WAL`, внешние ключи `PRAGMA foreign_keys = ON`, миграции, `BEGIN IMMEDIATE` транзакции)
+- **Авторизация и безопасность**: `crypto.scryptSync`, HTTP-only cookie (`pv_session`), CSRF-токены (`X-CSRF-Token`), ограничение попыток входа (`login_attempts`), строгий серверный RBAC
+- **Файлы и экспорт**: `multer` (дисковое хранилище в `UPLOAD_DIR` с проверкой прав доступа при скачивании), экспорт в `.xlsx` через `xlsx`
+
+## Структура проекта
+
+```text
+├── server/
+│   ├── db.ts                   # Открытие SQLite, миграции, транзакции
+│   ├── security.ts             # scrypt, сессии, RBAC-права, аудит, уведомления
+│   ├── middleware.ts           # attachAuth, requireAuth, requireAdmin, requirePerm
+│   ├── app.ts                  # Фабрика Express-приложения
+│   ├── migrations/001_init.sql # Схема из 26 таблиц (копейки и миллиединицы)
+│   ├── services/warehouseService.ts # Атомарная логика склада (issue -> consume -> return)
+│   ├── routes/                 # REST API: auth, users, clients, orders, shifts, salaries, warehouse, finance, notifications, settings, export
+│   └── scripts/                # CLI: migrate.ts, createAdmin.ts, seedDemo.ts
+├── src/
+│   ├── components/             # AppShell, AuthScreen, ThemeContext, PWAInstallButton, OfflineIndicator
+│   ├── hooks/                  # usePWAInstall, useOnlineStatus
+│   ├── lib/api.ts              # Fetch-клиент с CSRF, форматтеры ₽ и дат
+│   ├── types/crm.ts            # TypeScript-модели
+│   └── views/                  # CalendarView, OrderModals, ClientsView, WarehouseView, FinanceView, EmployeesView, EmployeeSalaryView, SettingsView
+├── public/                     # PWA-иконки (192, 512, maskable, apple-touch-icon, svg)
+├── tests/businessRules.test.ts # Автотесты ключевой бизнес-логики и безопасности
+└── server.ts                   # Единая точка входа (dev Vite middleware + production dist/)
+```
+
+## Быстрый запуск
+
+### 1. Установка зависимостей
+```bash
+npm install
+```
+
+### 2. Переменные окружения
+Скопируйте `.env.example` в `.env` и при необходимости задайте параметры:
+- `PORT=3000`
+- `DB_PATH=./data/pozitiv_vektor.sqlite`
+- `UPLOAD_DIR=./data/uploads`
+- `SESSION_SECRET=<случайная-длинная-строка>`
+- `COOKIE_SECURE=false` (`true` только при работе за HTTPS)
+- `SESSION_TTL_HOURS=168`
+
+### 3. Миграция базы данных
+```bash
+npm run migrate
+```
+
+### 4. Первый запуск и учётные записи
+Вариант А (веб-интерфейс): откройте приложение в браузере — при пустой таблице `users` появится экран первоначальной настройки первого администратора (можно сгенерировать случайный одноразовый пароль или задать свой).
+
+Вариант Б (CLI — создание/сброс администратора со случайным паролем):
+```bash
+npm run create-admin
+```
+
+Вариант В (демо-данные с 1 администратором, 1 монтажником, заказами, складом и финансами; пароли генерируются случайно и выводятся 1 раз в консоль):
+```bash
+npm run seed:demo
+```
+
+### 5. Режим разработки и сборка
+```bash
+# Разработка (Express + Vite HMR middleware на одном порту)
+npm run dev
+
+# Сборка фронтенда и проверка типов
+npm run build
+npm run lint
+
+# Запуск production-сервера
+NODE_ENV=production npm start
+
+# Автотесты бизнес-логики
+npm test
+```
+
+## Работа с файлами и загрузками
+Фотографии и документы заказов/выездов загружаются на сервер через `POST /api/orders/:orderId/attachments` (`multipart/form-data`, лимит 12 МБ, допустимые форматы: JPG, PNG, WebP, GIF, PDF, DOCX, XLSX, TXT), сохраняются в `UPLOAD_DIR`, а скачиваются только авторизованным пользователям с доступом к заказу через `GET /api/orders/attachments/:attachmentId`.
