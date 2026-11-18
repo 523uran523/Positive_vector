@@ -1,0 +1,41 @@
+# Cloudflare Tunnel Configuration for Positive_vector CRM
+
+## Tunnel ID
+`d032763f-1d59-44e5-ac5c-09c6b778de63`
+
+## Tunnel Name
+`mytunnel`
+
+## Ingress Rules
+
+```yaml
+tunnel: d032763f-1d59-44e5-ac5c-09c6b778de63
+credentials-file: /data/data/com.termux/files/home/.cloudflared/d032763f-1d59-44e5-ac5c-09c6b778de63.json
+
+ingress:
+  - hostname: crm.gulya-studio.ru
+    service: http://127.0.0.1:3000
+  - hostname: dev.gulya-studio.ru
+    service: http://127.0.0.1:3000
+  - hostname: business.gulya-studio.ru
+    service: http://127.0.0.1:8080
+  - service: http_status:404
+```
+
+## Protocol
+HTTP/2 (QUIC нестабилен на мобильном интернете)
+
+## DNS Records Required
+
+| Hostname | Type | Content | Proxied |
+|----------|------|---------|---------|
+| crm.gulya-studio.ru | CNAME | d032763f-1d59-44e5-ac5c-09c6b778de63.cfargotunnel.com | Yes |
+| dev.gulya-studio.ru | CNAME | d032763f-1d59-44e5-ac5c-09c6b778de63.cfargotunnel.com | Yes |
+| business.gulya-studio.ru | CNAME | d032763f-1d59-44e5-ac5c-09c6b778de63.cfargotunnel.com | Yes |
+
+## Notes
+
+- credentials-file содержит секрет туннеля — НЕ коммитится в Git
+- Используется HTTP/2 вместо QUIC из-за нестабильности мобильного соединения
+- Origin сервер работает на 127.0.0.1:3000 (Node.js server.ts)
+- Для business.gulya-studio.ru требуется отдельный веб-сервер на порту 8080
