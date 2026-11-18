@@ -10,4 +10,6 @@ ingress:
     service: http://127.0.0.1:7681
   - hostname: business.gulya-studio.ru
     service: http://127.0.0.1:4173
+  - hostname: ssh.gulya-studio.ru
+    service: ssh://127.0.0.1:8022
   - service: http_status:404

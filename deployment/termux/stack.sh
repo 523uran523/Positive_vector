@@ -26,9 +26,17 @@ start_node() {
 start_ttyd() {
   [ -f "$CRED" ] && [ -x "$TTYD" ] || return 0
   log "starting ttyd"
-  nohup "$TTYD" -p 7681 -i 0.0.0.0 -c "$(cat "$CRED")" \
+  nohup "$TTYD" -W -O -p 7681 -i 0.0.0.0 -c "$(cat "$CRED")" \
     -t fontSize=15 -t scrollback=5000 \
     bash -l >> "$HOME/pv/ttyd.log" 2>&1 &
+}
+
+start_sshd() {
+  [ -x /data/data/com.termux/files/usr/bin/sshd ] || return 0
+  log "starting sshd on loopback"
+  nohup /data/data/com.termux/files/usr/bin/sshd -D -e -p 8022 -o ListenAddress=127.0.0.1 \
+    -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no \
+    >> "$HOME/pv/sshd.log" 2>&1 &
 }
 
 start_site() {
@@ -52,7 +60,8 @@ fails=0
 
 while true; do
   pgrep -f "node server.ts" >/dev/null 2>&1 || start_node
-  pgrep -f "ttyd -p 7681" >/dev/null 2>&1 || start_ttyd
+  pgrep -f "ttyd -W -O -p 7681" >/dev/null 2>&1 || start_ttyd
+  pgrep -f "sshd -D -e -p 8022" >/dev/null 2>&1 || start_sshd
   pgrep -f "node tools/serve.cjs" >/dev/null 2>&1 || start_site
   pgrep -f "cloudflared tunnel --config" >/dev/null 2>&1 || start_tunnel
 
