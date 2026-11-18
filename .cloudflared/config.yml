@@ -1,27 +1,13 @@
-# Cloudflare Tunnel: pv-main
-#
-# Коннектор запускается на ПК (deployment/termux/pv-relay.ps1) и проксирует
-# запросы на телефон по домашней сети. Прямой туннель с телефона на маршруте
-# провайдера не держит поток — измерения в GOOGLE_UPDATES_MERGE_REPORT.md.
-#
-# Файл credentials в Git не хранится. Копия конфига с реальными путями лежит
-# на ПК в %LOCALAPPDATA%\pv-relay\config.yml и пересоздаётся супервизором.
-
-tunnel: 778ca0e4-f20d-449d-996f-ed9fdb112912
-credentials-file: <путь к creds.json на ПК>
-
+# Пример: секрет credentials-file существует только в приватном каталоге Termux.
+# Замените TUNNEL_ID на ID своего туннеля; не добавляйте JSON-учётные данные в Git.
+tunnel: TUNNEL_ID
+credentials-file: /data/data/com.termux/files/home/.cloudflared/TUNNEL_ID.json
 protocol: http2
-
 ingress:
   - hostname: crm.gulya-studio.ru
-    service: http://192.168.1.112:3000
+    service: http://127.0.0.1:3000
   - hostname: dev.gulya-studio.ru
-    service: http://192.168.1.112:7681
+    service: http://127.0.0.1:7681
+  - hostname: business.gulya-studio.ru
+    service: http://127.0.0.1:4173
   - service: http_status:404
-
-# DNS (зона gulya-studio.ru, proxied):
-#   crm.gulya-studio.ru -> 778ca0e4-f20d-449d-996f-ed9fdb112912.cfargotunnel.com
-#   dev.gulya-studio.ru -> 778ca0e4-f20d-449d-996f-ed9fdb112912.cfargotunnel.com
-#
-# Флаги запуска: --config <этот файл> --protocol http2 --edge-ip-version 4 --retries 50
-# QUIC не используется: на маршруте телефона UDP-поток уходит в чёрную дыру.

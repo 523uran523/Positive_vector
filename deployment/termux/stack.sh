@@ -1,7 +1,6 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # Positive Vector: phone-side stack supervisor.
-# Keeps the CRM server and the protected web console alive. The Cloudflare
-# connector lives on the PC (deployment/termux/pv-relay.ps1), not here.
+# Keeps CRM, the protected console, MeWeb and the phone-side tunnel alive.
 
 export PATH=/data/data/com.termux/files/usr/bin:$PATH
 export HOME=/data/data/com.termux/files/home
@@ -32,6 +31,18 @@ start_ttyd() {
     bash -l >> "$HOME/pv/ttyd.log" 2>&1 &
 }
 
+start_site() {
+  [ -f "$HOME/pv-site/tools/serve.cjs" ] || return 0
+  log "starting site"
+  (cd "$HOME/pv-site" && PORT=4173 nohup node tools/serve.cjs >> "$HOME/pv-site/site.log" 2>&1 &)
+}
+
+start_tunnel() {
+  [ -f "$HOME/.cloudflared/config.yml" ] || return 0
+  log "starting cloudflared"
+  nohup cloudflared tunnel --config "$HOME/.cloudflared/config.yml" run pv-main >> "$HOME/pv/cf-phone.log" 2>&1 &
+}
+
 health_ok() {
   curl -s -m 5 -o /dev/null -w "%{http_code}" http://127.0.0.1:3000/api/health 2>/dev/null | grep -q "^200$"
 }
@@ -42,6 +53,8 @@ fails=0
 while true; do
   pgrep -f "node server.ts" >/dev/null 2>&1 || start_node
   pgrep -f "ttyd -p 7681" >/dev/null 2>&1 || start_ttyd
+  pgrep -f "node tools/serve.cjs" >/dev/null 2>&1 || start_site
+  pgrep -f "cloudflared tunnel --config" >/dev/null 2>&1 || start_tunnel
 
   if health_ok; then
     if [ "$fails" -gt 0 ]; then log "health recovered after $fails failures"; fi

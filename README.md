@@ -2,6 +2,8 @@
 
 Адаптивная CRM/ERP-система в формате PWA для компании по изготовлению и монтажу рекламных баннеров, декораций, вывесок и металлоконструкций.
 
+Подробный [путеводитель пользователя](docs/USER_GUIDE.md). Инфраструктура телефона и её ограничения описаны в [TecnoServer](https://github.com/523uran523/TecnoServer).
+
 ## Стек технологий
 
 - **Frontend**: React 19, TypeScript, Vite, Tailwind CSS v4, `vite-plugin-pwa`, `lucide-react`
