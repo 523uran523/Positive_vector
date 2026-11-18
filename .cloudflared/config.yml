@@ -1,41 +1,27 @@
-# Cloudflare Tunnel Configuration for Positive_vector CRM
+# Cloudflare Tunnel: pv-main
+#
+# Коннектор запускается на ПК (deployment/termux/pv-relay.ps1) и проксирует
+# запросы на телефон по домашней сети. Прямой туннель с телефона на маршруте
+# провайдера не держит поток — измерения в GOOGLE_UPDATES_MERGE_REPORT.md.
+#
+# Файл credentials в Git не хранится. Копия конфига с реальными путями лежит
+# на ПК в %LOCALAPPDATA%\pv-relay\config.yml и пересоздаётся супервизором.
 
-## Tunnel ID
-`d032763f-1d59-44e5-ac5c-09c6b778de63`
+tunnel: 778ca0e4-f20d-449d-996f-ed9fdb112912
+credentials-file: <путь к creds.json на ПК>
 
-## Tunnel Name
-`mytunnel`
-
-## Ingress Rules
-
-```yaml
-tunnel: d032763f-1d59-44e5-ac5c-09c6b778de63
-credentials-file: /data/data/com.termux/files/home/.cloudflared/d032763f-1d59-44e5-ac5c-09c6b778de63.json
+protocol: http2
 
 ingress:
   - hostname: crm.gulya-studio.ru
-    service: http://127.0.0.1:3000
+    service: http://192.168.1.112:3000
   - hostname: dev.gulya-studio.ru
-    service: http://127.0.0.1:3000
-  - hostname: business.gulya-studio.ru
-    service: http://127.0.0.1:8080
+    service: http://192.168.1.112:7681
   - service: http_status:404
-```
 
-## Protocol
-HTTP/2 (QUIC нестабилен на мобильном интернете)
-
-## DNS Records Required
-
-| Hostname | Type | Content | Proxied |
-|----------|------|---------|---------|
-| crm.gulya-studio.ru | CNAME | d032763f-1d59-44e5-ac5c-09c6b778de63.cfargotunnel.com | Yes |
-| dev.gulya-studio.ru | CNAME | d032763f-1d59-44e5-ac5c-09c6b778de63.cfargotunnel.com | Yes |
-| business.gulya-studio.ru | CNAME | d032763f-1d59-44e5-ac5c-09c6b778de63.cfargotunnel.com | Yes |
-
-## Notes
-
-- credentials-file содержит секрет туннеля — НЕ коммитится в Git
-- Используется HTTP/2 вместо QUIC из-за нестабильности мобильного соединения
-- Origin сервер работает на 127.0.0.1:3000 (Node.js server.ts)
-- Для business.gulya-studio.ru требуется отдельный веб-сервер на порту 8080
+# DNS (зона gulya-studio.ru, proxied):
+#   crm.gulya-studio.ru -> 778ca0e4-f20d-449d-996f-ed9fdb112912.cfargotunnel.com
+#   dev.gulya-studio.ru -> 778ca0e4-f20d-449d-996f-ed9fdb112912.cfargotunnel.com
+#
+# Флаги запуска: --config <этот файл> --protocol http2 --edge-ip-version 4 --retries 50
+# QUIC не используется: на маршруте телефона UDP-поток уходит в чёрную дыру.

@@ -1,0 +1,16 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# Termux:Boot autostart for Positive Vector (phone side).
+# Runs the stack supervisor, which keeps the CRM server and web console alive.
+# The Cloudflare connector runs on the PC relay, not on the phone.
+
+export PATH=/data/data/com.termux/files/usr/bin:$PATH
+export HOME=/data/data/com.termux/files/home
+
+# Let the system and other Termux:Boot scripts settle.
+sleep 20
+
+if ! pgrep -f "pv/stack.sh" >/dev/null 2>&1; then
+  setsid nohup bash "$HOME/pv/stack.sh" > "$HOME/pv/stack.out" 2>&1 &
+fi
+
+echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) boot: stack=$(pgrep -f 'pv/stack.sh' | tr '\n' ' ')" >> "$HOME/pv/boot.log"

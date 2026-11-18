@@ -1,0 +1,4 @@
+# Shell-скрипты исполняются на Linux (Termux) и не должны получать CRLF.
+*.sh text eol=lf
+deployment/termux/boot/* text eol=lf
+*.ps1 text eol=crlf
