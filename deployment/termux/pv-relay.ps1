@@ -57,6 +57,38 @@ function Find-Phone {
   return $false
 }
 
+$script:lastStackKick = [datetime]::MinValue
+
+# Termux:Boot is unreliable on this vendor ROM: the boot receiver gets deferred
+# ("PENDING OFFLOAD"), so the stack may not come up after a reboot. ADB is
+# authorized and persistent, so the relay can start it as a fallback.
+function Start-PhoneStack {
+  if (((Get-Date) - $script:lastStackKick).TotalSeconds -lt 45) { return }
+  $script:lastStackKick = Get-Date
+
+  $adb = (Get-Command adb.exe -ErrorAction SilentlyContinue).Source
+  if (-not $adb) {
+    Write-Log "adb not found; cannot start phone stack"
+    return
+  }
+
+  # Right after a reboot adbd is up before the app sandbox is usable, and
+  # run-as fails with "couldn't stat". Retry instead of waiting a full minute.
+  for ($i = 1; $i -le 6; $i++) {
+    try {
+      $out = (& $adb shell "run-as com.termux sh /data/data/com.termux/files/home/pv/launch-stack.sh" 2>&1 | Out-String).Trim()
+      if ($out -notmatch "error|not found|couldn't|Exception") {
+        Write-Log ("phone stack start requested" + $(if ($out) { ": $out" } else { "" }))
+        return
+      }
+      Write-Log ("adb not ready ($i/6): $out")
+    } catch {
+      Write-Log ("adb call failed ($i/6): " + $_.Exception.Message)
+    }
+    Start-Sleep -Seconds 10
+  }
+}
+
 function Write-RelayConfig {
   $body = @"
 tunnel: $tunnelId
@@ -91,6 +123,12 @@ Write-Log "relay supervisor start (pid $PID)"
 
 while ($true) {
   $origin = Find-Phone
+  if (-not $origin) {
+    Write-Log "phone origin unreachable; trying to start phone stack over adb"
+    Start-PhoneStack
+    Start-Sleep -Seconds 25
+    $origin = Find-Phone
+  }
   Write-Log ("phone origin reachable=" + $origin + " ip=" + $script:phoneIp)
 
   Write-RelayConfig
@@ -136,7 +174,12 @@ while ($true) {
     }
 
     if (-not (Find-Phone)) {
-      Write-Log "phone unreachable from PC; will retry"
+      Write-Log "phone unreachable from PC; trying to start phone stack over adb"
+      Start-PhoneStack
+      # The connector is not at fault while the origin is down; do not bounce
+      # the tunnel and lose another 15-20 s on re-registration.
+      $deadSince = $null
+      continue
     }
   }
 
