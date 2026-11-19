@@ -2,12 +2,25 @@ import crypto from 'node:crypto';
 import express from 'express';
 import type { DatabaseSync } from 'node:sqlite';
 import { withTransaction } from '../db.ts';
-import { requireAuth, type AuthedRequest } from '../middleware.ts';
+import { requireAuth, requireAdmin, type AuthedRequest } from '../middleware.ts';
 import { hasPermission, writeAuditLog } from '../security.ts';
 import { applyMaterialOperationTx, issueToolTx, returnToolTx } from '../services/warehouseService.ts';
+import { reservationsFor } from '../services/reservations.ts';
 
 export function createWarehouseRouter(db: DatabaseSync): express.Router {
   const router = express.Router();
+
+  router.get('/materials/:id/batches', requireAdmin, (req,res) => {
+    const id=String(req.params.id);
+    const material=db.prepare('SELECT id,quantity_milli FROM materials WHERE id=?').get(id) as {id:string;quantity_milli:number}|undefined;
+    if(!material) {res.status(404).json({error:'Материал не найден.'});return;}
+    const batches=db.prepare('SELECT id,received_qty_milli,remaining_qty_milli,unit_cost_kopecks,estimated,created_at FROM material_batches WHERE material_id=? ORDER BY seq').all(id) as Array<{remaining_qty_milli:number;unit_cost_kopecks:number}>;
+    const receipts=db.prepare("SELECT id,qty_milli,unit_cost_kopecks,created_at FROM warehouse_operations WHERE item_type='material' AND material_id=? AND op_type='receipt' ORDER BY created_at DESC, rowid DESC").all(id) as Array<{qty_milli:number;unit_cost_kopecks:number}>;
+    const remaining=batches.reduce((sum,b)=>sum+b.remaining_qty_milli,0);
+    const remainingValue=batches.reduce((sum,b)=>sum+b.remaining_qty_milli*b.unit_cost_kopecks,0);
+    const purchasedValue=receipts.reduce((sum,r)=>sum+r.qty_milli*r.unit_cost_kopecks,0);
+    res.json({batches,receipts,stockQtyMilli:material.quantity_milli,averageCostKopecks:remaining ? Math.round(remainingValue/remaining) : null,stockValueKopecks:Math.round(remainingValue/1000),purchaseTotalKopecks:Math.round(purchasedValue/1000)});
+  });
 
   router.get('/', requireAuth, (_req, res) => {
     const materials = db
@@ -71,7 +84,9 @@ export function createWarehouseRouter(db: DatabaseSync): express.Router {
       )
       .all();
 
-    res.json({ materials, tools: enrichedTools, operations });
+    const materialsWithReservations=materials.map(m=>({...m,reserved_milli:reservationsFor(db,'material',String(m.id)).totalMilli}));
+    const toolsWithReservations=enrichedTools.map((t,i)=>({...t,reserved_milli:reservationsFor(db,'tool',String(tools[i].id)).totalMilli}));
+    res.json({ materials:materialsWithReservations, tools: toolsWithReservations, operations });
   });
 
   // Create new material
@@ -184,7 +199,7 @@ export function createWarehouseRouter(db: DatabaseSync): express.Router {
       res.status(404).json({ error: 'Материал не найден.' });
       return;
     }
-    if (db.prepare('SELECT 1 FROM warehouse_operations WHERE material_id = ? LIMIT 1').get(id) || db.prepare('SELECT 1 FROM order_planned_resources WHERE material_id = ? LIMIT 1').get(id)) {
+    if (db.prepare('SELECT 1 FROM warehouse_operations WHERE material_id = ? LIMIT 1').get(id) || db.prepare('SELECT 1 FROM order_planned_resources WHERE material_id = ? LIMIT 1').get(id) || db.prepare('SELECT 1 FROM material_batches WHERE material_id = ? LIMIT 1').get(id)) {
       res.status(409).json({ error: 'Материал связан с учётной историей и не может быть удалён.' });
       return;
     }
@@ -199,13 +214,21 @@ export function createWarehouseRouter(db: DatabaseSync): express.Router {
   router.post('/materials/:id/operations', requireAuth, (req: AuthedRequest, res) => {
     const user = req.authUser!;
     const materialId = String(req.params.id);
-    const { opType, qtyMilli, unitCostKopecks, orderId, note } = req.body as {
+    const { opType, qtyMilli, unitCostKopecks, orderId, note, confirmReserved } = req.body as {
       opType: 'receipt' | 'issue' | 'consume' | 'return' | 'adjust';
       qtyMilli: number;
       unitCostKopecks?: number;
       orderId?: string | null;
       note?: string;
+      confirmReserved?: boolean;
     };
+    if((opType==='issue' || opType==='return') && !orderId){res.status(400).json({error:'Для выдачи или возврата материала выберите заказ.'});return;}
+    if(orderId) {
+      const exists=db.prepare('SELECT 1 FROM orders WHERE id=?').get(orderId);
+      if(!exists){res.status(404).json({error:'Заказ не найден.'});return;}
+      const assigned=db.prepare('SELECT 1 FROM order_assignees WHERE order_id=? AND user_id=? UNION SELECT 1 FROM visit_assignees a JOIN order_visits v ON v.id=a.visit_id WHERE v.order_id=? AND a.user_id=? LIMIT 1').get(orderId,user.id,orderId,user.id);
+      if(user.role!=='admin' && !assigned){res.status(403).json({error:'Нет доступа к операциям этого заказа.'});return;}
+    }
 
     if (opType === 'receipt' && user.role !== 'admin' && !hasPermission(user, 'warehouse.receive')) {
       res.status(403).json({ error: 'Нет прав на приёмку поступлений на склад.' });
@@ -235,6 +258,7 @@ export function createWarehouseRouter(db: DatabaseSync): express.Router {
           employeeUserId: user.id,
           actorUserId: user.id,
           note,
+          confirmReserved:confirmReserved===true,
         })
       );
       const material = db.prepare('SELECT * FROM materials WHERE id = ?').get(materialId);
@@ -447,13 +471,14 @@ export function createWarehouseRouter(db: DatabaseSync): express.Router {
     }
 
     const toolId = String(req.params.id);
-    const { opType, toolInstanceId, qty, orderId, employeeUserId, note } = req.body as {
+    const { opType, toolInstanceId, qty, orderId, employeeUserId, note, confirmReserved } = req.body as {
       opType: 'issue' | 'return';
       toolInstanceId?: string;
       qty?: number;
       orderId?: string | null;
       employeeUserId?: string;
       note?: string;
+      confirmReserved?: boolean;
     };
 
     const holderId = user.role === 'admin' && employeeUserId ? employeeUserId : user.id;
@@ -469,6 +494,7 @@ export function createWarehouseRouter(db: DatabaseSync): express.Router {
             holderUserId: holderId,
             actorUserId: user.id,
             note,
+            confirmReserved:confirmReserved===true,
           });
         }
         if (opType === 'return') {

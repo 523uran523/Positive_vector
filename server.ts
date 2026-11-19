@@ -7,6 +7,9 @@ import { createApp } from './server/app.ts';
 import { assertProductionConfig, isProduction, resolveHost, resolvePort } from './server/config.ts';
 import { openDatabase, runMigrations } from './server/db.ts';
 import { cleanDeletedFiles } from './server/services/fileCleanup.ts';
+import { startBackupScheduler } from './server/services/backupScheduler.ts';
+import { notifyAdmins } from './server/security.ts';
+import { createYandexOAuth } from './server/services/yandexOAuth.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -20,7 +23,17 @@ async function startServer() {
     console.log(`[DB] Применены миграции: ${applied.join(', ')}`);
   }
 
-  const app = createApp(db);
+  const yandex=createYandexOAuth(db);
+  const app = createApp(db,yandex);
+  let lastBackupAlert='';
+  const stopBackups=startBackupScheduler(process.env.DB_PATH || './data/pozitiv_vektor.sqlite',process.env.UPLOAD_DIR || './data/uploads',process.env.BACKUP_DIR || './data/backups',message=>{
+    console.error('[backup]',message);
+    const today=new Date().toISOString().slice(0,10);
+    if(today!==lastBackupAlert){
+      lastBackupAlert=today;
+      try {notifyAdmins(db,'backup_error','Не создана резервная копия','Проверьте свободное место и доступность хранилища.');} catch { /* Logging still records the failure. */ }
+    }
+  },()=>yandex.cloud());
   const maintain = () => {
     try { cleanDeletedFiles(db,process.env.UPLOAD_DIR || './data/uploads'); }
     catch(error) { console.error('[maintenance]',error instanceof Error ? error.message : 'failed'); }
@@ -87,6 +100,7 @@ async function startServer() {
     if (shuttingDown) return;
     shuttingDown = true;
     clearInterval(maintenanceTimer);
+    stopBackups();
     console.log(`[Позитив Вектор] Получен ${signal}, останавливаем сервер...`);
     const forceTimer = setTimeout(() => {
       console.error('[Позитив Вектор] Принудительное завершение по таймауту.');

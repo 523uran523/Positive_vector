@@ -41,6 +41,7 @@ export interface AuthUser {
   isActive: boolean;
   dismissedAt: string | null;
   mustChangePassword: boolean;
+  accountingAccess: boolean;
   permissions: Record<PermissionKey, boolean>;
 }
 
@@ -126,6 +127,7 @@ export function loadUserWithPermissions(db: DatabaseSync, userId: string): AuthU
     isActive: row.is_active === 1,
     dismissedAt: row.dismissed_at,
     mustChangePassword: row.must_change_password === 1,
+    accountingAccess: row.role === 'admin' && permRows.find((p) => p.permission_key === 'accounting.access')?.granted !== 0,
     permissions,
   };
 }

@@ -14,6 +14,7 @@ export interface AuthUser {
   id: string;
   login: string;
   role: 'admin' | 'employee';
+  accountingAccess: boolean;
   fullName: string;
   phone: string;
   position: string;
@@ -29,6 +30,22 @@ export interface DirectoryUser {
   fullName: string;
   role: 'admin' | 'employee';
   position: string;
+}
+
+export interface QuickTask {
+  id: string;
+  title: string;
+  description: string;
+  due_date: string;
+  status: 'open' | 'completed' | 'cancelled';
+  created_by: string;
+  completed_by: string | null;
+  completed_by_name: string | null;
+  completed_at: string | null;
+  completion_comment: string;
+  created_at: string;
+  updated_at: string;
+  assignees: Array<{id:string;full_name:string}>;
 }
 
 export interface Company {
@@ -133,6 +150,10 @@ export interface PlannedResource {
   material_id: string | null;
   tool_id: string | null;
   planned_qty_milli: number;
+  reserved_remaining_milli?: number;
+  reserved_other_milli?: number;
+  available_for_order_milli?: number;
+  shortage_milli?: number;
   material_name?: string;
   material_unit?: string;
   tool_name?: string;
@@ -190,6 +211,7 @@ export interface Order {
   attachments: AttachmentItem[];
   plannedResources: PlannedResource[];
   warehouseOps: WarehouseOp[];
+  cancellationIssues?: {materials:Array<{id:string;name:string;unit:string;unconsumedIssuedMilli:number}>;tools:Array<{id:string;name:string;qty_milli:number}>;paymentsKopecks:number;accrualsKopecks:number;reviews:Array<{issue_key:string;reviewed_at:string;note:string}>};
 }
 
 export interface WorkshopShift {
@@ -210,6 +232,7 @@ export interface MaterialItem {
   category: string;
   unit: string;
   quantity_milli: number;
+  reserved_milli?: number;
   purchase_price_kopecks: number;
   min_threshold_milli: number;
   created_at: string;
@@ -235,6 +258,7 @@ export interface ToolItem {
   tracking_mode: 'quantity' | 'individual';
   total_qty: number;
   available_qty: number;
+  reserved_milli?: number;
   notes: string;
   instances: ToolInstance[];
   activeHolders: Array<{ userId: string; holderName: string; qty: number }>;

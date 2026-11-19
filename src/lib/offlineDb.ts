@@ -85,7 +85,7 @@ export async function listQueuedMutations():Promise<QueuedMutation[]> {
     req.onsuccess=()=>done(owner===id ? (req.result as QueuedMutation[]).filter(r=>r.ownerId===id).sort((a,b)=>(a.sequence||0)-(b.sequence||0)||a.createdAt.localeCompare(b.createdAt)) : []);
   });
 }
-export async function updateQueuedMutation(id:string,patch:Partial<Pick<QueuedMutation,'status'|'lastError'>>) {
+export async function updateQueuedMutation(id:string,patch:Partial<Pick<QueuedMutation,'status'|'lastError'|'body'>>) {
   await transaction<void>([QUEUE],'readwrite',(tx,done)=>{
     const store=tx.objectStore(QUEUE),req=store.get(id);
     req.onsuccess=()=>{if(req.result?.ownerId===owner) store.put({...req.result,...patch});done();};

@@ -38,6 +38,17 @@ export async function createBackup(dbPath:string,uploadDir:string,destination:st
           files[`uploads/chat/${name}`] = sha(target);
         }
       }
+      if (snapshot.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='accounting_documents'").get()) {
+        const documents=snapshot.prepare('SELECT DISTINCT stored_name FROM accounting_documents').all();
+        if(documents.length) fs.mkdirSync(path.join(destination,'uploads','accounting'),{mode:0o700});
+        for(const row of documents) {
+          const name=String(row.stored_name);
+          if(!/^[0-9a-f-]{36}$/.test(name)) throw new Error('Unsafe accounting file name');
+          const target=path.join(destination,'uploads','accounting',name);
+          fs.copyFileSync(path.join(uploadDir,'accounting',name),target);
+          files[`uploads/accounting/${name}`]=sha(target);
+        }
+      }
       fs.writeFileSync(path.join(destination,'manifest.json'),JSON.stringify({createdAt:new Date().toISOString(),files},null,2),{mode:0o600});
       fs.chmodSync(database,0o600);
     } finally {snapshot.close();}

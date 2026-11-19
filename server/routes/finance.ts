@@ -63,14 +63,16 @@ export function createFinanceRouter(db: DatabaseSync): express.Router {
 
     const consumeOps = db
       .prepare(
-        `SELECT order_id, qty_milli, unit_cost_kopecks, created_at
-         FROM warehouse_operations
-         WHERE item_type = 'material' AND op_type = 'consume'`
+        `SELECT wo.order_id, wo.qty_milli, wo.unit_cost_kopecks, wo.created_at,
+          COALESCE((SELECT CAST(ROUND(SUM(a.qty_milli*b.unit_cost_kopecks)/1000.0) AS INTEGER) FROM material_batch_allocations a JOIN material_batches b ON b.id=a.batch_id WHERE a.operation_id=wo.id), CAST(ROUND(wo.qty_milli*wo.unit_cost_kopecks/1000.0) AS INTEGER)) AS cost_kopecks
+         FROM warehouse_operations wo
+         WHERE wo.item_type = 'material' AND wo.op_type = 'consume'`
       )
       .all() as Array<{
       order_id: string | null;
       qty_milli: number;
       unit_cost_kopecks: number;
+      cost_kopecks: number;
       created_at: string;
     }>;
 
@@ -105,7 +107,7 @@ export function createFinanceRouter(db: DatabaseSync): express.Router {
       const paid = paidByOrder.get(o.id) || 0;
       const autoMatCost = consumeOps
         .filter((op) => op.order_id === o.id)
-        .reduce((s, op) => s + Math.round((op.qty_milli * op.unit_cost_kopecks) / 1000), 0);
+        .reduce((s, op) => s + op.cost_kopecks, 0);
       const effectiveMatCost =
         o.cost_override_kopecks !== null ? o.cost_override_kopecks : autoMatCost;
       return {
@@ -130,7 +132,7 @@ export function createFinanceRouter(db: DatabaseSync): express.Router {
 
     // Separate material COGS (used in jobs/workshop) vs operating expenses (excluding duplicate salary/material stock purchases if flagged)
     const autoMaterialCostKopecks = filteredConsumes.reduce(
-      (s, op) => s + Math.round((op.qty_milli * op.unit_cost_kopecks) / 1000),
+      (s, op) => s + op.cost_kopecks,
       0
     );
 
@@ -158,7 +160,7 @@ export function createFinanceRouter(db: DatabaseSync): express.Router {
     );
     const workshopMaterialCost = filteredConsumes
       .filter((op) => !op.order_id)
-      .reduce((s, op) => s + Math.round((op.qty_milli * op.unit_cost_kopecks) / 1000), 0);
+      .reduce((s, op) => s + op.cost_kopecks, 0);
 
     const totalCostOfGoodsAndOps =
       effectiveTotalMaterialCost +

@@ -10,6 +10,7 @@ const entities: Record<string, string> = {
   '/api/orders': 'orders', '/api/clients/companies': 'companies', '/api/clients/contacts': 'contacts',
   '/api/warehouse/materials': 'materials', '/api/warehouse/tools': 'tools',
   '/api/finance/payments': 'client_payments', '/api/finance/expenses': 'expenses',
+  '/api/quick-tasks': 'quick_tasks',
 };
 export function rowVersion(db: DatabaseSync, table: string, id: string): string | null {
   if (![...Object.values(entities), 'visit_reports', 'attachments'].includes(table)) return null;
@@ -43,7 +44,7 @@ export function addVersions(db: DatabaseSync, data: any): any {
       if (v) versions[`${prefix}/${row.id}`]=v;
     }
   };
-  for (const [field,prefix] of Object.entries({ orders:'/api/orders', order:'/api/orders', companies:'/api/clients/companies', company:'/api/clients/companies', contacts:'/api/clients/contacts', contact:'/api/clients/contacts', materials:'/api/warehouse/materials', material:'/api/warehouse/materials', tools:'/api/warehouse/tools', tool:'/api/warehouse/tools', payments:'/api/finance/payments', expenses:'/api/finance/expenses' })) collect(prefix,data[field]);
+  for (const [field,prefix] of Object.entries({ orders:'/api/orders', order:'/api/orders', tasks:'/api/quick-tasks', task:'/api/quick-tasks', companies:'/api/clients/companies', company:'/api/clients/companies', contacts:'/api/clients/contacts', contact:'/api/clients/contacts', materials:'/api/warehouse/materials', material:'/api/warehouse/materials', tools:'/api/warehouse/tools', tool:'/api/warehouse/tools', payments:'/api/finance/payments', expenses:'/api/finance/expenses' })) collect(prefix,data[field]);
   for(const report of data.visitReports || []) collect(`/api/orders/${report.order_id}/visits/${report.visit_id}/reports`,report);
   for(const order of data.orders || (data.order ? [data.order] : [])) {
     for(const visit of order.visits || []) {

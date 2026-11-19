@@ -29,12 +29,13 @@ import { ReportsView } from './views/ReportsView';
 import { SettingsView } from './views/SettingsView';
 import { WarehouseView } from './views/WarehouseView';
 import { ChatView } from './views/ChatView';
+import { AccountingView } from './views/AccountingView';
 
 function CRMWorkspace() {
   const [booting, setBooting] = useState(true);
   const [needsSetup, setNeedsSetup] = useState(false);
   const [user, setUser] = useState<AuthUser | null>(null);
-  const [activeTab, setActiveTab] = useState<NavTab>(() => new URLSearchParams(window.location.search).has('chat') ? 'chat' : 'calendar');
+  const [activeTab, setActiveTab] = useState<NavTab>(() => new URLSearchParams(window.location.search).has('yandex_connection') ? 'settings' : new URLSearchParams(window.location.search).has('chat') ? 'chat' : 'calendar');
 
   // Shared CRM data
   const [settings, setSettings] = useState<AppSettings>({});
@@ -62,11 +63,13 @@ function CRMWorkspace() {
   const [createOrderDate, setCreateOrderDate] = useState<string | undefined>(undefined);
   const [createOrderOpen, setCreateOrderOpen] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
+  const [chatOrder, setChatOrder] = useState<{ id: string; number: string } | null>(null);
+  const [openQuickTaskId, setOpenQuickTaskId] = useState<string | null>(null);
   const clearWorkspace = useCallback(() => {
     setOrders([]);setCompanies([]);setContacts([]);setMaterials([]);setTools([]);
     setWarehouseOps([]);setShifts([]);setActiveShift(null);setNotifications([]);
     setUnreadCount(0);setSettings({});setDirectory([]);setSelectedOrder(null);
-    setCreateOrderOpen(false);setActiveTab('calendar');
+    setCreateOrderOpen(false);setOpenQuickTaskId(null);setActiveTab('calendar');
   }, []);
 
   const checkSession = useCallback(async () => {
@@ -81,15 +84,16 @@ function CRMWorkspace() {
       setNeedsSetup(status.needsSetup);
       setCsrfToken(status.csrfToken);
       if (status.user) await establishOfflineSession(status.user);
-      else await endOfflineSession();
+      else {setOfflineOwner(null);localStorage.removeItem('pv-offline-session-v2');clearWorkspace();}
       setUser(status.user);
     } catch {
       const saved = restoredOfflineSession();
       if (saved) { setOfflineOwner(saved.id); setUser(saved); }
+      else {setOfflineOwner(null);setCsrfToken(null);setUser(null);clearWorkspace();}
     } finally {
       setBooting(false);
     }
-  }, []);
+  }, [clearWorkspace]);
 
   const loadWorkspaceData = useCallback(async (currentUser: AuthUser) => {
     const isAdmin = currentUser.role === 'admin';
@@ -149,6 +153,12 @@ function CRMWorkspace() {
   }, [checkSession]);
 
   useEffect(() => {
+    if(!user || user.dismissedAt) return;
+    const timer=window.setInterval(()=>void checkSession(),60_000);
+    return ()=>window.clearInterval(timer);
+  }, [user?.id,user?.dismissedAt,checkSession]);
+
+  useEffect(() => {
     const onUnauthorized = () => {
       setCsrfToken(null);
       setUser(null);
@@ -196,15 +206,19 @@ function CRMWorkspace() {
 
   const handleOpenOrderById = async (orderId: string) => {
     const existing = orders.find((o) => o.id === orderId);
-    if (existing) {
-      setSelectedOrder(existing);
-      return;
-    }
+    if (existing) { setSelectedOrder(existing); return; }
     try {
       const res = await apiRequest<{ order: Order }>(`/api/orders/${orderId}`);
       setSelectedOrder(res.order);
+    } catch { /* The order is unavailable. */ }
+  };
+
+  const handleOpenChatOrder = async (orderId: string) => {
+    try {
+      const res = await apiRequest<{ order: Order }>(`/api/orders/${orderId}`, {useCache:false});
+      setSelectedOrder(res.order);
     } catch {
-      // Ignore if inaccessible
+      window.alert('Не удалось открыть заказ. Проверьте подключение и доступ к заказу.');
     }
   };
 
@@ -282,6 +296,7 @@ function CRMWorkspace() {
       onMarkNotificationRead={(id) => void handleMarkNotifRead(id)}
       onMarkAllNotificationsRead={() => void handleMarkAllRead()}
       onOpenOrderLink={(id) => void handleOpenOrderById(id)}
+      onOpenTaskLink={(id) => { setActiveTab('calendar'); setOpenQuickTaskId(id); }}
       onLogout={() => void handleLogout()}
     >
       {/* Optional quick shortcuts for Employees with granted Client/Warehouse permissions */}
@@ -334,6 +349,9 @@ function CRMWorkspace() {
           shifts={shifts}
           activeShift={activeShift}
           materials={materials}
+          directory={directory}
+          openTaskId={openQuickTaskId}
+          onConsumeOpenTask={() => setOpenQuickTaskId(null)}
           onOpenCreateOrder={(d) => {
             setCreateOrderDate(d);
             setCreateOrderOpen(true);
@@ -343,7 +361,7 @@ function CRMWorkspace() {
         />
       )}
 
-      {activeTab === 'chat' && <ChatView user={user} onRead={refreshChatUnread} />}
+      {activeTab === 'chat' && <ChatView user={user} onRead={refreshChatUnread} attachedOrder={chatOrder} onClearOrder={() => setChatOrder(null)} onOpenOrder={(id) => void handleOpenChatOrder(id)} />}
 
       {activeTab === 'reports' && (
         <ReportsView
@@ -369,6 +387,7 @@ function CRMWorkspace() {
           materials={materials}
           tools={tools}
           operations={warehouseOps}
+          orders={orders}
           units={settings.units || ['шт', 'м', 'м²', 'л', 'кг', 'рулон', 'уп']}
           categories={settings.material_categories || ['Прочее']}
           onRefresh={() => void loadWorkspaceData(user)}
@@ -390,8 +409,10 @@ function CRMWorkspace() {
         />
       )}
 
+      {activeTab === 'accounting' && isAdmin && user.accountingAccess && <AccountingView />}
+
       {activeTab === 'employees' && isAdmin && (
-        <EmployeesView onOpenOrderById={(id) => void handleOpenOrderById(id)} />
+        <EmployeesView onOpenOrderById={(id) => void handleOpenOrderById(id)} currentUserId={user.id} onCurrentUserUpdated={setUser} />
       )}
 
       {activeTab === 'salary' && !isAdmin && <EmployeeSalaryView />}
@@ -421,6 +442,7 @@ function CRMWorkspace() {
         onCreated={(ord) => {
           setOrders((prev) => [ord, ...prev]);
           setSelectedOrder(ord);
+          void loadWorkspaceData(user);
         }}
       />
 
@@ -437,6 +459,7 @@ function CRMWorkspace() {
         onOrderUpdated={handleOrderUpdated}
         onOrderDeleted={handleOrderDeleted}
         onWarehouseRefresh={() => void loadWorkspaceData(user)}
+        onDiscussOrder={(order) => { setChatOrder({id:order.id,number:order.order_number}); setSelectedOrder(null); setActiveTab('chat'); }}
       />
     </AppShell>
   );

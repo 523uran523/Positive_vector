@@ -212,6 +212,7 @@ export function createUsersRouter(db: DatabaseSync): express.Router {
       shiftRateKopecks?: number;
       isActive?: boolean;
       permissions?: Partial<Record<PermissionKey, boolean>>;
+      accountingAccess?: boolean;
     };
 
     const nextLogin = login !== undefined ? login.trim() : existing.login;
@@ -242,6 +243,10 @@ export function createUsersRouter(db: DatabaseSync): express.Router {
     }
 
     const nextRole = role === 'admin' || role === 'employee' ? role : existing.role;
+    const accountingAccess = req.body.accountingAccess;
+    if (accountingAccess !== undefined && typeof accountingAccess !== 'boolean') {
+      res.status(400).json({ error: 'Некорректное значение доступа к бухгалтерии.' }); return;
+    }
     const nextActive = isActive !== undefined ? (isActive ? 1 : 0) : existing.isActive ? 1 : 0;
     const nextRate =
       shiftRateKopecks !== undefined
@@ -249,6 +254,10 @@ export function createUsersRouter(db: DatabaseSync): express.Router {
         : existing.shiftRateKopecks;
 
     withTransaction(db, () => {
+      if (typeof accountingAccess === 'boolean' && nextRole === 'admin') {
+        db.prepare(`INSERT INTO user_permissions (user_id, permission_key, granted) VALUES (?, 'accounting.access', ?)
+          ON CONFLICT(user_id, permission_key) DO UPDATE SET granted = excluded.granted`).run(targetId, accountingAccess ? 1 : 0);
+      }
       db.prepare(
         `UPDATE users
          SET login = ?, full_name = ?, phone = ?, position = ?, role = ?, shift_rate_kopecks = ?, is_active = ?, updated_at = ?

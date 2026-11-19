@@ -13,6 +13,7 @@ import {
   Wallet,
   Building2,
   ClipboardCheck,
+  FileText,
   X,
 } from 'lucide-react';
 import { formatDateTimeRu } from '../lib/api';
@@ -28,6 +29,7 @@ export type NavTab =
   | 'clients'
   | 'warehouse'
   | 'finance'
+  | 'accounting'
   | 'employees'
   | 'salary'
   | 'settings';
@@ -43,6 +45,7 @@ interface AppShellProps {
   onMarkNotificationRead: (id: string) => void;
   onMarkAllNotificationsRead: () => void;
   onOpenOrderLink?: (orderId: string) => void;
+  onOpenTaskLink?: (taskId: string) => void;
   onLogout: () => void;
   children: React.ReactNode;
 }
@@ -58,6 +61,7 @@ export function AppShell({
   onMarkNotificationRead,
   onMarkAllNotificationsRead,
   onOpenOrderLink,
+  onOpenTaskLink,
   onLogout,
   children,
 }: AppShellProps) {
@@ -74,6 +78,7 @@ export function AppShell({
         { id: 'clients', label: 'Клиенты', icon: Building2 },
         { id: 'warehouse', label: 'Склад', icon: Package },
         { id: 'finance', label: 'Финансы', icon: Wallet },
+        ...(user.accountingAccess ? [{ id: 'accounting' as const, label: 'Бухгалтерия', icon: FileText }] : []),
         { id: 'employees', label: 'Сотрудники', icon: Users },
         { id: 'settings', label: 'Настройки', icon: Settings },
       ]
@@ -243,6 +248,10 @@ export function AppShell({
                               if (n.is_read === 0) onMarkNotificationRead(n.id);
                               if (n.link_entity_type === 'order' && n.link_entity_id && onOpenOrderLink) {
                                 onOpenOrderLink(n.link_entity_id);
+                                setNotifOpen(false);
+                              }
+                              if (n.link_entity_type === 'quick_task' && n.link_entity_id && onOpenTaskLink) {
+                                onOpenTaskLink(n.link_entity_id);
                                 setNotifOpen(false);
                               }
                             }}

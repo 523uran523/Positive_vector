@@ -58,7 +58,6 @@ export function createExportRouter(db: DatabaseSync): express.Router {
         'Номер': o.order_number,
         'Название': o.title,
         'Статус': o.status,
-        'Приоритет': o.priority,
         'Дата и время': o.scheduled_at || 'Не запланирован',
         'Компания': o.company_name || '',
         'Контакт клиента': o.contact_name || '',

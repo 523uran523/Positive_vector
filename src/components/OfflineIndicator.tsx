@@ -5,6 +5,7 @@ import { formatDateTimeRu, syncOfflineQueue } from '../lib/api';
 import {
   listQueuedMutations,
   removeQueuedMutation,
+  updateQueuedMutation,
   type QueuedMutation,
 } from '../lib/offlineDb';
 
@@ -89,6 +90,10 @@ export function OfflineIndicator() {
                       <span>{item.lastError}</span>
                     </div>
                   )}
+                  {item.status==='failed' && item.lastError?.includes('зарезервирована') && Boolean(item.body) && typeof item.body==='object' && <button type="button" className="mt-1 text-blue-600 underline dark:text-blue-300" onClick={()=>{
+                    if(!window.confirm('Часть остатка зарезервирована для других заказов. Подтвердить выдачу?')) return;
+                    void updateQueuedMutation(item.id,{body:{...item.body as Record<string,unknown>,confirmReserved:true},status:'pending',lastError:undefined}).then(()=>syncOfflineQueue()).catch(error=>setStorageError(String(error)));
+                  }}>Подтвердить выдачу и повторить</button>}
                 </div>
                 <button
                   type="button"

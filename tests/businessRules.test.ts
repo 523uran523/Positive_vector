@@ -297,7 +297,7 @@ describe('Позитив Вектор CRM/ERP — бизнес-логика и �
     assert.equal(mySal.data.totalAccruedKopecks, 720000);
   });
 
-  it('4. Склад: выдача -> списание -> возврат без двойного списания + отрицательный остаток с уведомлением', async () => {
+  it('4. Склад: выдача, списание и возврат без двойного списания; недостаток блокируется', async () => {
     const matRes = await reqJson(
       baseUrl,
       'POST',
@@ -368,7 +368,7 @@ describe('Позитив Вектор CRM/ERP — бизнес-логика и �
     );
     assert.equal(overRet.status, 400);
 
-    // Consume 6 units directly -> stock becomes -2 (-2000 milli) & triggers admin notification
+    // Consuming more than the remaining stock must fail without changing it.
     const negConsume = await reqJson(
       baseUrl,
       'POST',
@@ -376,9 +376,10 @@ describe('Позитив Вектор CRM/ERP — бизнес-логика и �
       { itemType: 'material', opType: 'consume', materialId: matId, qtyMilli: 6000 },
       empClient
     );
-    assert.equal(negConsume.status, 201);
-    assert.equal(negConsume.data.newStockMilli, -2000);
-    assert.equal(negConsume.data.negativeStockWarning, true);
+    assert.equal(negConsume.status, 400);
+    assert.match(String(negConsume.data.error), /Недостаточно/);
+    const warehouse = await reqJson(baseUrl, 'GET', '/api/warehouse', undefined, adminClient);
+    assert.equal(warehouse.data.materials.find((m: any) => m.id === matId).quantity_milli, 4000);
 
     const notifs = await reqJson(baseUrl, 'GET', '/api/notifications', undefined, adminClient);
     assert.ok(notifs.data.notifications.some((n: any) => n.type === 'low_stock'));

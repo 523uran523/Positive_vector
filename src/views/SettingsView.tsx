@@ -51,6 +51,30 @@ export function SettingsView({
   const [emailHost, setEmailHost] = useState(settings.email_notifications?.smtpHost || '');
   const [emailFrom, setEmailFrom] = useState(settings.email_notifications?.fromAddress || '');
   const [settingsMsg, setSettingsMsg] = useState('');
+  const [yandexStatus,setYandexStatus] = useState<{configured:boolean;connected:boolean}|null>(null);
+  const [yandexMessage,setYandexMessage] = useState(()=>new URLSearchParams(window.location.search).get('yandex_connection')==='connected'?'Яндекс Диск подключён.':new URLSearchParams(window.location.search).has('yandex_connection')?'Не удалось подключить Яндекс Диск. Попробуйте ещё раз.':'');
+
+  const loadYandex=async()=>{
+    try {setYandexStatus(await apiRequest('/api/integrations/yandex/status',{useCache:false}));}
+    catch(err){setYandexMessage(err instanceof Error?err.message:'Не удалось проверить подключение.');}
+  };
+  useEffect(()=>{if(isAdmin) void loadYandex();},[isAdmin]);
+  const connectYandex=async()=>{
+    setYandexMessage('');setBusy(true);
+    try {
+      const result=await apiRequest<{url:string}>('/api/integrations/yandex/start',{method:'POST',body:{},skipOfflineQueue:true});
+      const url=new URL(result.url);
+      if(url.origin!=='https://oauth.yandex.ru' || url.pathname!=='/authorize') throw new Error('Некорректная ссылка авторизации.');
+      window.location.assign(url.href);
+    } catch(err){setYandexMessage(err instanceof Error?err.message:'Не удалось начать подключение.');setBusy(false);}
+  };
+  const disconnectYandex=async()=>{
+    if(!window.confirm('Отключить автоматические копии на Яндекс Диск? Уже сохранённые копии останутся на Диске.')) return;
+    setBusy(true);setYandexMessage('');
+    try {await apiRequest('/api/integrations/yandex/disconnect',{method:'POST',body:{},skipOfflineQueue:true});await loadYandex();setYandexMessage('Диск отключён. Сохранённые копии не удалены.');}
+    catch(err){setYandexMessage(err instanceof Error?err.message:'Не удалось отключить Диск.');}
+    finally {setBusy(false);}
+  };
 
   // Export filter & audit logs
   const [expFrom, setExpFrom] = useState('');
@@ -144,6 +168,13 @@ export function SettingsView({
 
   return (
     <div className="space-y-5">
+      {isAdmin && <div className="space-y-3 rounded-2xl border border-black/[0.06] bg-white p-5 dark:border-white/[0.08] dark:bg-[#15171C]">
+        <h3 className="font-display text-base font-bold">Резервные копии на Яндекс Диск</h3>
+        <p className="text-sm text-zinc-500">После подключения копия базы и файлов будет сохраняться раз в неделю в отдельной папке приложения и храниться месяц. Пароль вводится только на странице Яндекса.</p>
+        {yandexStatus && <p className="text-sm">{yandexStatus.connected?'Диск подключён.':yandexStatus.configured?'Диск не подключён.':'Для подключения сначала нужно настроить приложение Яндекса на сервере.'}</p>}
+        {yandexMessage && <p role="status" className="text-sm text-blue-600 dark:text-blue-300">{yandexMessage}</p>}
+        {yandexStatus?.connected ? <button type="button" disabled={busy} onClick={()=>void disconnectYandex()} className="rounded-xl border border-zinc-400 px-4 py-2 text-sm">Отключить Диск</button> : <button type="button" disabled={busy || !yandexStatus?.configured} onClick={()=>void connectYandex()} className="rounded-xl bg-[#0071E3] px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">Подключить Яндекс Диск</button>}
+      </div>}
       {isAdmin && <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-black/[0.06] bg-white p-5 dark:border-white/[0.08] dark:bg-[#15171C]">
         <div><h3 className="font-display text-base font-bold">Учётные записи сотрудников</h3><p className="text-xs text-zinc-500">Добавление администраторов, увольнение и восстановление сотрудников</p></div>
         <button type="button" onClick={onManageEmployees} className="rounded-xl border border-black/[0.1] px-4 py-2 text-sm font-semibold dark:border-white/[0.12]">Управлять сотрудниками</button>

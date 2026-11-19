@@ -1,13 +1,50 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { AlertTriangle, ArrowDownLeft, ArrowUpRight, Package, Pencil, Plus, Trash2, Wrench, X } from 'lucide-react';
 import { apiRequest, formatDateTimeRu, formatQty, formatRub, OP_TYPE_LABELS } from '../lib/api';
-import type { AuthUser, MaterialItem, ToolItem, WarehouseOp } from '../types/crm';
+import type { AuthUser, MaterialItem, Order, ToolItem, WarehouseOp } from '../types/crm';
+
+const TOOL_ICONS = ['🔧', '🔨', '🪛', '🪚', '🪜', '🛠️', '🧰', '⚙️', '🔩', '⛏️', '🪓', '🧲', '🪣', '🔌', '💡', '🔦', '🪝'];
+
+function ToolIconSelect({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  return <select aria-label="Иконка инструмента" value={value} onChange={(event) => onChange(event.target.value)} className="rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3.5 py-2.5 text-sm dark:border-white/[0.12] dark:bg-[#0B0C10]">
+    {!TOOL_ICONS.includes(value) && <option value={value}>{value} (текущая)</option>}
+    {TOOL_ICONS.map((icon) => <option key={icon} value={icon}>{icon}</option>)}
+  </select>;
+}
+
+type BatchDetails = {batches:Array<{id:string;received_qty_milli:number;remaining_qty_milli:number;unit_cost_kopecks:number;estimated:number;created_at:string}>;receipts:Array<{id:string;qty_milli:number;unit_cost_kopecks:number;created_at:string}>;stockQtyMilli:number;averageCostKopecks:number|null;stockValueKopecks:number;purchaseTotalKopecks:number};
+function MaterialBatches({material}:{material:MaterialItem}) {
+  const [open,setOpen]=useState(false);
+  const [details,setDetails]=useState<BatchDetails|null>(null);
+  const [error,setError]=useState('');
+  useEffect(()=>{
+    if(!open) return;
+    let active=true;
+    void apiRequest<BatchDetails>(`/api/warehouse/materials/${encodeURIComponent(material.id)}/batches`,{useCache:false}).then(data=>{if(active){setDetails(data);setError('');}}).catch(err=>{if(active){setDetails(null);setError(err instanceof Error?err.message:'Ошибка загрузки');}});
+    return ()=>{active=false;};
+  },[open,material.id,material.quantity_milli]);
+  return <div className="mt-3 border-t border-black/5 pt-2 text-xs dark:border-white/10">
+    <button type="button" onClick={()=>setOpen(!open)} className="font-semibold text-[#0071E3] dark:text-[#71b5ff]">{open?'Скрыть закупки и партии':'Закупки и партии'}</button>
+    {open && error && <p role="alert" className="mt-2 text-red-500">{error}</p>}
+    {open && details && <div className="mt-2 space-y-2">
+      <p>Средняя цена остатка: {details.averageCostKopecks===null?'нет остатка':`${formatRub(details.averageCostKopecks)} / ${material.unit}`}</p>
+      <p>Стоимость остатка: {formatRub(details.stockValueKopecks)} · Закуплено на: {formatRub(details.purchaseTotalKopecks)}</p>
+      {details.stockQtyMilli<0 && <p className="text-red-500">Исторический отрицательный остаток: {formatQty(details.stockQtyMilli)} {material.unit}. Пополните склад.</p>}
+      <p className="font-semibold">Партии остатка (списание с ранней)</p>
+      {details.batches.filter(batch=>batch.remaining_qty_milli>0).map(batch=><div key={batch.id}>{formatQty(batch.remaining_qty_milli)} {material.unit} × {formatRub(batch.unit_cost_kopecks)}{batch.estimated?' · оценка старого остатка':''}</div>)}
+      <p className="font-semibold">История поступлений</p>
+      {details.receipts.map(receipt=><div key={receipt.id}>{formatDateTimeRu(receipt.created_at)} · {formatQty(receipt.qty_milli)} {material.unit} × {formatRub(receipt.unit_cost_kopecks)} = {formatRub(Math.round(receipt.qty_milli*receipt.unit_cost_kopecks/1000))}</div>)}
+      {!details.receipts.length && <p>Поступлений в истории нет.</p>}
+    </div>}
+  </div>;
+}
 
 interface WarehouseViewProps {
   user: AuthUser;
   materials: MaterialItem[];
   tools: ToolItem[];
   operations: WarehouseOp[];
+  orders: Order[];
   units: string[];
   categories: string[];
   onRefresh: () => void;
@@ -18,6 +55,7 @@ export function WarehouseView({
   materials,
   tools,
   operations,
+  orders,
   units,
   categories,
   onRefresh,
@@ -51,6 +89,7 @@ export function WarehouseView({
   const [opQty, setOpQty] = useState('1');
   const [opCostRub, setOpCostRub] = useState('');
   const [opNote, setOpNote] = useState('');
+  const [opOrderId, setOpOrderId] = useState('');
 
   // New / Edit tool state
   const [tName, setTName] = useState('');
@@ -176,6 +215,10 @@ export function WarehouseView({
   const handleMaterialOp = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedMat) return;
+    const estimatedAfter=opType==='adjust' ? Number(opQty)*1000 : selectedMat.quantity_milli-Number(opQty)*1000;
+    const conflict=['issue','consume','adjust'].includes(opType) && (selectedMat.reserved_milli||0)>estimatedAfter;
+    const confirmReserved=conflict || (!navigator.onLine && ['issue','consume','adjust'].includes(opType));
+    if(confirmReserved && !window.confirm('Материал может быть зарезервирован под другой заказ. Выполнить операцию?')) return;
     setBusy(true);
     setError('');
     setNotice('');
@@ -187,6 +230,8 @@ export function WarehouseView({
           qtyMilli: Math.round(Number(opQty) * 1000),
           unitCostKopecks: opCostRub ? Math.round(Number(opCostRub) * 100) : undefined,
           note: opNote,
+          orderId: ['issue','return'].includes(opType) ? opOrderId : undefined,
+          confirmReserved,
         },
         offlineLabel: `Операция по «${selectedMat.name}»`,
       });
@@ -324,6 +369,8 @@ export function WarehouseView({
   const handleToolOp = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedTool) return;
+    const confirmReserved=tOpType==='issue' && ((selectedTool.reserved_milli||0)>(selectedTool.available_qty-Number(tOpQty||1))*1000 || !navigator.onLine);
+    if(confirmReserved && !window.confirm('Инструмент может быть зарезервирован под другой заказ. Выдать его?')) return;
     setBusy(true);
     setError('');
     setNotice('');
@@ -335,6 +382,7 @@ export function WarehouseView({
           toolInstanceId: tInstanceId || undefined,
           qty: Number(tOpQty || 1),
           note: tOpNote,
+          confirmReserved,
         },
         offlineLabel: `Операция с «${selectedTool.name}»`,
       });
@@ -490,6 +538,8 @@ export function WarehouseView({
                       Мин. порог: {formatQty(m.min_threshold_milli)} {m.unit}
                     </div>
                   )}
+                  {(m.reserved_milli||0)>0 && <p className="mt-1 text-xs text-amber-600">Зарезервировано: {formatQty(m.reserved_milli)} {m.unit} · свободно: {formatQty(Math.max(0,m.quantity_milli-(m.reserved_milli||0)))} {m.unit}</p>}
+                  {isAdmin && <MaterialBatches material={m} />}
                 </div>
 
                 {(canReceive || canTake || canEdit) && (
@@ -609,6 +659,7 @@ export function WarehouseView({
                   </div>
                 </div>
 
+                {(t.reserved_milli||0)>0 && <p className="mt-2 text-xs text-amber-600">Зарезервировано: {formatQty(t.reserved_milli)} шт · свободно: {formatQty(Math.max(0,t.available_qty*1000-(t.reserved_milli||0)))} шт</p>}
                 {t.tracking_mode === 'individual' && t.instances.length > 0 && (
                   <div className="mt-3 space-y-1 border-t border-black/[0.05] pt-2.5 text-xs dark:border-white/[0.06]">
                     {t.instances.map((inst) => (
@@ -949,6 +1000,7 @@ export function WarehouseView({
                 {canTake && <option value="return">Вернуть на склад</option>}
                 {canEdit && <option value="adjust">Задать точный остаток</option>}
               </select>
+              {['issue','return'].includes(opType) && <label className="block text-sm">Заказ <select required value={opOrderId} onChange={e=>setOpOrderId(e.target.value)} className="mt-1 w-full rounded-xl border border-black/10 bg-white p-2 dark:bg-[#0B0C10]"><option value="">Выберите заказ</option>{orders.map(order=><option key={order.id} value={order.id}>{order.order_number} · {order.title}</option>)}</select></label>}
               <input
                 type="number"
                 step="0.1"
@@ -1010,13 +1062,7 @@ export function WarehouseView({
                 className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3.5 py-2.5 text-sm dark:border-white/[0.12] dark:bg-[#0B0C10]"
               />
               <div className="grid grid-cols-2 gap-2.5">
-                <input
-                  type="text"
-                  value={tEmoji}
-                  onChange={(e) => setTEmoji(e.target.value)}
-                  placeholder="Иконка (🔧)"
-                  className="rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3.5 py-2.5 text-sm dark:border-white/[0.12] dark:bg-[#0B0C10]"
-                />
+                <ToolIconSelect value={tEmoji} onChange={setTEmoji} />
                 <input
                   type="color"
                   value={tColor}
@@ -1085,13 +1131,7 @@ export function WarehouseView({
                 className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3.5 py-2.5 text-sm dark:border-white/[0.12] dark:bg-[#0B0C10]"
               />
               <div className="grid grid-cols-2 gap-2.5">
-                <input
-                  type="text"
-                  value={tEmoji}
-                  onChange={(e) => setTEmoji(e.target.value)}
-                  placeholder="Иконка (🔧)"
-                  className="rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3.5 py-2.5 text-sm dark:border-white/[0.12] dark:bg-[#0B0C10]"
-                />
+                <ToolIconSelect value={tEmoji} onChange={setTEmoji} />
                 <input
                   type="color"
                   value={tColor}

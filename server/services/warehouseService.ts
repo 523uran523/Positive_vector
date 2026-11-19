@@ -1,6 +1,8 @@
 import crypto from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { notifyAdmins, writeAuditLog } from '../security.ts';
+import { createBatch, legacyOutstanding, settleIssued, takeStock, trackedOutstanding } from './materialBatches.ts';
+import { ensureReservationAcknowledged } from './reservations.ts';
 
 export interface MaterialActionInput {
   materialId: string;
@@ -13,6 +15,7 @@ export interface MaterialActionInput {
   employeeUserId?: string | null;
   actorUserId: string;
   note?: string;
+  confirmReserved?: boolean;
 }
 
 export function getOrderMaterialBalance(
@@ -37,7 +40,7 @@ export function getOrderMaterialBalance(
     if (r.op_type === 'consume') consumedMilli = Number(r.total || 0);
     if (r.op_type === 'return') returnedMilli = Number(r.total || 0);
   }
-  const unconsumedIssuedMilli = Math.max(0, issuedMilli - consumedMilli - returnedMilli);
+  const unconsumedIssuedMilli = legacyOutstanding(db,materialId,orderId) + trackedOutstanding(db,materialId,orderId);
   return { issuedMilli, consumedMilli, returnedMilli, unconsumedIssuedMilli };
 }
 
@@ -76,6 +79,8 @@ export function applyMaterialOperationTx(
   }
 
   let stockDelta = 0;
+  let issuedToSettle = 0;
+  let outstandingBefore = 0;
   const costPerUnit =
     input.unitCostKopecks !== undefined ? Math.max(0, Math.round(input.unitCostKopecks)) : mat.purchase_price_kopecks;
 
@@ -92,6 +97,7 @@ export function applyMaterialOperationTx(
   } else if (input.opType === 'return') {
     if (input.orderId) {
       const bal = getOrderMaterialBalance(db, input.orderId, mat.id);
+      outstandingBefore = bal.unconsumedIssuedMilli;
       if (qty > bal.unconsumedIssuedMilli) {
         throw new Error(
           `Нельзя вернуть ${qty / 1000} ${mat.unit} «${mat.name}»: на заказе осталось неиспользованным ${bal.unconsumedIssuedMilli / 1000} ${mat.unit}.`
@@ -100,26 +106,21 @@ export function applyMaterialOperationTx(
     } else {
       // Without an order context a return may only offset material that was actually issued.
       // This prevents "inventing" stock by repeatedly returning material that was never taken.
-      const agg = db
-        .prepare(
-          `SELECT
-             COALESCE(SUM(CASE WHEN op_type = 'issue' THEN qty_milli ELSE 0 END), 0) -
-             COALESCE(SUM(CASE WHEN op_type = 'return' THEN qty_milli ELSE 0 END), 0) AS outstanding
-           FROM warehouse_operations
-           WHERE item_type = 'material' AND material_id = ?`
-        )
-        .get(mat.id) as { outstanding: number };
-      const outstanding = Math.max(0, Number(agg.outstanding || 0));
+      const outstanding = legacyOutstanding(db,mat.id,null) + trackedOutstanding(db,mat.id,null);
+      outstandingBefore = outstanding;
       if (qty > outstanding) {
         throw new Error(
           `Нельзя вернуть ${qty / 1000} ${mat.unit} «${mat.name}» без указания заказа: всего не возвращено ${outstanding / 1000} ${mat.unit}.`
         );
       }
     }
+    issuedToSettle = qty;
     stockDelta = qty;
   } else if (input.opType === 'consume') {
     if (input.orderId) {
       const bal = getOrderMaterialBalance(db, input.orderId, mat.id);
+      outstandingBefore = bal.unconsumedIssuedMilli;
+      issuedToSettle = Math.min(qty, outstandingBefore);
       // Only deduct extra quantity beyond what was already issued (deducted) to this order
       const extraNeeded = Math.max(0, qty - bal.unconsumedIssuedMilli);
       stockDelta = -extraNeeded;
@@ -133,9 +134,14 @@ export function applyMaterialOperationTx(
   }
 
   const newStockMilli = mat.quantity_milli + stockDelta;
+  if (stockDelta < 0 && newStockMilli < 0) {
+    throw new Error(`Недостаточно материала «${mat.name}» на складе. Сначала оформите поступление.`);
+  }
+  if (stockDelta < 0) ensureReservationAcknowledged(db,'material',mat.id,newStockMilli,input.orderId,input.confirmReserved);
   db.prepare('UPDATE materials SET quantity_milli = ? WHERE id = ?').run(newStockMilli, mat.id);
 
   const opId = crypto.randomUUID();
+  const now = new Date().toISOString();
   db.prepare(
     `INSERT INTO warehouse_operations
      (id, item_type, material_id, tool_id, tool_instance_id, op_type, qty_milli, unit_cost_kopecks, order_id, visit_id, shift_id, user_id, created_by, note, created_at)
@@ -152,8 +158,23 @@ export function applyMaterialOperationTx(
     input.employeeUserId || input.actorUserId,
     input.actorUserId,
     (input.note || '').trim(),
-    new Date().toISOString()
+    now
   );
+  db.prepare('UPDATE warehouse_operations SET stock_delta_milli=? WHERE id=?').run(stockDelta,opId);
+
+  let totalValue = 0;
+  if (input.opType === 'receipt' || (input.opType === 'adjust' && stockDelta > 0)) {
+    const available = Math.max(0,newStockMilli) - Math.max(0,mat.quantity_milli);
+    createBatch(db,mat.id,opId,input.opType === 'receipt' ? qty : stockDelta,available,costPerUnit,input.opType === 'adjust',now);
+  } else {
+    if (issuedToSettle) {
+      const legacy = legacyOutstanding(db,mat.id,input.orderId || null);
+      totalValue += settleIssued(db,mat.id,opId,input.orderId || null,issuedToSettle,input.opType === 'return',legacy,mat.purchase_price_kopecks,now);
+    }
+    if (stockDelta < 0) totalValue += takeStock(db,mat.id,opId,-stockDelta,input.opType === 'issue');
+    const pricedQty = issuedToSettle + Math.max(0,-stockDelta);
+    if (pricedQty) db.prepare('UPDATE warehouse_operations SET unit_cost_kopecks=? WHERE id=?').run(Math.round(totalValue/pricedQty),opId);
+  }
 
   const negativeStockWarning = newStockMilli < 0;
   if (newStockMilli < 0 || (mat.min_threshold_milli > 0 && newStockMilli <= mat.min_threshold_milli)) {
@@ -243,12 +264,15 @@ export function issueToolTx(
     holderUserId: string;
     actorUserId: string;
     note?: string;
+    confirmReserved?: boolean;
   }
 ): string {
   const tool = db.prepare('SELECT * FROM tools WHERE id = ?').get(params.toolId) as
     | { id: string; name: string; tracking_mode: 'quantity' | 'individual'; total_qty: number; available_qty: number }
     | undefined;
   if (!tool) throw new Error('Инструмент не найден.');
+
+  ensureReservationAcknowledged(db,'tool',tool.id,Math.max(0,(tool.available_qty-(tool.tracking_mode==='individual'?1:Math.max(1,Math.round(params.qty||1))))*1000),params.orderId,params.confirmReserved);
 
   const now = new Date().toISOString();
   const opId = crypto.randomUUID();

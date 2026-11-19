@@ -20,12 +20,18 @@ export async function establishOfflineSession(user:AuthUser) {
   setOfflineOwner(user.id);
   localStorage.setItem('pv-queue-owner',user.id);
   localStorage.removeItem('pv-local-logout');
-  localStorage.setItem(SESSION_KEY,JSON.stringify({user,expiresAt:Date.now()+7*24*3600_000}));
+  const verifiedAt=Date.now();
+  localStorage.setItem(SESSION_KEY,JSON.stringify({user,verifiedAt,expiresAt:verifiedAt+24*3600_000}));
   const stored=await cacheGet<Record<string,string>>('__versions').catch(()=>null);
   for(const [url,v] of Object.entries(stored||{})) versions.set(url,v);
 }
 export function restoredOfflineSession():AuthUser|null {
-  try {const saved=JSON.parse(localStorage.getItem(SESSION_KEY)||'null');return saved?.expiresAt>Date.now()?saved.user:null;}catch{return null;}
+  try {
+    const saved=JSON.parse(localStorage.getItem(SESSION_KEY)||'null');
+    // Old sessions expired seven days after verification; do not extend them during upgrade.
+    const verifiedAt=typeof saved?.verifiedAt==='number' ? saved.verifiedAt : Number(saved?.expiresAt)-7*24*3600_000;
+    return saved?.expiresAt>Date.now() && verifiedAt<=Date.now() && verifiedAt+24*3600_000>Date.now() ? saved.user : null;
+  }catch{return null;}
 }
 export async function endOfflineSession() {
   csrf=null;versions.clear();results.clear();setOfflineOwner(null);localStorage.removeItem(SESSION_KEY);
@@ -43,7 +49,7 @@ function unauthorized() {
   window.dispatchEvent(new CustomEvent('pv:unauthorized'));
 }
 export interface RequestOptions { method?:string;body?:unknown;formData?:FormData;offlineLabel?:string;skipOfflineQueue?:boolean;useCache?:boolean }
-function queueable(url:string) {return /^\/api\/(orders|clients|warehouse|shifts|finance|notifications)(\/|$)/.test(url);}
+function queueable(url:string) {return /^\/api\/(orders|quick-tasks|clients|warehouse|shifts|finance|notifications)(\/|$)/.test(url);}
 export async function apiRequest<T=any>(url:string,options:RequestOptions={}):Promise<T> {
   const method=(options.method||'GET').toUpperCase();
   const mutation=['POST','PUT','PATCH','DELETE'].includes(method);

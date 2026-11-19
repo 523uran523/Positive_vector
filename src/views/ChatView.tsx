@@ -6,7 +6,7 @@ import type { AuthUser, DirectoryUser } from '../types/crm';
 type Message = { seq: number; id: string; author_id: string; author_name: string; body: string; file_id: string | null; original_name: string | null; mime_type: string | null; created_at: string; edited_at: string | null };
 type Response = { messages: Message[]; unreadCount: number; hasMore: boolean };
 type Room = { id: string; name: string; unreadCount: number; isMember: boolean };
-export function ChatView({ user, onRead }: { user: AuthUser; onRead: () => void }) {
+export function ChatView({ user, onRead, attachedOrder, onClearOrder, onOpenOrder }: { user: AuthUser; onRead: () => void; attachedOrder: {id:string;number:string} | null; onClearOrder: () => void; onOpenOrder: (id:string) => void }) {
   const [rooms, setRooms] = useState<Room[]>([]);
   const [selected, setSelected] = useState(() => { const id = new URLSearchParams(window.location.search).get('chat'); return id && id !== '1' ? id : 'general'; });
   const [directory, setDirectory] = useState<DirectoryUser[]>([]);
@@ -66,13 +66,13 @@ export function ChatView({ user, onRead }: { user: AuthUser; onRead: () => void 
       <div className="max-h-48 space-y-2 overflow-y-auto">{directory.filter(person => mode === 'members' || person.id !== user.id).map(person => <div key={person.id} className="flex items-center justify-between gap-2 text-sm"><label className="flex items-center gap-2"><input type="checkbox" disabled={mode === 'members' && existingMembers.includes(person.id)} checked={members.includes(person.id)} onChange={e => setMembers(prev => e.target.checked ? [...prev,person.id] : prev.filter(id => id !== person.id))} /><span>{person.fullName}{mode === 'members' && existingMembers.includes(person.id) ? ' · участник' : ''}</span></label>{mode === 'members' && existingMembers.includes(person.id) && <button type="button" onClick={() => void removeMember(person.id,person.fullName)} className="text-red-600 dark:text-red-400">Исключить</button>}</div>)}</div>
       <div className="flex gap-2"><button type="submit" disabled={busy} className="rounded-xl bg-[#0071E3] px-4 py-2 text-white">{mode === 'create' ? 'Создать' : 'Добавить'}</button><button type="button" onClick={() => setMode(null)} className="rounded-xl border border-zinc-400 px-4 py-2">Отмена</button></div>
     </form>}
-    {room?.isMember && <ChatRoom key={room.id} room={room} user={user} onRead={() => { void refresh(); onRead(); }} />}
+    {room?.isMember && <ChatRoom key={room.id} room={room} user={user} attachedOrder={attachedOrder} onClearOrder={onClearOrder} onOpenOrder={onOpenOrder} onRead={() => { void refresh(); onRead(); }} />}
     {room && !room.isMember && <p className="text-sm text-zinc-500">Вы не участник этого чата. Администратор может добавить участников кнопкой выше.</p>}
     {!room && rooms.length > 0 && <p className="text-sm text-zinc-500">Чат недоступен. Выберите другой чат.</p>}
   </div>;
 }
 
-function ChatRoom({ user, room, onRead }: { user: AuthUser; room: Room; onRead: () => void }) {
+function ChatRoom({ user, room, onRead, attachedOrder, onClearOrder, onOpenOrder }: { user: AuthUser; room: Room; onRead: () => void; attachedOrder: {id:string;number:string} | null; onClearOrder: () => void; onOpenOrder: (id:string) => void }) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [hasMore, setHasMore] = useState(false);
   const [body, setBody] = useState('');
@@ -114,14 +114,16 @@ function ChatRoom({ user, room, onRead }: { user: AuthUser; room: Room; onRead: 
     catch (e) { setError(e instanceof Error ? e.message : 'Ошибка загрузки'); }
   };
   const send = async (e: React.FormEvent) => {
-    e.preventDefault(); if (busy || (!body.trim() && !file)) return; setBusy(true); setError('');
+    e.preventDefault(); if (busy || (!body.trim() && !file && !attachedOrder)) return; setBusy(true); setError('');
     try {
       if (editing) await apiRequest(`/api/chat/messages/${editing}`, { method: 'PATCH', body: { body }, skipOfflineQueue: true });
       else {
-        if (!pendingMessage.current || pendingMessage.current.body !== body || pendingMessage.current.file !== file) pendingMessage.current = {id:crypto.randomUUID(),body,file};
-        const data = new FormData(); data.set('body', body); data.set('roomId', room.id); data.set('clientMessageId',pendingMessage.current.id); if (file) data.set('file', file);
+        const fullBody = attachedOrder ? `${body.trim()}${body.trim() ? '\n' : ''}[[order:${attachedOrder.id}]]` : body;
+        if (!pendingMessage.current || pendingMessage.current.body !== fullBody || pendingMessage.current.file !== file) pendingMessage.current = {id:crypto.randomUUID(),body:fullBody,file};
+        const data = new FormData(); data.set('body', fullBody); data.set('roomId', room.id); data.set('clientMessageId',pendingMessage.current.id); if (file) data.set('file', file);
         await apiRequest('/api/chat/messages', { method: 'POST', formData: data, skipOfflineQueue: true });
         pendingMessage.current = null;
+        onClearOrder();
       }
       setBody(''); setFile(null); setEditing(null);
       try { await load(); end.current?.scrollIntoView({ behavior: 'smooth' }); }
@@ -163,13 +165,14 @@ function ChatRoom({ user, room, onRead }: { user: AuthUser; room: Room; onRead: 
         <img src={`/api/chat/avatar/${m.author_id}`} alt="" onError={e => { e.currentTarget.style.visibility = 'hidden'; }} className="h-9 w-9 rounded-full bg-zinc-300 object-cover" />
         <div className={`max-w-[85%] rounded-2xl px-3 py-2 text-sm ${mine ? 'bg-[#dfefff] dark:bg-[#193c5f]' : 'bg-zinc-100 dark:bg-[#282b32]'}`}>
           <div className="text-xs font-semibold text-[#0071E3] dark:text-[#71b5ff]">{m.author_name}</div>
-          {m.body && <p className="whitespace-pre-wrap break-words">{m.body}</p>}
+          {m.body && <p className="whitespace-pre-wrap break-words">{m.body.split(/(\[\[order:[0-9a-f-]{36}\]\])/gi).map((part,index) => { const match = /^\[\[order:([0-9a-f-]{36})\]\]$/i.exec(part); return match ? <button key={index} type="button" onClick={() => onOpenOrder(match[1])} className="text-[#0071E3] underline dark:text-[#71b5ff]">Открыть заказ</button> : part; })}</p>}
           {m.file_id && (m.mime_type?.startsWith('audio/') ? <audio controls preload="metadata" src={`/api/chat/files/${m.file_id}`} className="max-w-full" /> : <a className="block break-all text-[#0071E3] underline dark:text-[#71b5ff]" href={`/api/chat/files/${m.file_id}`} target="_blank" rel="noreferrer">{m.original_name}</a>)}
           <div className="mt-1 flex items-center gap-2 text-[11px] text-zinc-500"><span>{formatDateTimeRu(m.created_at)}{m.edited_at ? ' · изменено' : ''}</span>{canEdit && <button aria-label="Редактировать сообщение" onClick={() => { setEditing(m.id); setBody(m.body); setFile(null); }}><Pencil size={13} /></button>}{(mine || user.role === 'admin') && <button aria-label="Удалить сообщение" onClick={() => { if (window.confirm('Удалить сообщение?')) void apiRequest(`/api/chat/messages/${m.id}`, { method: 'DELETE', skipOfflineQueue: true }).then(load).catch(e => setError(e.message)); }}><Trash2 size={13} /></button>}</div>
         </div></div>; })}<div ref={end} />
     </div>
     <form onSubmit={send} className="sticky bottom-20 flex flex-wrap items-end gap-2 rounded-2xl border border-black/10 bg-white p-3 dark:border-white/10 dark:bg-[#15171C] md:bottom-3">
       {editing && <div className="w-full text-xs">Редактирование сообщения <button type="button" className="text-[#0071E3]" onClick={() => { setEditing(null); setBody(''); }}>Отмена</button></div>}
+      {!editing && attachedOrder && <div className="w-full text-xs">Прикреплён заказ {attachedOrder.number} <button type="button" onClick={onClearOrder} className="text-red-500">Убрать</button></div>}
       {file && <div className="w-full text-xs">{file.name} <button type="button" className="text-red-500" onClick={() => setFile(null)}>Убрать</button></div>}
       {!editing && <label className="cursor-pointer rounded-xl p-2" title="Прикрепить файл"><Paperclip size={20} /><input type="file" className="hidden" onChange={e => setFile(e.target.files?.[0] || null)} /></label>}
       <textarea aria-label="Сообщение" value={body} onChange={e => setBody(e.target.value)} rows={2} maxLength={5000} placeholder="Напишите сообщение" className="min-w-0 flex-1 resize-y rounded-xl bg-zinc-100 p-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 dark:bg-[#0B0C10]" />

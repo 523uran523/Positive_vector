@@ -28,6 +28,11 @@ test('offline transport: lost response, 401, account isolation, conflicts and st
   const api=await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString('base64')}`);
   const user=(id:string)=>({id,role:'employee',permissions:{}});
   await api.establishOfflineSession(user('alice'));api.setCsrfToken('csrf');
+  const initialSession=JSON.parse(local.get('pv-offline-session-v2')!);
+  assert.equal(initialSession.expiresAt-initialSession.verifiedAt,24*3600_000);
+  local.set('pv-offline-session-v2',JSON.stringify({user:user('alice'),expiresAt:Date.now()+5*24*3600_000}));
+  assert.equal(api.restoredOfflineSession(),null,'older seven-day sessions cannot extend the new limit');
+  await api.establishOfflineSession(user('alice'));
   const requests:any[]=[];let lost=true;
   globals.fetch=async(url:string,options:any)=>{
     requests.push({url,options});

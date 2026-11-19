@@ -42,9 +42,11 @@ interface VisitAssignmentRow {
 
 interface EmployeesViewProps {
   onOpenOrderById: (orderId: string) => void;
+  currentUserId: string;
+  onCurrentUserUpdated: (user: AuthUser) => void;
 }
 
-export function EmployeesView({ onOpenOrderById }: EmployeesViewProps) {
+export function EmployeesView({ onOpenOrderById, currentUserId, onCurrentUserUpdated }: EmployeesViewProps) {
   const [users, setUsers] = useState<AuthUser[]>([]);
   const [permissionLabels, setPermissionLabels] = useState<Record<PermissionKey, string>>(
     {} as Record<PermissionKey, string>
@@ -74,6 +76,7 @@ export function EmployeesView({ onOpenOrderById }: EmployeesViewProps) {
   const [fRateRub, setFRateRub] = useState('3000');
   const [fPerms, setFPerms] = useState<Record<string, boolean>>({});
   const [fChatHistory, setFChatHistory] = useState(false);
+  const [fAccountingAccess, setFAccountingAccess] = useState(true);
 
   // Payout & Adjustment forms
   const [targetUserId, setTargetUserId] = useState('');
@@ -108,6 +111,7 @@ export function EmployeesView({ onOpenOrderById }: EmployeesViewProps) {
   }, []);
 
   const openCreate = () => {
+    setFAccountingAccess(true);
     setFLogin('');
     setFName('');
     setFPhone('');
@@ -121,6 +125,7 @@ export function EmployeesView({ onOpenOrderById }: EmployeesViewProps) {
   };
 
   const openEdit = (u: AuthUser) => {
+    setFAccountingAccess(u.role === 'admin' ? u.accountingAccess : true);
     setEditingUser(u);
     setFLogin(u.login);
     setFName(u.fullName);
@@ -149,6 +154,7 @@ export function EmployeesView({ onOpenOrderById }: EmployeesViewProps) {
           role: fRole,
           shiftRateKopecks: Math.round(Number(fRateRub || 0) * 100),
           permissions: fPerms,
+          ...(fRole === 'admin' ? { accountingAccess: fAccountingAccess } : {}),
           chatHistory: fChatHistory,
         },
       });
@@ -168,7 +174,7 @@ export function EmployeesView({ onOpenOrderById }: EmployeesViewProps) {
     setBusy(true);
     setError('');
     try {
-      await apiRequest(`/api/users/${editingUser.id}`, {
+      const result = await apiRequest<{user:AuthUser}>(`/api/users/${editingUser.id}`, {
         method: 'PATCH',
         body: {
           login: fLogin,
@@ -178,8 +184,10 @@ export function EmployeesView({ onOpenOrderById }: EmployeesViewProps) {
           role: fRole,
           shiftRateKopecks: Math.round(Number(fRateRub || 0) * 100),
           permissions: fPerms,
+          ...(fRole === 'admin' ? { accountingAccess: fAccountingAccess } : {}),
         },
       });
+      if (result.user.id === currentUserId) onCurrentUserUpdated(result.user);
       setModal(null);
       await loadAll();
     } catch (err) {
@@ -554,6 +562,7 @@ export function EmployeesView({ onOpenOrderById }: EmployeesViewProps) {
               </div>
               <div className="grid grid-cols-3 gap-2.5">
                 <select
+                  aria-label="Роль сотрудника"
                   value={fRole}
                   onChange={(e) => setFRole(e.target.value as any)}
                   className="rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3 py-2.5 text-sm dark:border-white/[0.12] dark:bg-[#0B0C10]"
@@ -578,6 +587,9 @@ export function EmployeesView({ onOpenOrderById }: EmployeesViewProps) {
                 />
               </div>
 
+              {fRole === 'admin' && modal === 'edit' && (
+                <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={fAccountingAccess} onChange={(e) => setFAccountingAccess(e.target.checked)} /> Доступ к бухгалтерии</label>
+              )}
               {fRole === 'employee' && (
                 <div className="rounded-2xl border border-black/[0.06] bg-[#F5F5F7]/70 p-3.5 dark:border-white/[0.08] dark:bg-[#0B0C10]">
                   <div className="mb-2 text-xs font-semibold text-zinc-600 dark:text-zinc-300">

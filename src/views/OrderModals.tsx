@@ -25,7 +25,6 @@ import {
   formatRub,
   OP_TYPE_LABELS,
   ORDER_STATUS_META,
-  PRIORITY_LABELS,
 } from '../lib/api';
 import type {
   AuthUser,
@@ -69,7 +68,6 @@ export function CreateOrderModal({
   const [orderNumber, setOrderNumber] = useState('');
   const [scheduledAt, setScheduledAt] = useState(defaultDate ? `${defaultDate}T10:00` : '');
   const [unplanned, setUnplanned] = useState(false);
-  const [priority, setPriority] = useState<'low' | 'normal' | 'high' | 'urgent'>('normal');
   const [companyId, setCompanyId] = useState('');
   const [clientContactId, setClientContactId] = useState('');
   const [siteContactName, setSiteContactName] = useState('');
@@ -142,7 +140,6 @@ export function CreateOrderModal({
           orderNumber: orderNumber.trim() || undefined,
           title: title.trim() || undefined,
           scheduledAt: effectiveScheduled,
-          priority,
           companyId: companyId || null,
           clientContactId: clientContactId || null,
           siteContactName,
@@ -167,7 +164,6 @@ export function CreateOrderModal({
       }
       setTitle('');
       setOrderNumber('');
-      setPriority('normal');
       setCompanyId('');
       setClientContactId('');
       setSiteContactName('');
@@ -242,7 +238,7 @@ export function CreateOrderModal({
             </div>
           </div>
 
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-3">
             <div>
               <div className="mb-1 flex items-center justify-between">
                 <label className="text-xs font-semibold text-zinc-600 dark:text-zinc-300">
@@ -267,22 +263,6 @@ export function CreateOrderModal({
               />
             </div>
 
-            <div>
-              <label className="mb-1 block text-xs font-semibold text-zinc-600 dark:text-zinc-300">
-                Приоритет
-              </label>
-              <select
-                value={priority}
-                onChange={(e) => setPriority(e.target.value as any)}
-                className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3.5 py-2.5 text-sm outline-none dark:border-white/[0.12] dark:bg-[#0B0C10]"
-              >
-                {Object.entries(PRIORITY_LABELS).map(([k, v]) => (
-                  <option key={k} value={k}>
-                    {v}
-                  </option>
-                ))}
-              </select>
-            </div>
           </div>
 
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -524,8 +504,9 @@ export function CreateOrderModal({
               <div className="flex items-center gap-3">
                 <button
                   type="button"
+                  disabled={!materials.some(m => !plannedMaterials.some(p => p.materialId === m.id))}
                   onClick={() =>
-                    setPlannedMaterials((p) => [...p, { materialId: materials[0]?.id || '', qty: '1' }])
+                    setPlannedMaterials((p) => [...p, { materialId: materials.find(m => !p.some(item => item.materialId === m.id))?.id || '', qty: '1' }])
                   }
                   className="text-xs font-semibold text-[#0071E3] hover:underline dark:text-[#2997FF]"
                 >
@@ -557,8 +538,8 @@ export function CreateOrderModal({
                       className="flex-1 rounded-xl border border-black/[0.08] bg-white px-3 py-2 text-xs dark:border-white/[0.1] dark:bg-[#15171C]"
                     >
                       {materials.map((m) => (
-                        <option key={m.id} value={m.id}>
-                          {m.name} ({formatQty(m.quantity_milli)} {m.unit})
+                        <option key={m.id} value={m.id} disabled={m.id !== pm.materialId && plannedMaterials.some(item => item.materialId === m.id)}>
+                          {m.name} (свободно {formatQty(Math.max(0,m.quantity_milli-(m.reserved_milli||0)))} {m.unit})
                         </option>
                       ))}
                     </select>
@@ -599,7 +580,7 @@ export function CreateOrderModal({
                     >
                       {tools.map((t) => (
                         <option key={t.id} value={t.id}>
-                          {t.icon_emoji} {t.name} (свободно {t.available_qty})
+                          {t.icon_emoji} {t.name} (свободно {formatQty(Math.max(0,t.available_qty*1000-(t.reserved_milli||0)))})
                         </option>
                       ))}
                     </select>
@@ -666,6 +647,7 @@ interface OrderDetailModalProps {
   onOrderUpdated: (order: Order) => void;
   onOrderDeleted?: (orderId: string) => void;
   onWarehouseRefresh: () => void;
+  onDiscussOrder: (order: Order) => void;
 }
 
 export function OrderDetailModal({
@@ -681,6 +663,7 @@ export function OrderDetailModal({
   onOrderUpdated,
   onOrderDeleted,
   onWarehouseRefresh,
+  onDiscussOrder,
 }: OrderDetailModalProps) {
   const [tab, setTab] = useState<'info' | 'warehouse' | 'files'>('info');
   const [editOpen, setEditOpen] = useState(false);
@@ -707,6 +690,7 @@ export function OrderDetailModal({
   const [whToolInstanceId, setWhToolInstanceId] = useState('');
   const [whQty, setWhQty] = useState('1');
   const [whNote, setWhNote] = useState('');
+  const [reviewNote, setReviewNote] = useState('');
 
   // Wage input per assignee key `${visitId}:${userId}`
   const [wageInputs, setWageInputs] = useState<Record<string, string>>({});
@@ -714,7 +698,6 @@ export function OrderDetailModal({
   // Full order edit fields
   const [editTitle, setEditTitle] = useState('');
   const [editOrderNumber, setEditOrderNumber] = useState('');
-  const [editPriority, setEditPriority] = useState<'low' | 'normal' | 'high' | 'urgent'>('normal');
   const [editScheduled, setEditScheduled] = useState('');
   const [editCompanyId, setEditCompanyId] = useState('');
   const [editContactId, setEditContactId] = useState('');
@@ -751,7 +734,6 @@ export function OrderDetailModal({
       setOfflineNotice('');
       setEditTitle(order.title);
       setEditOrderNumber(order.order_number);
-      setEditPriority(order.priority);
       setEditScheduled(order.scheduled_at ? order.scheduled_at.slice(0, 16) : '');
       setEditCompanyId(order.company_id || '');
       setEditContactId(order.client_contact_id || '');
@@ -807,7 +789,6 @@ export function OrderDetailModal({
         body: {
           title: editTitle,
           orderNumber: editOrderNumber,
-          priority: editPriority,
           scheduledAt: editScheduled || null,
           companyId: editCompanyId || null,
           clientContactId: editContactId || null,
@@ -833,6 +814,7 @@ export function OrderDetailModal({
         setOfflineNotice('Изменения сохранены в офлайн-очередь и отправятся при появлении сети.');
       } else if (res.order) {
         onOrderUpdated(res.order);
+        onWarehouseRefresh();
         setEditOpen(false);
       }
     } catch (err) {
@@ -856,6 +838,7 @@ export function OrderDetailModal({
         setOfflineNotice('Отмена заказа сохранена в офлайн-очередь.');
       } else if (res.order) {
         onOrderUpdated(res.order);
+        onWarehouseRefresh();
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Ошибка отмены заказа');
@@ -1091,6 +1074,12 @@ export function OrderDetailModal({
 
   const handleWarehouseAction = async (e: React.FormEvent) => {
     e.preventDefault();
+    const material=materials.find(item=>item.id===whMatId), tool=tools.find(item=>item.id===whToolId);
+    const resource=order.plannedResources.find(item=>whMode==='material'?item.material_id===whMatId:item.tool_id===whToolId);
+    const reservedOther=Math.max(0,(whMode==='material'?material?.reserved_milli:tool?.reserved_milli)||0)-Number(resource?.reserved_remaining_milli||0);
+    const available=whMode==='material'?(material?.quantity_milli||0):(tool?.available_qty||0)*1000;
+    const confirmReserved=whOpType!=='return' && (reservedOther>available-Number(whQty||1)*1000 || !navigator.onLine);
+    if(confirmReserved && !window.confirm('Часть материала или инструмента может быть зарезервирована для других заказов. Продолжить?')) return;
     setBusy(true);
     setError('');
     setOfflineNotice('');
@@ -1107,6 +1096,7 @@ export function OrderDetailModal({
                   materialId: whMatId,
                   qtyMilli: Math.round(Number(whQty) * 1000),
                   note: whNote,
+                  confirmReserved,
                 }
               : {
                   itemType: 'tool',
@@ -1115,6 +1105,7 @@ export function OrderDetailModal({
                   toolInstanceId: whToolInstanceId || undefined,
                   qty: Math.round(Number(whQty || 1)),
                   note: whNote,
+                  confirmReserved,
                 },
           offlineLabel: `Склад по заказу ${order.order_number}`,
         }
@@ -1134,6 +1125,16 @@ export function OrderDetailModal({
     } finally {
       setBusy(false);
     }
+  };
+
+  const reviewCancellation = async (issueKey:'payments'|'accruals') => {
+    if(!reviewNote.trim()){setError('Опишите, как решён вопрос.');return;}
+    setBusy(true);setError('');
+    try {
+      const result=await apiRequest<{order:Order}>(`/api/orders/${order.id}/cancellation-review`,{method:'POST',body:{issueKey,note:reviewNote.trim()},skipOfflineQueue:true});
+      onOrderUpdated(result.order);setReviewNote('');
+    } catch(err) {setError(err instanceof Error?err.message:'Не удалось сохранить отметку');}
+    finally {setBusy(false);}
   };
 
   const handleFileUpload = async (
@@ -1185,10 +1186,6 @@ export function OrderDetailModal({
                 <span className={`h-2 w-2 rounded-full ${statusMeta.dotClass}`} />
                 {statusMeta.label}
               </span>
-              <span className="text-zinc-300 dark:text-zinc-600">·</span>
-              <span className="text-zinc-500 dark:text-zinc-400">
-                {PRIORITY_LABELS[order.priority] || order.priority}
-              </span>
             </div>
             <h2 className="mt-1 font-display text-lg font-bold tracking-tight sm:text-xl">
               {order.title}
@@ -1209,6 +1206,19 @@ export function OrderDetailModal({
         </div>
 
         {/* Section Tabs */}
+        {isAdmin && order.cancellationIssues && <div className="space-y-2 border-b border-amber-500/30 bg-amber-500/10 px-5 py-3 text-sm">
+          <div className="font-semibold">После отмены проверьте незакрытые вопросы</div>
+          {order.cancellationIssues.materials.map(item=><p key={item.id}>Материал на заказе: {item.name} — {formatQty(item.unconsumedIssuedMilli)} {item.unit}</p>)}
+          {order.cancellationIssues.tools.map(item=><p key={item.id}>Инструмент на заказе: {item.name} — {formatQty(item.qty_milli)} шт</p>)}
+          {(['payments','accruals'] as const).map(key=>{
+            const amount=key==='payments'?order.cancellationIssues!.paymentsKopecks:order.cancellationIssues!.accrualsKopecks;
+            const review=order.cancellationIssues!.reviews.find(item=>item.issue_key===key);
+            if(!amount) return null;
+            return <div key={key}><p>{key==='payments'?'Получено от клиента':'Начислено сотрудникам'}: {formatRub(amount)}. {review?`Проверено: ${review.note}`:'Требует проверки.'}</p>{!review && <button type="button" disabled={busy} className="text-blue-600 underline" onClick={()=>void reviewCancellation(key)}>Отметить решённым</button>}</div>;
+          })}
+          {((order.cancellationIssues.paymentsKopecks && !order.cancellationIssues.reviews.some(r=>r.issue_key==='payments')) || (order.cancellationIssues.accrualsKopecks && !order.cancellationIssues.reviews.some(r=>r.issue_key==='accruals'))) ? <input value={reviewNote} onChange={e=>setReviewNote(e.target.value)} placeholder="Как решили вопрос" className="w-full rounded-xl border border-zinc-400 bg-white p-2 dark:bg-[#0B0C10]" /> : null}
+          <p className="text-xs">Отметка фиксирует решение, но не выполняет выплату или возврат автоматически.</p>
+        </div>}
         <div className="flex gap-1 overflow-x-auto border-b border-black/[0.06] px-4 py-2 sm:px-6 dark:border-white/[0.08]">
           {[
             { id: 'info', label: 'Основное', icon: ClipboardList },
@@ -1330,6 +1340,7 @@ export function OrderDetailModal({
                 </div>
               )}
 
+              <button type="button" onClick={() => onDiscussOrder(order)} className="rounded-xl border border-black/[0.1] px-4 py-2 text-sm font-semibold text-[#0071E3] dark:border-white/[0.12] dark:text-[#71b5ff]">Перейти в чат</button>
               {canEditOrder && !editOpen && (
                 <button type="button" onClick={() => setEditOpen(true)} className="inline-flex items-center gap-2 rounded-xl border border-black/[0.1] px-4 py-2 text-sm font-semibold text-[#0071E3] dark:border-white/[0.12] dark:text-[#71b5ff]">
                   <Pencil className="h-4 w-4" /> Редактировать
@@ -1346,8 +1357,8 @@ export function OrderDetailModal({
                       <input id="edit-order-number" type="text" maxLength={40} value={editOrderNumber} onChange={e => setEditOrderNumber(e.target.value)}
                         className="w-full rounded-xl border border-black/[0.08] bg-white px-3 py-2 text-xs dark:border-white/[0.1] dark:bg-[#15171C]" />
                     </div>
-                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                      <div className="sm:col-span-2">
+                    <div>
+                      <div>
                         <label className="mb-1 block text-[11px] text-zinc-500">Название заказа</label>
                         <input
                           type="text"
@@ -1355,20 +1366,6 @@ export function OrderDetailModal({
                           onChange={(e) => setEditTitle(e.target.value)}
                           className="w-full rounded-xl border border-black/[0.08] bg-white px-3 py-2 text-xs dark:border-white/[0.1] dark:bg-[#15171C]"
                         />
-                      </div>
-                      <div>
-                        <label className="mb-1 block text-[11px] text-zinc-500">Приоритет</label>
-                        <select
-                          value={editPriority}
-                          onChange={(e) => setEditPriority(e.target.value as any)}
-                          className="w-full rounded-xl border border-black/[0.08] bg-white px-3 py-2 text-xs dark:border-white/[0.1] dark:bg-[#15171C]"
-                        >
-                          {Object.entries(PRIORITY_LABELS).map(([k, v]) => (
-                            <option key={k} value={k}>
-                              {v}
-                            </option>
-                          ))}
-                        </select>
                       </div>
                     </div>
 
@@ -1528,13 +1525,13 @@ export function OrderDetailModal({
                     <div className="space-y-2">
                       <div className="flex justify-between text-xs font-semibold">
                         <span>Запланированные материалы</span>
-                        <button type="button" disabled={!materials.length} onClick={() => setEditPlannedMaterials(previous => [...previous, { materialId: materials[0].id, qty: '1' }])}>Добавить</button>
+                        <button type="button" disabled={!materials.some(m => !editPlannedMaterials.some(p => p.materialId === m.id))} onClick={() => setEditPlannedMaterials(previous => [...previous, { materialId: materials.find(m => !previous.some(p => p.materialId === m.id))!.id, qty: '1' }])}>Добавить</button>
                       </div>
                       {editPlannedMaterials.map((planned, index) => (
                         <div key={index} className="flex flex-wrap gap-2">
                           <select aria-label="Материал" value={planned.materialId} onChange={event => setEditPlannedMaterials(previous => previous.map((item, i) => i === index ? { ...item, materialId: event.target.value } : item))} className="min-w-0 flex-1 rounded-xl border border-zinc-300 bg-transparent p-2 text-xs">
                             {!materials.some(material => material.id === planned.materialId) && <option value={planned.materialId}>Материал недоступен</option>}
-                            {materials.map(material => <option key={material.id} value={material.id}>{material.name} ({material.unit})</option>)}
+                            {materials.map(material => <option key={material.id} value={material.id} disabled={material.id !== planned.materialId && editPlannedMaterials.some(item => item.materialId === material.id)}>{material.name} ({material.unit})</option>)}
                           </select>
                           <input aria-label="Количество материала" type="number" min="0.001" step="0.001" value={planned.qty} onChange={event => setEditPlannedMaterials(previous => previous.map((item, i) => i === index ? { ...item, qty: event.target.value } : item))} className="w-24 rounded-xl border border-zinc-300 bg-transparent p-2 text-xs" />
                           <button type="button" onClick={() => setEditPlannedMaterials(previous => previous.filter((_, i) => i !== index))} className="text-xs text-red-600">Убрать</button>
@@ -2129,11 +2126,11 @@ export function OrderDetailModal({
               {order.plannedResources.length > 0 && (
                 <div className="rounded-2xl border border-black/[0.06] bg-[#F5F5F7]/70 p-4 dark:border-white/[0.08] dark:bg-[#0B0C10]">
                   <div className="mb-2 text-xs font-semibold text-zinc-500">
-                    Запланировано администратором (Сценарий А)
+                    Рекомендовано и зарезервировано для заказа
                   </div>
                   <div className="space-y-1.5 text-sm">
                     {order.plannedResources.map((pr) => (
-                      <div key={pr.id} className="flex items-center justify-between">
+                      <div key={pr.id} className="flex flex-wrap items-center justify-between gap-2">
                         <span>
                           {pr.item_type === 'material'
                             ? pr.material_name
@@ -2142,6 +2139,8 @@ export function OrderDetailModal({
                         <span className="font-semibold tabular-nums">
                           {formatQty(pr.planned_qty_milli)} {pr.material_unit || 'шт'}
                         </span>
+                        {(pr.shortage_milli||0)>0 && <span className="text-xs text-red-600">Нехватка: {formatQty(pr.shortage_milli)} {pr.material_unit || 'шт'}</span>}
+                        {canTakeWarehouse && <button type="button" className="text-xs font-semibold text-blue-600" onClick={()=>{setWhMode(pr.item_type);setWhOpType('issue');if(pr.material_id) setWhMatId(pr.material_id);if(pr.tool_id){setWhToolId(pr.tool_id);setWhToolInstanceId('');}setWhQty(String((pr.reserved_remaining_milli || pr.planned_qty_milli)/1000));}}>Отметить, что взяли</button>}
                       </div>
                     ))}
                   </div>

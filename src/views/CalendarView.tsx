@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ChevronLeft,
   ChevronRight,
@@ -20,11 +20,14 @@ import {
 } from '../lib/api';
 import type {
   AuthUser,
+  DirectoryUser,
   MaterialItem,
   Order,
   OrderVisit,
+  QuickTask,
   WorkshopShift,
 } from '../types/crm';
+import { QuickTasks } from './QuickTasks';
 
 const WEEKDAYS = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
 const MONTHS_RU = [
@@ -48,6 +51,9 @@ interface CalendarViewProps {
   shifts: WorkshopShift[];
   activeShift: WorkshopShift | null;
   materials: MaterialItem[];
+  directory: DirectoryUser[];
+  openTaskId: string | null;
+  onConsumeOpenTask: () => void;
   onOpenCreateOrder: (defaultDate?: string) => void;
   onOpenOrder: (order: Order) => void;
   onShiftChanged: () => void;
@@ -59,6 +65,9 @@ export function CalendarView({
   shifts,
   activeShift,
   materials,
+  directory,
+  openTaskId,
+  onConsumeOpenTask,
   onOpenCreateOrder,
   onOpenOrder,
   onShiftChanged,
@@ -67,13 +76,27 @@ export function CalendarView({
   const canCreateOrder = isAdmin || user.permissions['orders.create'];
   const canTakeWarehouse = isAdmin || user.permissions['warehouse.take'];
 
-  const todayKey = new Date().toISOString().slice(0, 10);
+  const localNow = new Date();
+  const todayKey = `${localNow.getFullYear()}-${String(localNow.getMonth()+1).padStart(2,'0')}-${String(localNow.getDate()).padStart(2,'0')}`;
   const [selectedDate, setSelectedDate] = useState(todayKey);
   const [cursorMonth, setCursorMonth] = useState(() => {
     const d = new Date();
     return new Date(d.getFullYear(), d.getMonth(), 1);
   });
   const [showUnplanned, setShowUnplanned] = useState(false);
+  const [quickTasks, setQuickTasks] = useState<QuickTask[]>([]);
+  const [taskLoadError, setTaskLoadError] = useState('');
+  const loadQuickTasks = useCallback(async () => {
+    try { const result=await apiRequest<{tasks:QuickTask[]}>('/api/quick-tasks'); setQuickTasks(result.tasks); setTaskLoadError(''); }
+    catch { setTaskLoadError('Не удалось загрузить быстрые задачи. Проверьте подключение.'); }
+  }, []);
+  useEffect(() => {
+    void loadQuickTasks();
+    const onSynced=() => void loadQuickTasks();
+    const timer=window.setInterval(() => { if(document.visibilityState === 'visible' && navigator.onLine) void loadQuickTasks(); }, 30000);
+    window.addEventListener('pv:offline-synced',onSynced);
+    return () => {window.clearInterval(timer);window.removeEventListener('pv:offline-synced',onSynced);};
+  }, [loadQuickTasks]);
 
   // Live timer for active shift
   const [elapsedText, setElapsedText] = useState('');
@@ -167,13 +190,14 @@ export function CalendarView({
       {
         entries: Array<{ order: Order; visit?: OrderVisit; time: string }>;
         shifts: WorkshopShift[];
+        tasks: QuickTask[];
       }
     >();
 
     const ensure = (k: string) => {
       let cell = map.get(k);
       if (!cell) {
-        cell = { entries: [], shifts: [] };
+        cell = { entries: [], shifts: [], tasks: [] };
         map.set(k, cell);
       }
       return cell;
@@ -201,13 +225,22 @@ export function CalendarView({
       if (k) ensure(k).shifts.push(sh);
     }
 
+    for (const task of quickTasks) ensure(task.due_date).tasks.push(task);
+
     return map;
-  }, [orders, shifts]);
+  }, [orders, shifts, quickTasks]);
 
   const unplannedOrders = useMemo(
     () => orders.filter((o) => !o.scheduled_at && o.visits.length === 0 && o.status !== 'cancelled'),
     [orders]
   );
+  const cancelledWithIssues = isAdmin ? orders.filter(order=>{
+    const issues=order.cancellationIssues;
+    if(order.status!=='cancelled' || !issues) return false;
+    return issues.materials.length>0 || issues.tools.length>0 ||
+      Boolean(issues.paymentsKopecks && !issues.reviews.some(review=>review.issue_key==='payments')) ||
+      Boolean(issues.accrualsKopecks && !issues.reviews.some(review=>review.issue_key==='accruals'));
+  }) : [];
 
   // Build calendar grid cells
   const calendarDays = useMemo(() => {
@@ -227,7 +260,7 @@ export function CalendarView({
     return cells;
   }, [cursorMonth]);
 
-  const selectedDayData = dayMap.get(selectedDate) || { entries: [], shifts: [] };
+  const selectedDayData = dayMap.get(selectedDate) || { entries: [], shifts: [], tasks: [] };
 
   return (
     <div className="space-y-5">
@@ -355,6 +388,7 @@ export function CalendarView({
               const info = dayMap.get(cell.dateKey);
               const orderCount = info?.entries.length || 0;
               const shiftCount = info?.shifts.length || 0;
+              const taskCount = info?.tasks.length || 0;
               const isSelected = cell.dateKey === selectedDate;
               const isToday = cell.dateKey === todayKey;
 
@@ -390,6 +424,7 @@ export function CalendarView({
                         }`}
                       />
                     )}
+                    {taskCount > 0 && <span className={`h-1.5 w-1.5 rounded-full ${isSelected ? 'bg-violet-200 dark:bg-violet-900' : 'bg-violet-500'}`} />}
                     {orderCount > 1 && (
                       <span className="text-[10px] font-bold tabular-nums opacity-85">
                         {orderCount}
@@ -402,7 +437,7 @@ export function CalendarView({
           </div>
 
           <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-black/[0.06] pt-3 text-xs text-zinc-500 dark:border-white/[0.08] dark:text-zinc-400">
-            <div className="flex items-center gap-4">
+            <div className="flex flex-wrap items-center gap-4">
               <span className="inline-flex items-center gap-1.5">
                 <span className="h-2 w-2 rounded-full bg-[#0071E3] dark:bg-[#2997FF]" />
                 Заказы и выезды
@@ -411,6 +446,7 @@ export function CalendarView({
                 <span className="h-2 w-2 rounded-full bg-emerald-500" />
                 Смены в цеху
               </span>
+              <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-violet-500" />Быстрые задачи</span>
             </div>
 
             <button
@@ -441,6 +477,11 @@ export function CalendarView({
               <span>+ Добавить заказ</span>
             </button>
           )}
+
+          {taskLoadError && <div role="alert" className="mb-3 text-sm text-red-600 dark:text-red-400">{taskLoadError}</div>}
+          <QuickTasks user={user} directory={directory} selectedDate={selectedDate} dayTasks={showUnplanned ? [] : selectedDayData.tasks} openTaskId={openTaskId} onConsumeOpenTask={onConsumeOpenTask} onRefresh={() => void loadQuickTasks()} />
+
+          {cancelledWithIssues.length>0 && <section className="mb-4 space-y-2 rounded-2xl border border-amber-500/30 bg-amber-500/10 p-3"><h3 className="text-sm font-semibold">Отменённые заказы: вопросы требуют решения</h3>{cancelledWithIssues.map(order=><button type="button" key={order.id} onClick={()=>onOpenOrder(order)} className="block w-full rounded-xl bg-white p-2 text-left text-sm dark:bg-[#15171C]">{order.order_number} · {order.title}</button>)}</section>}
 
           {showUnplanned ? (
             <div>
@@ -496,14 +537,14 @@ export function CalendarView({
                   })}
                 </h3>
                 <span className="text-xs text-zinc-400 tabular-nums">
-                  {selectedDayData.entries.length} выезд. · {selectedDayData.shifts.length} смен
+                  {selectedDayData.entries.length} выезд. · {selectedDayData.shifts.length} смен · {selectedDayData.tasks.length} задач
                 </span>
               </div>
 
               <div className="mt-3 space-y-2.5">
-                {selectedDayData.entries.length === 0 && selectedDayData.shifts.length === 0 && (
+                {selectedDayData.entries.length === 0 && selectedDayData.shifts.length === 0 && selectedDayData.tasks.length === 0 && (
                   <div className="rounded-2xl border border-dashed border-black/[0.1] p-8 text-center text-sm text-zinc-400 dark:border-white/[0.1]">
-                    На выбранный день заказов и смен нет
+                    На выбранный день заказов, смен и задач нет
                   </div>
                 )}
 

@@ -5,11 +5,12 @@ import express from 'express';
 import multer from 'multer';
 import type { DatabaseSync } from 'node:sqlite';
 import { withTransaction } from '../db.ts';
+import { reservationsFor } from '../services/reservations.ts';
 import { replaySafeMutations } from '../sync.ts';
 import { scheduleFileDeletion } from '../services/fileCleanup.ts';
 import { requireAdmin, requireAuth, type AuthedRequest } from '../middleware.ts';
 import { hasPermission, notifyAdmins, notifyUser, writeAuditLog } from '../security.ts';
-import { applyMaterialOperationTx, issueToolTx, returnToolTx } from '../services/warehouseService.ts';
+import { applyMaterialOperationTx, getOrderMaterialBalance, issueToolTx, returnToolTx } from '../services/warehouseService.ts';
 
 const ALLOWED_MIME = new Set([
   'image/jpeg',
@@ -155,7 +156,7 @@ function enrichOrder(db: DatabaseSync, orderRow: Record<string, unknown>, isAdmi
     .prepare("SELECT id, kind, original_name, mime_type, size_bytes, created_at FROM attachments WHERE entity_type = 'order' AND entity_id = ? ORDER BY created_at ASC")
     .all(orderId);
 
-  const plannedResources = db
+  const plannedRows = db
     .prepare(
       `SELECT opr.*, m.name as material_name, m.unit as material_unit, t.name as tool_name, t.icon_emoji as tool_emoji
        FROM order_planned_resources opr
@@ -163,7 +164,28 @@ function enrichOrder(db: DatabaseSync, orderRow: Record<string, unknown>, isAdmi
        LEFT JOIN tools t ON t.id = opr.tool_id
        WHERE opr.order_id = ?`
     )
-    .all(orderId);
+    .all(orderId) as Array<Record<string, any>>;
+  // Older versions allowed duplicate material rows. Present their sum without modifying history.
+  const plannedResources: Array<Record<string, any>> = [];
+  for (const row of plannedRows) {
+    const previous = row.item_type === 'material' && row.material_id
+      ? plannedResources.find(item => item.item_type === 'material' && item.material_id === row.material_id)
+      : undefined;
+    if (previous) previous.planned_qty_milli += row.planned_qty_milli;
+    else plannedResources.push({...row});
+  }
+  for (const row of plannedResources) {
+    const id=row.item_type==='material'?row.material_id:row.tool_id;
+    if(!id) continue;
+    const info=reservationsFor(db,row.item_type,id,orderId);
+    row.reserved_remaining_milli=info.byOrder.find(item=>item.orderId===orderId)?.remainingMilli || 0;
+    row.reserved_other_milli=info.otherMilli;
+    const stock=row.item_type==='material'
+      ? (db.prepare('SELECT quantity_milli AS qty FROM materials WHERE id=?').get(id) as {qty:number}|undefined)?.qty || 0
+      : ((db.prepare('SELECT available_qty AS qty FROM tools WHERE id=?').get(id) as {qty:number}|undefined)?.qty || 0)*1000;
+    row.available_for_order_milli=Math.max(0,stock-info.otherMilli);
+    row.shortage_milli=Math.max(0,row.reserved_remaining_milli-row.available_for_order_milli);
+  }
 
   const warehouseOps = db
     .prepare(
@@ -195,9 +217,9 @@ function enrichOrder(db: DatabaseSync, orderRow: Record<string, unknown>, isAdmi
 
     const matRow = db
       .prepare(
-        `SELECT COALESCE(SUM(CAST(ROUND(qty_milli * unit_cost_kopecks / 1000.0) AS INTEGER)), 0) as mat_cost
-         FROM warehouse_operations
-         WHERE order_id = ? AND item_type = 'material' AND op_type = 'consume'`
+        `SELECT COALESCE(SUM(COALESCE((SELECT CAST(ROUND(SUM(a.qty_milli * b.unit_cost_kopecks) / 1000.0) AS INTEGER) FROM material_batch_allocations a JOIN material_batches b ON b.id=a.batch_id WHERE a.operation_id=wo.id), CAST(ROUND(wo.qty_milli * wo.unit_cost_kopecks / 1000.0) AS INTEGER))), 0) as mat_cost
+         FROM warehouse_operations wo
+         WHERE wo.order_id = ? AND wo.item_type = 'material' AND wo.op_type = 'consume'`
       )
       .get(orderId) as { mat_cost: number };
     materialCostKopecks = Number(matRow.mat_cost || 0);
@@ -218,6 +240,14 @@ function enrichOrder(db: DatabaseSync, orderRow: Record<string, unknown>, isAdmi
   if (isAdmin) {
     base.paid_kopecks = paidKopecks;
     base.material_cost_kopecks = materialCostKopecks;
+    if(orderRow.status==='cancelled') {
+      const ids=db.prepare("SELECT DISTINCT material_id FROM warehouse_operations WHERE order_id=? AND item_type='material' AND material_id IS NOT NULL").all(orderId) as Array<{material_id:string}>;
+      const materials=ids.map(row=>({id:row.material_id,...getOrderMaterialBalance(db,orderId,row.material_id),...db.prepare('SELECT name,unit FROM materials WHERE id=?').get(row.material_id)})).filter(row=>row.unconsumedIssuedMilli>0);
+      const tools=db.prepare(`SELECT t.name,t.id, SUM(CASE WHEN w.op_type='issue' THEN w.qty_milli WHEN w.op_type='return' THEN -w.qty_milli ELSE 0 END) AS qty_milli FROM warehouse_operations w JOIN tools t ON t.id=w.tool_id WHERE w.order_id=? AND w.item_type='tool' GROUP BY t.id HAVING qty_milli>0`).all(orderId);
+      const accrued=(db.prepare("SELECT COALESCE(SUM(amount_kopecks),0) AS total FROM salary_accruals WHERE source_type='visit' AND source_id IN (SELECT id FROM order_visits WHERE order_id=?)").get(orderId) as {total:number}).total;
+      const reviews=(db.prepare('SELECT issue_key,reviewed_at,note,subject_total_kopecks FROM order_cancel_reviews WHERE order_id=?').all(orderId) as Array<{issue_key:string;subject_total_kopecks:number}>).filter(review=>review.subject_total_kopecks===(review.issue_key==='payments'?paidKopecks:accrued));
+      base.cancellationIssues={materials,tools,paymentsKopecks:paidKopecks,accrualsKopecks:accrued,reviews};
+    }
   } else {
     // Employee MUST NOT see total order price or company financial override
     delete base.price_kopecks;
@@ -331,6 +361,10 @@ export function createOrdersRouter(db: DatabaseSync): express.Router {
       plannedMaterials?: Array<{ materialId: string; qtyMilli: number }>;
       plannedTools?: Array<{ toolId: string; qty: number }>;
     };
+
+    if (Array.isArray(b.plannedMaterials) && new Set(b.plannedMaterials.map(item => item.materialId)).size !== b.plannedMaterials.length) {
+      res.status(400).json({ error: 'Каждый материал можно добавить в план только один раз.' }); return;
+    }
 
     const orderId = crypto.randomUUID();
     const now = new Date().toISOString();
@@ -516,12 +550,16 @@ export function createOrdersRouter(db: DatabaseSync): express.Router {
       !db.prepare('SELECT 1 FROM materials WHERE id = ?').get(item.materialId)))) {
       res.status(400).json({ error: 'Укажите существующий материал и положительное количество.' }); return;
     }
+    if (Array.isArray(b.plannedMaterials) && new Set(b.plannedMaterials.map((item: any) => item.materialId)).size !== b.plannedMaterials.length) {
+      res.status(400).json({ error: 'Каждый материал можно добавить в план только один раз.' }); return;
+    }
     if(b.plannedTools!==undefined && (!Array.isArray(b.plannedTools) || b.plannedTools.some((tool:any)=>
       !tool || typeof tool.toolId!=='string' || !Number.isSafeInteger(tool.qty) || tool.qty<1 || tool.qty>Math.floor(Number.MAX_SAFE_INTEGER/1000)))) {
       res.status(400).json({error:'Укажите инструмент и целое положительное количество.'});return;
     }
 
     withTransaction(db, () => {
+      if(nextStatus==='cancelled' && existing.status!=='cancelled') db.prepare('DELETE FROM order_cancel_reviews WHERE order_id=?').run(orderId);
       db.prepare(
         `UPDATE orders SET
           order_number = ?,
@@ -600,6 +638,21 @@ export function createOrdersRouter(db: DatabaseSync): express.Router {
 
     const updated = db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId) as Record<string, unknown>;
     res.json({ order: enrichOrder(db, updated, isAdmin, user.id, isAdmin || hasPermission(user, 'reports.view_others')) });
+  });
+
+  router.post('/:id/cancellation-review',requireAdmin,(req:AuthedRequest,res)=>{
+    const id=String(req.params.id),key=req.body?.issueKey,note=typeof req.body?.note==='string'?req.body.note.trim():'';
+    if(!['payments','accruals'].includes(key) || !note || note.length>1000){res.status(400).json({error:'Опишите решение вопроса (до 1000 символов).'});return;}
+    const order=db.prepare("SELECT * FROM orders WHERE id=? AND status='cancelled'").get(id) as Record<string,unknown>|undefined;
+    if(!order){res.status(404).json({error:'Отменённый заказ не найден.'});return;}
+    const total=key==='payments'
+      ? (db.prepare('SELECT COALESCE(SUM(amount_kopecks),0) AS total FROM client_payments WHERE order_id=?').get(id) as {total:number}).total
+      : (db.prepare("SELECT COALESCE(SUM(amount_kopecks),0) AS total FROM salary_accruals WHERE source_type='visit' AND source_id IN (SELECT id FROM order_visits WHERE order_id=?)").get(id) as {total:number}).total;
+    withTransaction(db,()=>{
+      db.prepare('INSERT INTO order_cancel_reviews(order_id,issue_key,reviewed_by,reviewed_at,note,subject_total_kopecks) VALUES (?,?,?,?,?,?) ON CONFLICT(order_id,issue_key) DO UPDATE SET reviewed_by=excluded.reviewed_by,reviewed_at=excluded.reviewed_at,note=excluded.note,subject_total_kopecks=excluded.subject_total_kopecks').run(id,key,req.authUser!.id,new Date().toISOString(),note,total);
+      writeAuditLog(db,req.authUser!.id,'order',id,'cancellation_reviewed',{issueKey:key,note});
+    });
+    res.json({order:enrichOrder(db,order,true,req.authUser!.id,true)});
   });
 
   // Admin reopen order with audit history
@@ -988,6 +1041,7 @@ export function createOrdersRouter(db: DatabaseSync): express.Router {
       qtyMilli?: number;
       visitId?: string;
       note?: string;
+      confirmReserved?: boolean;
     };
 
     try {
@@ -1004,6 +1058,7 @@ export function createOrdersRouter(db: DatabaseSync): express.Router {
             employeeUserId: user.id,
             actorUserId: user.id,
             note: b.note,
+            confirmReserved: b.confirmReserved===true,
           });
         }
 
@@ -1018,6 +1073,7 @@ export function createOrdersRouter(db: DatabaseSync): express.Router {
             holderUserId: user.id,
             actorUserId: user.id,
             note: b.note,
+            confirmReserved: b.confirmReserved===true,
           });
           return { operationId: opId, negativeStockWarning: false };
         }
