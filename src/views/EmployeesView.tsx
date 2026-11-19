@@ -52,7 +52,9 @@ export function EmployeesView({ onOpenOrderById }: EmployeesViewProps) {
   const [salaries, setSalaries] = useState<SalaryEmployeeSummary[]>([]);
   const [visitAssignments, setVisitAssignments] = useState<VisitAssignmentRow[]>([]);
   const [busy, setBusy] = useState(false);
+  const [showDismissed, setShowDismissed] = useState(false);
   const [error, setError] = useState('');
+  const [employmentNotice, setEmploymentNotice] = useState('');
 
   // Modals
   const [modal, setModal] = useState<'create' | 'edit' | 'payout' | 'adjust' | null>(null);
@@ -71,6 +73,7 @@ export function EmployeesView({ onOpenOrderById }: EmployeesViewProps) {
   const [fRole, setFRole] = useState<'admin' | 'employee'>('employee');
   const [fRateRub, setFRateRub] = useState('3000');
   const [fPerms, setFPerms] = useState<Record<string, boolean>>({});
+  const [fChatHistory, setFChatHistory] = useState(false);
 
   // Payout & Adjustment forms
   const [targetUserId, setTargetUserId] = useState('');
@@ -112,6 +115,7 @@ export function EmployeesView({ onOpenOrderById }: EmployeesViewProps) {
     setFRole('employee');
     setFRateRub('3000');
     setFPerms({ 'orders.edit_assigned': true, 'warehouse.take': true });
+    setFChatHistory(false);
     setError('');
     setModal('create');
   };
@@ -145,6 +149,7 @@ export function EmployeesView({ onOpenOrderById }: EmployeesViewProps) {
           role: fRole,
           shiftRateKopecks: Math.round(Number(fRateRub || 0) * 100),
           permissions: fPerms,
+          chatHistory: fChatHistory,
         },
       });
       setModal(null);
@@ -198,6 +203,20 @@ export function EmployeesView({ onOpenOrderById }: EmployeesViewProps) {
     } finally {
       setBusy(false);
     }
+  };
+
+  const handleEmployment = async (u: AuthUser) => {
+    const restoring = Boolean(u.dismissedAt);
+    if (!window.confirm(restoring
+      ? `Восстановить ${u.fullName}? Учётная запись снова сможет входить с прежним паролем и увидит напоминание сменить его.`
+      : `Переместить ${u.fullName} в уволенные? Доступ к системе будет закрыт, история и расчёты сохранятся.`)) return;
+    setBusy(true); setError(''); setEmploymentNotice('');
+    try {
+      const result = await apiRequest<{activeShift?:boolean}>(`/api/users/${u.id}/${restoring ? 'restore' : 'dismiss'}`, { method:'POST',body:{},skipOfflineQueue:true });
+      await loadAll();
+      if (result.activeShift) setEmploymentNotice(`У ${u.fullName} осталась незавершённая смена. Она не закрыта автоматически и требует отдельной сверки.`);
+    } catch (err) { setError(err instanceof Error ? err.message : 'Ошибка изменения статуса сотрудника'); }
+    finally { setBusy(false); }
   };
 
   const handleResetPassword = async (u: AuthUser) => {
@@ -292,6 +311,7 @@ export function EmployeesView({ onOpenOrderById }: EmployeesViewProps) {
           {error}
         </div>
       )}
+      {employmentNotice && <div role="status" className="rounded-xl border border-amber-500/25 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-300">{employmentNotice}</div>}
       {/* Top Action Bar */}
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-black/[0.06] bg-white p-4 shadow-[0_1px_3px_rgba(0,0,0,0.04)] dark:border-white/[0.08] dark:bg-[#15171C]">
         <div>
@@ -364,8 +384,12 @@ export function EmployeesView({ onOpenOrderById }: EmployeesViewProps) {
       )}
 
       {/* Employees Cards */}
+      <div className="flex flex-wrap gap-2" aria-label="Списки сотрудников">
+        <button type="button" onClick={() => setShowDismissed(false)} className={`rounded-xl px-4 py-2 text-sm font-semibold ${!showDismissed ? 'bg-[#0071E3] text-white' : 'bg-zinc-200 dark:bg-[#282b32]'}`}>Сотрудники ({users.filter(u => !u.dismissedAt).length})</button>
+        <button type="button" onClick={() => setShowDismissed(true)} className={`rounded-xl px-4 py-2 text-sm font-semibold ${showDismissed ? 'bg-[#0071E3] text-white' : 'bg-zinc-200 dark:bg-[#282b32]'}`}>Уволенные ({users.filter(u => u.dismissedAt).length})</button>
+      </div>
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        {users.map((u) => {
+        {users.filter(u => Boolean(u.dismissedAt) === showDismissed).map((u) => {
           const sal = salaries.find((s) => s.id === u.id);
           return (
             <div
@@ -378,7 +402,7 @@ export function EmployeesView({ onOpenOrderById }: EmployeesViewProps) {
                     <h3 className="font-display text-base font-bold">{u.fullName}</h3>
                     {!u.isActive && (
                       <span className="text-xs font-semibold text-red-600 dark:text-red-400">
-                        · Заблокирован
+                        · {u.dismissedAt ? 'Уволен' : 'Заблокирован'}
                       </span>
                     )}
                   </div>
@@ -413,14 +437,14 @@ export function EmployeesView({ onOpenOrderById }: EmployeesViewProps) {
               )}
 
               <div className="mt-4 flex flex-wrap gap-2">
-                <button
+                {!u.dismissedAt && <button
                   type="button"
                   onClick={() => openEdit(u)}
                   className="inline-flex items-center gap-1 rounded-xl border border-black/[0.08] px-3 py-1.5 text-xs font-semibold hover:bg-black/[0.03] dark:border-white/[0.1]"
                 >
                   <SlidersHorizontal className="h-3.5 w-3.5" />
                   <span>Права и ставка</span>
-                </button>
+                </button>}
                 <button
                   type="button"
                   onClick={() => {
@@ -446,15 +470,15 @@ export function EmployeesView({ onOpenOrderById }: EmployeesViewProps) {
                 >
                   Премия/штраф
                 </button>
-                <button
+                {!u.dismissedAt && <button
                   type="button"
                   onClick={() => void handleResetPassword(u)}
                   className="inline-flex items-center gap-1 rounded-xl bg-black/[0.04] px-3 py-1.5 text-xs font-semibold text-zinc-600 dark:bg-white/[0.06] dark:text-zinc-300"
                 >
                   <KeyRound className="h-3.5 w-3.5" />
                   <span>Сброс пароля</span>
-                </button>
-                <button
+                </button>}
+                {!u.dismissedAt && <button
                   type="button"
                   onClick={() => void handleToggleBlock(u)}
                   className={`inline-flex items-center gap-1 rounded-xl px-3 py-1.5 text-xs font-semibold ${
@@ -474,6 +498,9 @@ export function EmployeesView({ onOpenOrderById }: EmployeesViewProps) {
                       <span>Разблокировать</span>
                     </>
                   )}
+                </button>}
+                <button type="button" disabled={busy} onClick={() => void handleEmployment(u)} className={`rounded-xl px-3 py-1.5 text-xs font-semibold ${u.dismissedAt ? 'bg-emerald-500/10 text-emerald-600' : 'bg-red-500/10 text-red-600 dark:text-red-400'}`}>
+                  {u.dismissedAt ? 'Восстановить' : 'Уволить'}
                 </button>
               </div>
             </div>
@@ -499,6 +526,7 @@ export function EmployeesView({ onOpenOrderById }: EmployeesViewProps) {
             {error && <div className="mb-3 text-xs text-red-600">{error}</div>}
 
             <div className="space-y-3">
+              {modal === 'create' && <label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={fChatHistory} onChange={e => setFChatHistory(e.target.checked)} className="mt-1 accent-[#0071E3]" /><span>Разрешить видеть переписку до создания учётной записи<br /><span className="text-xs text-zinc-500">Выбор нельзя изменить после создания.</span></span></label>}
               <input
                 type="text"
                 required

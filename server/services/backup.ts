@@ -27,6 +27,17 @@ export async function createBackup(dbPath:string,uploadDir:string,destination:st
         fs.copyFileSync(path.join(uploadDir,name),target);
         files[`uploads/${name}`]=sha(target);
       }
+      if (snapshot.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='chat_files'").get()) {
+        const chatFiles = snapshot.prepare('SELECT DISTINCT stored_name FROM chat_files').all();
+        if (chatFiles.length) fs.mkdirSync(path.join(destination, 'uploads', 'chat'), { mode: 0o700 });
+        for (const row of chatFiles) {
+          const name = String(row.stored_name);
+          if (!/^[0-9a-f-]{36}$/.test(name)) throw new Error('Unsafe chat file name');
+          const target = path.join(destination, 'uploads', 'chat', name);
+          fs.copyFileSync(path.join(uploadDir, 'chat', name), target);
+          files[`uploads/chat/${name}`] = sha(target);
+        }
+      }
       fs.writeFileSync(path.join(destination,'manifest.json'),JSON.stringify({createdAt:new Date().toISOString(),files},null,2),{mode:0o600});
       fs.chmodSync(database,0o600);
     } finally {snapshot.close();}

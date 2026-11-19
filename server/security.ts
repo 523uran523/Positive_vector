@@ -39,6 +39,7 @@ export interface AuthUser {
   position: string;
   shiftRateKopecks: number;
   isActive: boolean;
+  dismissedAt: string | null;
   mustChangePassword: boolean;
   permissions: Record<PermissionKey, boolean>;
 }
@@ -78,7 +79,7 @@ export function hashSessionToken(token: string): string {
 export function loadUserWithPermissions(db: DatabaseSync, userId: string): AuthUser | null {
   const row = db
     .prepare(
-      `SELECT id, login, role, full_name, phone, position, shift_rate_kopecks, is_active, must_change_password
+      `SELECT id, login, role, full_name, phone, position, shift_rate_kopecks, is_active, must_change_password, dismissed_at
        FROM users WHERE id = ?`
     )
     .get(userId) as
@@ -92,6 +93,7 @@ export function loadUserWithPermissions(db: DatabaseSync, userId: string): AuthU
         shift_rate_kopecks: number;
         is_active: number;
         must_change_password: number;
+        dismissed_at: string | null;
       }
     | undefined;
 
@@ -122,6 +124,7 @@ export function loadUserWithPermissions(db: DatabaseSync, userId: string): AuthU
     position: row.position,
     shiftRateKopecks: row.shift_rate_kopecks,
     isActive: row.is_active === 1,
+    dismissedAt: row.dismissed_at,
     mustChangePassword: row.must_change_password === 1,
     permissions,
   };

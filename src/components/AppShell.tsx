@@ -5,6 +5,7 @@ import {
   CheckCheck,
   LogOut,
   Moon,
+  MessageCircle,
   Package,
   Settings,
   Sun,
@@ -22,6 +23,7 @@ import { useTheme } from './ThemeContext';
 
 export type NavTab =
   | 'calendar'
+  | 'chat'
   | 'reports'
   | 'clients'
   | 'warehouse'
@@ -37,6 +39,7 @@ interface AppShellProps {
   onSelectTab: (tab: NavTab) => void;
   notifications: NotificationItem[];
   unreadCount: number;
+  chatUnread: number;
   onMarkNotificationRead: (id: string) => void;
   onMarkAllNotificationsRead: () => void;
   onOpenOrderLink?: (orderId: string) => void;
@@ -51,6 +54,7 @@ export function AppShell({
   onSelectTab,
   notifications,
   unreadCount,
+  chatUnread,
   onMarkNotificationRead,
   onMarkAllNotificationsRead,
   onOpenOrderLink,
@@ -65,6 +69,7 @@ export function AppShell({
   const navItems: Array<{ id: NavTab; label: string; icon: React.ComponentType<{ className?: string }> }> = isAdmin
     ? [
         { id: 'calendar', label: 'Календарь', icon: CalendarDays },
+        { id: 'chat', label: 'Чат', icon: MessageCircle },
         { id: 'reports', label: 'Отчёты', icon: ClipboardCheck },
         { id: 'clients', label: 'Клиенты', icon: Building2 },
         { id: 'warehouse', label: 'Склад', icon: Package },
@@ -74,6 +79,7 @@ export function AppShell({
       ]
     : [
         { id: 'calendar', label: 'Календарь', icon: CalendarDays },
+        { id: 'chat', label: 'Чат', icon: MessageCircle },
         { id: 'reports', label: 'Отчёты', icon: ClipboardCheck },
         { id: 'salary', label: 'Зарплата', icon: Wallet },
         { id: 'settings', label: 'Настройки', icon: Settings },
@@ -116,6 +122,7 @@ export function AppShell({
               >
                 <Icon className="h-4.5 w-4.5 shrink-0" />
                 <span>{item.label}</span>
+                {item.id === 'chat' && chatUnread > 0 && <span className="rounded-full bg-red-600 px-1.5 text-xs text-white">{chatUnread}</span>}
               </button>
             );
           })}
@@ -276,11 +283,7 @@ export function AppShell({
 
       {/* Mobile Bottom Navigation Bar */}
       <nav className="pb-safe fixed inset-x-0 bottom-0 z-30 border-t border-black/[0.08] bg-white/90 backdrop-blur-xl md:hidden dark:border-white/[0.08] dark:bg-[#15171C]/92">
-        <div
-          className={`mx-auto grid h-16 max-w-lg ${
-            isAdmin ? 'grid-cols-7' : 'grid-cols-4'
-          }`}
-        >
+        <div className="mx-auto flex h-16 max-w-lg overflow-x-auto">
           {navItems.map((item) => {
             const Icon = item.icon;
             const active = activeTab === item.id;
@@ -289,7 +292,7 @@ export function AppShell({
                 key={item.id}
                 type="button"
                 onClick={() => onSelectTab(item.id)}
-                className={`flex min-h-[44px] flex-col items-center justify-center gap-0.5 px-1 text-[10px] font-medium transition ${
+                className={`flex min-h-[44px] min-w-[64px] flex-1 flex-col items-center justify-center gap-0.5 px-1 text-[10px] font-medium transition ${
                   active
                     ? 'text-[#0071E3] dark:text-[#2997FF]'
                     : 'text-zinc-500 dark:text-zinc-400'
@@ -297,6 +300,7 @@ export function AppShell({
               >
                 <Icon className="h-5 w-5" />
                 <span className="truncate max-w-full">{item.label}</span>
+                {item.id === 'chat' && chatUnread > 0 && <span className="absolute -translate-y-5 translate-x-3 rounded-full bg-red-600 px-1 text-[9px] text-white">{chatUnread}</span>}
               </button>
             );
           })}

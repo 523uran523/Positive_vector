@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { AppShell, type NavTab } from './components/AppShell';
 import { AuthScreen } from './components/AuthScreen';
+import { DismissedScreen } from './components/DismissedScreen';
 import { ThemeProvider } from './components/ThemeContext';
 import { apiRequest, setCsrfToken, establishOfflineSession, restoredOfflineSession, endOfflineSession } from './lib/api';
 import { setOfflineOwner, offlineOwner } from './lib/offlineDb';
@@ -27,12 +28,13 @@ import { CreateOrderModal, OrderDetailModal } from './views/OrderModals';
 import { ReportsView } from './views/ReportsView';
 import { SettingsView } from './views/SettingsView';
 import { WarehouseView } from './views/WarehouseView';
+import { ChatView } from './views/ChatView';
 
 function CRMWorkspace() {
   const [booting, setBooting] = useState(true);
   const [needsSetup, setNeedsSetup] = useState(false);
   const [user, setUser] = useState<AuthUser | null>(null);
-  const [activeTab, setActiveTab] = useState<NavTab>('calendar');
+  const [activeTab, setActiveTab] = useState<NavTab>(() => new URLSearchParams(window.location.search).has('chat') ? 'chat' : 'calendar');
 
   // Shared CRM data
   const [settings, setSettings] = useState<AppSettings>({});
@@ -47,6 +49,14 @@ function CRMWorkspace() {
   const [activeShift, setActiveShift] = useState<WorkshopShift | null>(null);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
+  const [chatUnread, setChatUnread] = useState(0);
+  const refreshChatUnread = useCallback(() => { void apiRequest<{ unreadCount: number }>('/api/chat/rooms', { useCache: false }).then(r => setChatUnread(r.unreadCount)).catch(() => {}); }, []);
+  useEffect(() => {
+    if (!user || user.dismissedAt) { setChatUnread(0); return; }
+    refreshChatUnread();
+    const timer = window.setInterval(refreshChatUnread, 10000);
+    return () => clearInterval(timer);
+  }, [user?.id, user?.dismissedAt, refreshChatUnread]);
 
   // Modals
   const [createOrderDate, setCreateOrderDate] = useState<string | undefined>(undefined);
@@ -149,13 +159,13 @@ function CRMWorkspace() {
   }, [clearWorkspace]);
 
   useEffect(() => {
-    if (user) {
+    if (user && !user.dismissedAt) {
       void loadWorkspaceData(user);
     }
   }, [user, loadWorkspaceData]);
 
   useEffect(() => {
-    if (!user) return;
+    if (!user || user.dismissedAt) return;
     const onSynced = () => void loadWorkspaceData(user);
     window.addEventListener('pv:offline-synced', onSynced);
     return () => window.removeEventListener('pv:offline-synced', onSynced);
@@ -163,7 +173,7 @@ function CRMWorkspace() {
 
   // Periodic notifications refresh every 30s while authenticated
   useEffect(() => {
-    if (!user) return;
+    if (!user || user.dismissedAt) return;
     const id = setInterval(() => {
       void apiRequest<{ notifications: NotificationItem[]; unreadCount: number }>(
         '/api/notifications'
@@ -250,6 +260,8 @@ function CRMWorkspace() {
     );
   }
 
+  if (user.dismissedAt) return <DismissedScreen onLogout={() => void handleLogout()} />;
+
   const isAdmin = user.role === 'admin';
   const empCanClients = !isAdmin && (user.permissions['clients.view_all'] || user.permissions['orders.create']);
   const empCanWarehouse =
@@ -266,6 +278,7 @@ function CRMWorkspace() {
       onSelectTab={setActiveTab}
       notifications={notifications}
       unreadCount={unreadCount}
+      chatUnread={chatUnread}
       onMarkNotificationRead={(id) => void handleMarkNotifRead(id)}
       onMarkAllNotificationsRead={() => void handleMarkAllRead()}
       onOpenOrderLink={(id) => void handleOpenOrderById(id)}
@@ -330,6 +343,8 @@ function CRMWorkspace() {
         />
       )}
 
+      {activeTab === 'chat' && <ChatView user={user} onRead={refreshChatUnread} />}
+
       {activeTab === 'reports' && (
         <ReportsView
           user={user}
@@ -388,6 +403,7 @@ function CRMWorkspace() {
           onUserUpdated={setUser}
           onSettingsUpdated={() => void loadWorkspaceData(user)}
           onLogout={() => void handleLogout()}
+          onManageEmployees={() => setActiveTab('employees')}
         />
       )}
 

@@ -503,6 +503,19 @@ export function createOrdersRouter(db: DatabaseSync): express.Router {
         ? b.priority
         : String(existing.priority);
     const priceValue = Number(b.priceKopecks);
+    if (b.orderNumber !== undefined) {
+      if (typeof b.orderNumber !== 'string' || !b.orderNumber.trim() || b.orderNumber.trim().length > 40) {
+        res.status(400).json({ error: 'Укажите номер заказа длиной до 40 символов.' }); return;
+      }
+      if (db.prepare('SELECT 1 FROM orders WHERE order_number = ? AND id != ?').get(b.orderNumber.trim(), orderId)) {
+        res.status(409).json({ error: 'Заказ с таким номером уже существует. Укажите другой номер.' }); return;
+      }
+    }
+    if (b.plannedMaterials !== undefined && (!Array.isArray(b.plannedMaterials) || b.plannedMaterials.some((item: any) =>
+      !item || typeof item.materialId !== 'string' || !Number.isSafeInteger(item.qtyMilli) || item.qtyMilli < 1 ||
+      !db.prepare('SELECT 1 FROM materials WHERE id = ?').get(item.materialId)))) {
+      res.status(400).json({ error: 'Укажите существующий материал и положительное количество.' }); return;
+    }
     if(b.plannedTools!==undefined && (!Array.isArray(b.plannedTools) || b.plannedTools.some((tool:any)=>
       !tool || typeof tool.toolId!=='string' || !Number.isSafeInteger(tool.qty) || tool.qty<1 || tool.qty>Math.floor(Number.MAX_SAFE_INTEGER/1000)))) {
       res.status(400).json({error:'Укажите инструмент и целое положительное количество.'});return;
@@ -511,6 +524,7 @@ export function createOrdersRouter(db: DatabaseSync): express.Router {
     withTransaction(db, () => {
       db.prepare(
         `UPDATE orders SET
+          order_number = ?,
           title = ?,
           status = ?,
           priority = ?,
@@ -527,6 +541,7 @@ export function createOrdersRouter(db: DatabaseSync): express.Router {
           updated_at = ?
          WHERE id = ?`
       ).run(
+        typeof b.orderNumber === 'string' ? b.orderNumber.trim() : existing.order_number,
         typeof b.title === 'string' && b.title.trim() ? b.title.trim() : existing.title,
         nextStatus,
         nextPriority,
@@ -569,6 +584,13 @@ export function createOrdersRouter(db: DatabaseSync): express.Router {
         db.prepare("DELETE FROM order_planned_resources WHERE order_id=? AND item_type='tool'").run(orderId);
         for(const tool of b.plannedTools as Array<{toolId:string;qty:number}>) {
           db.prepare("INSERT INTO order_planned_resources(id,order_id,item_type,tool_id,planned_qty_milli,created_by,created_at) VALUES (?,?,'tool',?,?,?,?)").run(crypto.randomUUID(),orderId,tool.toolId,tool.qty*1000,user.id,now);
+        }
+      }
+      if (Array.isArray(b.plannedMaterials)) {
+        db.prepare("DELETE FROM order_planned_resources WHERE order_id = ? AND item_type = 'material'").run(orderId);
+        for (const item of b.plannedMaterials as Array<{ materialId: string; qtyMilli: number }>) {
+          db.prepare("INSERT INTO order_planned_resources(id, order_id, item_type, material_id, planned_qty_milli, created_by, created_at) VALUES (?, ?, 'material', ?, ?, ?, ?)")
+            .run(crypto.randomUUID(), orderId, item.materialId, item.qtyMilli, user.id, now);
         }
       }
       writeAuditLog(db, user.id, 'order', orderId, 'order_updated', {

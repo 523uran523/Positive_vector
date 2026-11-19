@@ -12,6 +12,7 @@ export const SESSION_COOKIE_NAME = 'pv_session';
 
 export interface AuthedRequest extends express.Request {
   authUser?: AuthUser;
+  dismissedUser?: AuthUser;
   csrfToken?: string;
   sessionId?: string;
 }
@@ -36,13 +37,17 @@ export function attachAuth(db: DatabaseSync): express.RequestHandler {
             req.authUser = user;
             req.csrfToken = sessionRow.csrf_token;
             req.sessionId = sessionRow.id;
+          } else if (user?.dismissedAt) {
+            req.dismissedUser = user;
+            req.csrfToken = sessionRow.csrf_token;
+            req.sessionId = sessionRow.id;
           }
         }
       }
     }
 
     if (
-      req.authUser &&
+      (req.authUser || req.dismissedUser) &&
       ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method.toUpperCase()) &&
       !req.path.startsWith('/api/auth/login') &&
       !req.path.startsWith('/api/auth/setup')
@@ -52,6 +57,12 @@ export function attachAuth(db: DatabaseSync): express.RequestHandler {
         res.status(403).json({ error: 'Недействительный CSRF-токен. Обновите страницу.' });
         return;
       }
+    }
+
+    if (req.dismissedUser && req.path.startsWith('/api/') &&
+        !['/api/auth/status', '/api/auth/me', '/api/auth/logout', '/api/auth/dismissal-balance'].includes(req.path)) {
+      res.status(403).json({ error: 'Доступна только информация об остатке к выплате.' });
+      return;
     }
 
     next();

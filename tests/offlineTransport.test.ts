@@ -54,6 +54,12 @@ test('offline transport: lost response, 401, account isolation, conflicts and st
   assert.equal((await api.listQueuedMutations())[0].status,'failed');
   await api.endOfflineSession();api.setOfflineOwner('bob');
   assert.equal((await api.listQueuedMutations()).length,0);assert.equal(await api.cacheGet('/api/orders/one'),null);
+  await api.establishOfflineSession(user('bob'));
+  await api.enqueueMutation({id:crypto.randomUUID(),url:'/api/orders',method:'POST',label:'pending'});
+  await api.establishOfflineSession({...user('bob'),dismissedAt:new Date().toISOString()});
+  assert.equal(api.offlineOwner(),null); assert.equal(api.restoredOfflineSession(),null);
+  api.setOfflineOwner('bob'); assert.equal((await api.listQueuedMutations()).length,1,'dismissal does not erase queued work');
+  await api.endOfflineSession(); api.setOfflineOwner('bob');
   api.failStorage();let contacted=false;globals.fetch=async()=>{contacted=true;return Response.json({});};
   await assert.rejects(api.apiRequest('/api/orders',{method:'POST',body:{}}),/quota exceeded/);
   assert.equal(contacted,false);

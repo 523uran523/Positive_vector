@@ -22,6 +22,10 @@ import {
 const MAX_LOGIN_ATTEMPTS = 5;
 const LOCKOUT_MS = 5 * 60_000;
 
+function publicSessionUser(user: NonNullable<AuthedRequest['dismissedUser']>) {
+  return { ...user, role: 'employee' as const, phone: '', position: '', shiftRateKopecks: 0, permissions: {} };
+}
+
 export function createAuthRouter(db: DatabaseSync): express.Router {
   const router = express.Router();
 
@@ -30,8 +34,8 @@ export function createAuthRouter(db: DatabaseSync): express.Router {
     const needsSetup = countRow.cnt === 0;
     res.json({
       needsSetup,
-      authenticated: Boolean(req.authUser),
-      user: req.authUser || null,
+      authenticated: Boolean(req.authUser || req.dismissedUser),
+      user: req.authUser || (req.dismissedUser ? publicSessionUser(req.dismissedUser) : null),
       csrfToken: req.csrfToken || null,
     });
   });
@@ -144,8 +148,8 @@ export function createAuthRouter(db: DatabaseSync): express.Router {
     }
 
     const userRow = db
-      .prepare('SELECT id, password_hash, is_active FROM users WHERE login = ? COLLATE NOCASE')
-      .get(cleanLogin) as { id: string; password_hash: string; is_active: number } | undefined;
+      .prepare('SELECT id, password_hash, is_active, dismissed_at FROM users WHERE login = ? COLLATE NOCASE')
+      .get(cleanLogin) as { id: string; password_hash: string; is_active: number; dismissed_at: string | null } | undefined;
 
     const valid = userRow ? verifyPassword(rawPassword, userRow.password_hash) : false;
     if (!userRow || !valid) {
@@ -164,7 +168,7 @@ export function createAuthRouter(db: DatabaseSync): express.Router {
       return;
     }
 
-    if (userRow.is_active !== 1) {
+    if (userRow.is_active !== 1 && !userRow.dismissed_at) {
       res.status(403).json({ error: 'Аккаунт заблокирован администратором.' });
       return;
     }
@@ -180,7 +184,7 @@ export function createAuthRouter(db: DatabaseSync): express.Router {
     res.cookie(SESSION_COOKIE_NAME, session.rawToken, getCookieOptions());
 
     const user = loadUserWithPermissions(db, userRow.id);
-    res.json({ user, csrfToken: session.csrfToken });
+    res.json({ user: user && user.dismissedAt ? publicSessionUser(user) : user, csrfToken: session.csrfToken });
   });
 
   router.post('/logout', (req: AuthedRequest, res) => {
@@ -191,8 +195,21 @@ export function createAuthRouter(db: DatabaseSync): express.Router {
     res.json({ ok: true });
   });
 
-  router.get('/me', requireAuth, (req: AuthedRequest, res) => {
-    res.json({ user: req.authUser, csrfToken: req.csrfToken });
+  router.get('/me', (req: AuthedRequest, res) => {
+    if (!req.authUser && !req.dismissedUser) { res.status(401).json({error:'Требуется авторизация.'}); return; }
+    res.json({ user: req.authUser || publicSessionUser(req.dismissedUser!), csrfToken: req.csrfToken });
+  });
+
+  router.get('/dismissal-balance', (req: AuthedRequest, res) => {
+    if (!req.dismissedUser) { res.status(403).json({error:'Раздел доступен только уволенному сотруднику.'}); return; }
+    const row = db.prepare(`SELECT
+      COALESCE((SELECT SUM(amount_kopecks) FROM salary_accruals WHERE user_id=?),0) AS accrued,
+      COALESCE((SELECT SUM(amount_kopecks) FROM salary_payouts WHERE user_id=?),0) AS paid`).get(req.dismissedUser.id,req.dismissedUser.id) as {accrued:number;paid:number};
+    const pending = db.prepare(`SELECT
+      EXISTS(SELECT 1 FROM workshop_shifts WHERE user_id=? AND status='active') OR
+      EXISTS(SELECT 1 FROM visit_assignees va JOIN order_visits ov ON ov.id=va.visit_id
+        WHERE va.user_id=? AND va.wage_kopecks IS NULL AND ov.status!='cancelled') AS pending`).get(req.dismissedUser.id,req.dismissedUser.id) as {pending:number};
+    res.json({remainingKopecks: row.accrued-row.paid, settlementPending: Boolean(pending.pending)});
   });
 
   // Employee or admin self-service profile / login / password update

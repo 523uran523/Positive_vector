@@ -16,6 +16,7 @@ import { createSettingsRouter } from './routes/settings.ts';
 import { createShiftsRouter } from './routes/shifts.ts';
 import { createUsersRouter } from './routes/users.ts';
 import { createWarehouseRouter } from './routes/warehouse.ts';
+import { createChatRouter } from './routes/chat.ts';
 
 export function createApp(db: DatabaseSync): express.Express {
   const app = express();
@@ -27,7 +28,7 @@ export function createApp(db: DatabaseSync): express.Express {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(self), geolocation=()');
     res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
     if (process.env.NODE_ENV === 'production') {
       res.setHeader(
@@ -41,6 +42,7 @@ export function createApp(db: DatabaseSync): express.Express {
           "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
           "font-src 'self' https://fonts.gstatic.com data:",
           "img-src 'self' data: blob:",
+          "media-src 'self' blob:",
           "connect-src 'self'",
           "worker-src 'self' blob:",
           "manifest-src 'self'",
@@ -77,6 +79,7 @@ export function createApp(db: DatabaseSync): express.Express {
   });
 
   app.use('/api/auth', createAuthRouter(db));
+  app.use('/api/chat', createChatRouter(db));
   app.use('/api/users', createUsersRouter(db));
   app.use('/api/clients', createClientsRouter(db));
   app.use('/api/reports', createReportsRouter(db));

@@ -67,6 +67,7 @@ export function createUsersRouter(db: DatabaseSync): express.Router {
       shiftRateKopecks,
       password,
       permissions,
+      chatHistory,
     } = req.body as {
       login?: string;
       fullName?: string;
@@ -76,6 +77,7 @@ export function createUsersRouter(db: DatabaseSync): express.Router {
       shiftRateKopecks?: number;
       password?: string;
       permissions?: Partial<Record<PermissionKey, boolean>>;
+      chatHistory?: boolean;
     };
 
     const cleanLogin = (login || '').trim();
@@ -126,6 +128,11 @@ export function createUsersRouter(db: DatabaseSync): express.Router {
         now
       );
 
+      if (chatHistory === false) {
+        const last = db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM chat_messages').get() as { seq: number };
+        db.prepare('UPDATE users SET chat_history_after = ? WHERE id = ?').run(last.seq, userId);
+      }
+
       const permStmt = db.prepare(
         'INSERT INTO user_permissions (user_id, permission_key, granted) VALUES (?, ?, ?)'
       );
@@ -147,12 +154,44 @@ export function createUsersRouter(db: DatabaseSync): express.Router {
     });
   });
 
+  router.post('/:id/dismiss', requireAdmin, (req: AuthedRequest, res) => {
+    const targetId = String(req.params.id), existing = loadUserWithPermissions(db, targetId);
+    if (!existing) { res.status(404).json({error:'Сотрудник не найден.'}); return; }
+    if (existing.dismissedAt) { res.json({user:existing}); return; }
+    if (existing.role === 'admin' && existing.isActive) {
+      const other = db.prepare("SELECT COUNT(*) AS n FROM users WHERE role='admin' AND is_active=1 AND id!=?").get(targetId) as {n:number};
+      if (!other.n) { res.status(400).json({error:'Нельзя уволить единственного активного администратора.'}); return; }
+    }
+    withTransaction(db, () => {
+      const now = new Date().toISOString();
+      db.prepare('UPDATE users SET is_active=0,dismissed_at=?,updated_at=? WHERE id=?').run(now,now,targetId);
+      db.prepare('DELETE FROM sessions WHERE user_id=?').run(targetId);
+      writeAuditLog(db,req.authUser!.id,'user',targetId,'user_dismissed',{});
+    });
+    const activeShift = Boolean(db.prepare("SELECT 1 FROM workshop_shifts WHERE user_id=? AND status='active'").get(targetId));
+    res.json({user:loadUserWithPermissions(db,targetId),activeShift});
+  });
+  router.post('/:id/restore', requireAdmin, (req: AuthedRequest, res) => {
+    const targetId = String(req.params.id), existing = loadUserWithPermissions(db,targetId);
+    if (!existing) { res.status(404).json({error:'Сотрудник не найден.'}); return; }
+    if (!existing.dismissedAt) { res.status(400).json({error:'Сотрудник не находится в разделе уволенных.'}); return; }
+    withTransaction(db, () => {
+      db.prepare('UPDATE users SET is_active=1,dismissed_at=NULL,must_change_password=1,updated_at=? WHERE id=?').run(new Date().toISOString(),targetId);
+      db.prepare('DELETE FROM sessions WHERE user_id=?').run(targetId);
+      writeAuditLog(db,req.authUser!.id,'user',targetId,'user_restored',{});
+    });
+    res.json({user:loadUserWithPermissions(db,targetId)});
+  });
+
   router.patch('/:id', requireAdmin, (req: AuthedRequest, res) => {
     const targetId = String(req.params.id);
     const existing = loadUserWithPermissions(db, targetId);
     if (!existing) {
       res.status(404).json({ error: 'Сотрудник не найден.' });
       return;
+    }
+    if (existing.dismissedAt && req.body.isActive === true) {
+      res.status(400).json({error:'Сначала восстановите уволенного сотрудника.'}); return;
     }
 
     const {

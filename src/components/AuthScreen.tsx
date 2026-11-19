@@ -196,7 +196,7 @@ export function AuthScreen({ needsSetup, onAuthenticated }: AuthScreenProps) {
                   required
                   value={fullName}
                   onChange={(e) => setFullName(e.target.value)}
-                  className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3.5 py-3 text-sm outline-none transition focus:border-[#0071E3] focus:bg-white dark:border-white/[0.12] dark:bg-[#0B0C10] dark:focus:border-[#2997FF]"
+                  className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3.5 py-3 text-sm outline-none transition focus:border-[#0071E3] focus:bg-white dark:focus:bg-[#0B0C10] dark:border-white/[0.12] dark:bg-[#0B0C10] dark:focus:border-[#2997FF]"
                   placeholder="Иванов Сергей Петрович"
                 />
               </div>
@@ -211,7 +211,7 @@ export function AuthScreen({ needsSetup, onAuthenticated }: AuthScreenProps) {
                   minLength={3}
                   value={login}
                   onChange={(e) => setLogin(e.target.value)}
-                  className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3.5 py-3 text-sm outline-none transition focus:border-[#0071E3] focus:bg-white dark:border-white/[0.12] dark:bg-[#0B0C10] dark:focus:border-[#2997FF]"
+                  className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3.5 py-3 text-sm outline-none transition focus:border-[#0071E3] focus:bg-white dark:focus:bg-[#0B0C10] dark:border-white/[0.12] dark:bg-[#0B0C10] dark:focus:border-[#2997FF]"
                   placeholder="admin"
                 />
               </div>
@@ -238,7 +238,7 @@ export function AuthScreen({ needsSetup, onAuthenticated }: AuthScreenProps) {
                       minLength={6}
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
-                      className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3.5 py-3 pr-11 text-sm outline-none transition focus:border-[#0071E3] focus:bg-white dark:border-white/[0.12] dark:bg-[#0B0C10] dark:focus:border-[#2997FF]"
+                      className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3.5 py-3 pr-11 text-sm outline-none transition focus:border-[#0071E3] focus:bg-white dark:focus:bg-[#0B0C10] dark:border-white/[0.12] dark:bg-[#0B0C10] dark:focus:border-[#2997FF]"
                       placeholder="••••••"
                     />
                     <button
@@ -288,7 +288,7 @@ export function AuthScreen({ needsSetup, onAuthenticated }: AuthScreenProps) {
                   autoComplete="username"
                   value={login}
                   onChange={(e) => setLogin(e.target.value)}
-                  className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3.5 py-3 text-sm outline-none transition focus:border-[#0071E3] focus:bg-white dark:border-white/[0.12] dark:bg-[#0B0C10] dark:focus:border-[#2997FF]"
+                  className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3.5 py-3 text-sm outline-none transition focus:border-[#0071E3] focus:bg-white dark:focus:bg-[#0B0C10] dark:border-white/[0.12] dark:bg-[#0B0C10] dark:focus:border-[#2997FF]"
                   placeholder="Введите логин"
                 />
               </div>
@@ -304,7 +304,7 @@ export function AuthScreen({ needsSetup, onAuthenticated }: AuthScreenProps) {
                     autoComplete="current-password"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
-                    className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3.5 py-3 pr-11 text-sm outline-none transition focus:border-[#0071E3] focus:bg-white dark:border-white/[0.12] dark:bg-[#0B0C10] dark:focus:border-[#2997FF]"
+                    className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3.5 py-3 pr-11 text-sm outline-none transition focus:border-[#0071E3] focus:bg-white dark:focus:bg-[#0B0C10] dark:border-white/[0.12] dark:bg-[#0B0C10] dark:focus:border-[#2997FF]"
                     placeholder="Введите пароль"
                   />
                   <button

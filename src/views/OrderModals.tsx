@@ -165,6 +165,21 @@ export function CreateOrderModal({
       if (res.order) {
         onCreated(res.order);
       }
+      setTitle('');
+      setOrderNumber('');
+      setPriority('normal');
+      setCompanyId('');
+      setClientContactId('');
+      setSiteContactName('');
+      setSiteContactPhone('');
+      setAddress('');
+      setDescription('');
+      setPriceRub('');
+      setSelectedTags([]);
+      setAssigneeIds([]);
+      setVisits([]);
+      setPlannedMaterials([]);
+      setPlannedTools([]);
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Ошибка создания заказа');
@@ -210,7 +225,7 @@ export function CreateOrderModal({
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
                 placeholder="Например: Фасадный баннер 5×3 м"
-                className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3.5 py-2.5 text-sm outline-none focus:border-[#0071E3] focus:bg-white dark:border-white/[0.12] dark:bg-[#0B0C10]"
+                className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3.5 py-2.5 text-sm outline-none focus:border-[#0071E3] focus:bg-white dark:focus:bg-[#0B0C10] dark:border-white/[0.12] dark:bg-[#0B0C10]"
               />
             </div>
             <div>
@@ -222,7 +237,7 @@ export function CreateOrderModal({
                 value={orderNumber}
                 onChange={(e) => setOrderNumber(e.target.value)}
                 placeholder="ПВ-26..."
-                className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3.5 py-2.5 text-sm font-mono outline-none focus:border-[#0071E3] focus:bg-white dark:border-white/[0.12] dark:bg-[#0B0C10]"
+                className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3.5 py-2.5 text-sm font-mono outline-none focus:border-[#0071E3] focus:bg-white dark:focus:bg-[#0B0C10] dark:border-white/[0.12] dark:bg-[#0B0C10]"
               />
             </div>
           </div>
@@ -310,6 +325,11 @@ export function CreateOrderModal({
             </div>
           </div>
 
+          <details className="rounded-2xl border border-black/[0.08] dark:border-white/[0.12]">
+            <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-[#0071E3] dark:text-[#71b5ff]">
+              Дополнительно: объект, стоимость, исполнители и ресурсы
+            </summary>
+            <div className="space-y-4 px-4 pb-4">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div>
               <label className="mb-1 block text-xs font-semibold text-zinc-600 dark:text-zinc-300">
@@ -608,6 +628,9 @@ export function CreateOrderModal({
             )}
           </div>
 
+            </div>
+          </details>
+
           <div className="flex gap-2.5 pt-2">
             <button
               type="button"
@@ -659,7 +682,8 @@ export function OrderDetailModal({
   onOrderDeleted,
   onWarehouseRefresh,
 }: OrderDetailModalProps) {
-  const [tab, setTab] = useState<'info' | 'visits' | 'warehouse' | 'files'>('visits');
+  const [tab, setTab] = useState<'info' | 'warehouse' | 'files'>('info');
+  const [editOpen, setEditOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
@@ -689,6 +713,7 @@ export function OrderDetailModal({
 
   // Full order edit fields
   const [editTitle, setEditTitle] = useState('');
+  const [editOrderNumber, setEditOrderNumber] = useState('');
   const [editPriority, setEditPriority] = useState<'low' | 'normal' | 'high' | 'urgent'>('normal');
   const [editScheduled, setEditScheduled] = useState('');
   const [editCompanyId, setEditCompanyId] = useState('');
@@ -701,6 +726,7 @@ export function OrderDetailModal({
   const [editTags, setEditTags] = useState<string[]>([]);
   const [editAssigneeIds, setEditAssigneeIds] = useState<string[]>([]);
   const [editPlannedTools, setEditPlannedTools] = useState<Array<{toolId:string;qty:string}>>([]);
+  const [editPlannedMaterials, setEditPlannedMaterials] = useState<Array<{ materialId: string; qty: string }>>([]);
   const [editPriceRub, setEditPriceRub] = useState('');
   const [editStatus, setEditStatus] = useState('');
 
@@ -720,9 +746,11 @@ export function OrderDetailModal({
 
   useEffect(() => {
     if (order) {
+      setEditOpen(false);
       setError('');
       setOfflineNotice('');
       setEditTitle(order.title);
+      setEditOrderNumber(order.order_number);
       setEditPriority(order.priority);
       setEditScheduled(order.scheduled_at ? order.scheduled_at.slice(0, 16) : '');
       setEditCompanyId(order.company_id || '');
@@ -735,6 +763,7 @@ export function OrderDetailModal({
       setEditTags(order.tags || []);
       setEditAssigneeIds(order.assignees.map((a) => a.id));
       setEditPlannedTools(order.plannedResources.filter(resource=>resource.item_type==='tool' && resource.tool_id).map(resource=>({toolId:resource.tool_id!,qty:String(resource.planned_qty_milli/1000)})));
+      setEditPlannedMaterials(order.plannedResources.filter(resource => resource.item_type === 'material' && resource.material_id).map(resource => ({ materialId: resource.material_id!, qty: String(resource.planned_qty_milli / 1000) })));
       setEditPriceRub(
         order.price_kopecks !== undefined ? String(Math.round(order.price_kopecks / 100)) : ''
       );
@@ -746,6 +775,10 @@ export function OrderDetailModal({
       setConfirmDeleteReportId(null);
     }
   }, [order]);
+
+  useEffect(() => {
+    setTab('info');
+  }, [order?.id]);
 
   useEffect(() => {
     if (!whMatId && materials[0]) setWhMatId(materials[0].id);
@@ -773,6 +806,7 @@ export function OrderDetailModal({
         method: 'PATCH',
         body: {
           title: editTitle,
+          orderNumber: editOrderNumber,
           priority: editPriority,
           scheduledAt: editScheduled || null,
           companyId: editCompanyId || null,
@@ -783,6 +817,7 @@ export function OrderDetailModal({
           description: editDescription,
           comments: editComments,
           tags: editTags,
+          plannedMaterials: editPlannedMaterials.map(item => ({ materialId: item.materialId, qtyMilli: Math.round(Number(item.qty) * 1000) })),
             plannedTools: editPlannedTools.map(tool=>({toolId:tool.toolId,qty:Number(tool.qty)})),
           ...(isAdmin
             ? {
@@ -798,6 +833,7 @@ export function OrderDetailModal({
         setOfflineNotice('Изменения сохранены в офлайн-очередь и отправятся при появлении сети.');
       } else if (res.order) {
         onOrderUpdated(res.order);
+        setEditOpen(false);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Ошибка обновления');
@@ -1173,11 +1209,10 @@ export function OrderDetailModal({
         </div>
 
         {/* Section Tabs */}
-        <div className="flex gap-1 border-b border-black/[0.06] px-4 py-2 sm:px-6 dark:border-white/[0.08]">
+        <div className="flex gap-1 overflow-x-auto border-b border-black/[0.06] px-4 py-2 sm:px-6 dark:border-white/[0.08]">
           {[
-            { id: 'visits', label: `Выезды (${order.visits.length})`, icon: Calendar },
-            { id: 'info', label: 'Детали', icon: ClipboardList },
-            { id: 'warehouse', label: 'Склад', icon: Package },
+            { id: 'info', label: 'Основное', icon: ClipboardList },
+            { id: 'warehouse', label: 'Материалы и инструменты', icon: Package },
             { id: 'files', label: `Файлы (${order.attachments.length})`, icon: ImageIcon },
           ].map((t) => {
             const Icon = t.icon;
@@ -1187,7 +1222,7 @@ export function OrderDetailModal({
                 key={t.id}
                 type="button"
                 onClick={() => setTab(t.id as any)}
-                className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition ${
+                className={`inline-flex shrink-0 items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition ${
                   active
                     ? 'bg-[#0071E3] text-white dark:bg-[#2997FF] dark:text-[#0B0C10]'
                     : 'text-zinc-600 hover:bg-black/[0.04] dark:text-zinc-400 dark:hover:bg-white/[0.06]'
@@ -1215,6 +1250,10 @@ export function OrderDetailModal({
 
           {tab === 'info' && (
             <div className="space-y-4">
+              <div className="flex items-center gap-2 text-sm text-zinc-700 dark:text-zinc-200">
+                <Calendar className="h-4 w-4 text-[#0071E3] dark:text-[#71b5ff]" />
+                <span>{order.scheduled_at ? formatDateTimeRu(order.scheduled_at) : 'Дата не запланирована'}</span>
+              </div>
               {isAdmin && (
                 <div className="grid grid-cols-3 gap-3 rounded-2xl border border-black/[0.06] bg-[#F5F5F7] p-4 dark:border-white/[0.08] dark:bg-[#0B0C10]">
                   <div>
@@ -1291,12 +1330,22 @@ export function OrderDetailModal({
                 </div>
               )}
 
-              {canEditOrder && (
+              {canEditOrder && !editOpen && (
+                <button type="button" onClick={() => setEditOpen(true)} className="inline-flex items-center gap-2 rounded-xl border border-black/[0.1] px-4 py-2 text-sm font-semibold text-[#0071E3] dark:border-white/[0.12] dark:text-[#71b5ff]">
+                  <Pencil className="h-4 w-4" /> Редактировать
+                </button>
+              )}
+              {canEditOrder && editOpen && (
                 <div className="rounded-2xl border border-black/[0.06] bg-[#F5F5F7]/70 p-4 dark:border-white/[0.08] dark:bg-[#0B0C10]">
                   <div className="mb-3 text-xs font-semibold text-zinc-600 dark:text-zinc-300">
                     Редактирование заказа
                   </div>
                   <div className="space-y-3">
+                    <div>
+                      <label className="mb-1 block text-[11px] text-zinc-500" htmlFor="edit-order-number">Номер заказа</label>
+                      <input id="edit-order-number" type="text" maxLength={40} value={editOrderNumber} onChange={e => setEditOrderNumber(e.target.value)}
+                        className="w-full rounded-xl border border-black/[0.08] bg-white px-3 py-2 text-xs dark:border-white/[0.1] dark:bg-[#15171C]" />
+                    </div>
                     <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                       <div className="sm:col-span-2">
                         <label className="mb-1 block text-[11px] text-zinc-500">Название заказа</label>
@@ -1478,6 +1527,22 @@ export function OrderDetailModal({
 
                     <div className="space-y-2">
                       <div className="flex justify-between text-xs font-semibold">
+                        <span>Запланированные материалы</span>
+                        <button type="button" disabled={!materials.length} onClick={() => setEditPlannedMaterials(previous => [...previous, { materialId: materials[0].id, qty: '1' }])}>Добавить</button>
+                      </div>
+                      {editPlannedMaterials.map((planned, index) => (
+                        <div key={index} className="flex flex-wrap gap-2">
+                          <select aria-label="Материал" value={planned.materialId} onChange={event => setEditPlannedMaterials(previous => previous.map((item, i) => i === index ? { ...item, materialId: event.target.value } : item))} className="min-w-0 flex-1 rounded-xl border border-zinc-300 bg-transparent p-2 text-xs">
+                            {!materials.some(material => material.id === planned.materialId) && <option value={planned.materialId}>Материал недоступен</option>}
+                            {materials.map(material => <option key={material.id} value={material.id}>{material.name} ({material.unit})</option>)}
+                          </select>
+                          <input aria-label="Количество материала" type="number" min="0.001" step="0.001" value={planned.qty} onChange={event => setEditPlannedMaterials(previous => previous.map((item, i) => i === index ? { ...item, qty: event.target.value } : item))} className="w-24 rounded-xl border border-zinc-300 bg-transparent p-2 text-xs" />
+                          <button type="button" onClick={() => setEditPlannedMaterials(previous => previous.filter((_, i) => i !== index))} className="text-xs text-red-600">Убрать</button>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="space-y-2">
+                      <div className="flex justify-between text-xs font-semibold">
                         <span>Запланированные инструменты</span>
                         <button type="button" disabled={!tools.length} onClick={()=>setEditPlannedTools(previous=>[...previous,{toolId:tools[0]?.id||'',qty:'1'}])}>Добавить</button>
                       </div>
@@ -1621,8 +1686,9 @@ export function OrderDetailModal({
             </div>
           )}
 
-          {tab === 'visits' && (
+          {tab === 'info' && (
             <div className="space-y-4">
+              <h3 className="font-display text-base font-bold">Выезды ({order.visits.length})</h3>
               {order.visits.length === 0 ? (
                 <div className="rounded-2xl border border-dashed border-black/[0.12] p-6 text-center text-sm text-zinc-500 dark:border-white/[0.12]">
                   У этого заказа пока нет запланированных выездов. Добавьте первый выезд ниже.
@@ -2251,6 +2317,17 @@ export function OrderDetailModal({
 
           {tab === 'files' && (
             <div className="space-y-4">
+              {order.visits.some(visit => visit.attachments.length > 0) && (
+                <div className="rounded-2xl border border-black/[0.08] p-4 dark:border-white/[0.1]">
+                  <h3 className="mb-2 text-sm font-semibold">Файлы выездов и отчётности</h3>
+                  {order.visits.filter(visit => visit.attachments.length > 0).map(visit => (
+                    <div key={visit.id} className="mt-3 space-y-1">
+                      <div className="text-xs font-semibold text-zinc-500">{visit.title}</div>
+                      {visit.attachments.map(file => <a key={file.id} href={`/api/orders/attachments/${file.id}`} target="_blank" rel="noreferrer" className="block break-all text-sm text-[#0071E3] underline dark:text-[#71b5ff]">{file.original_name}</a>)}
+                    </div>
+                  ))}
+                </div>
+              )}
               <div className="flex flex-wrap gap-2">
                 <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl bg-[#0071E3] px-4 py-2.5 text-xs font-semibold text-white dark:bg-[#2997FF] dark:text-[#0B0C10]">
                   <ImageIcon className="h-4 w-4" />

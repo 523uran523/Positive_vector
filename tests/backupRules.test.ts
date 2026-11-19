@@ -15,6 +15,11 @@ test('WAL backup restores database and attachment checksums, file cleanup surviv
     const filename='00000000-0000-0000-0000-000000000001.txt';
     fs.writeFileSync(path.join(uploads,filename),'recover me');
     db.prepare("INSERT INTO attachments(id,entity_type,entity_id,kind,original_name,stored_name,mime_type,size_bytes,created_at) VALUES ('a','order','unused','document','a.txt',?,'text/plain',10,?)").run(filename,new Date().toISOString());
+    const chatName='00000000-0000-0000-0000-000000000002';
+    fs.mkdirSync(path.join(uploads,'chat')); fs.writeFileSync(path.join(uploads,'chat',chatName),'chat attachment');
+    const now=new Date().toISOString();
+    db.prepare("INSERT INTO users(id,login,password_hash,role,full_name,created_at,updated_at) VALUES ('chat-user','chatuser','hash','employee','Chat user',?,?)").run(now,now);
+    db.prepare("INSERT INTO chat_files(id,stored_name,original_name,mime_type,size_bytes,owner_id,kind,created_at) VALUES ('chat-file',?,'voice.webm','audio/webm',15,'chat-user','message',?)").run(chatName,now);
     const backup=path.join(root,'snapshot');
     await createBackup(dbPath,uploads,backup);verifyBackup(backup);
     assert.equal(fs.existsSync(path.join(uploads,'.backup-lock')),false);
@@ -22,6 +27,7 @@ test('WAL backup restores database and attachment checksums, file cleanup surviv
     const clone=openDatabase(path.join(restored,'pozitiv_vektor.sqlite'));
     try {assert.equal(clone.prepare('SELECT COUNT(*) AS n FROM attachments').get()?.n,1);}finally{clone.close();}
     assert.equal(fs.readFileSync(path.join(restored,'uploads',filename),'utf8'),'recover me');
+    assert.equal(fs.readFileSync(path.join(restored,'uploads','chat',chatName),'utf8'),'chat attachment');
     assert.throws(()=>restoreBackup(backup,restored));
     fs.writeFileSync(path.join(backup,'uploads',filename),'tampered');assert.throws(()=>verifyBackup(backup));
     scheduleFileDeletion(db,filename);cleanDeletedFiles(db,uploads);

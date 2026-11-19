@@ -9,6 +9,12 @@ if(typeof window!=='undefined') window.addEventListener('storage',event=>{
 });
 export function setCsrfToken(value:string|null) {csrf=value;}
 export async function establishOfflineSession(user:AuthUser) {
+  if (user.dismissedAt) {
+    setOfflineOwner(null); versions.clear(); results.clear();
+    // Preserve queued operations for explicit recovery, but do not restore the old workspace offline.
+    localStorage.removeItem(SESSION_KEY); localStorage.removeItem('pv-local-logout');
+    return;
+  }
   const previous=offlineOwner() || localStorage.getItem('pv-queue-owner');
   if(previous!==user.id) { setOfflineOwner(null);versions.clear();results.clear();await clearOfflineStore(); }
   setOfflineOwner(user.id);

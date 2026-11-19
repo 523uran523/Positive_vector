@@ -11,6 +11,7 @@ interface SettingsViewProps {
   onUserUpdated: (user: AuthUser) => void;
   onSettingsUpdated: () => void;
   onLogout: () => void;
+  onManageEmployees: () => void;
 }
 
 export function SettingsView({
@@ -19,6 +20,7 @@ export function SettingsView({
   onUserUpdated,
   onSettingsUpdated,
   onLogout,
+  onManageEmployees,
 }: SettingsViewProps) {
   const isAdmin = user.role === 'admin';
   const { theme, setTheme } = useTheme();
@@ -32,6 +34,7 @@ export function SettingsView({
   const [profileMsg, setProfileMsg] = useState('');
   const [profileErr, setProfileErr] = useState('');
   const [busy, setBusy] = useState(false);
+  const [avatarVersion, setAvatarVersion] = useState(0);
 
   // Admin global settings
   const [companyName, setCompanyName] = useState(settings.company_name || 'Позитив Вектор');
@@ -141,6 +144,10 @@ export function SettingsView({
 
   return (
     <div className="space-y-5">
+      {isAdmin && <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-black/[0.06] bg-white p-5 dark:border-white/[0.08] dark:bg-[#15171C]">
+        <div><h3 className="font-display text-base font-bold">Учётные записи сотрудников</h3><p className="text-xs text-zinc-500">Добавление администраторов, увольнение и восстановление сотрудников</p></div>
+        <button type="button" onClick={onManageEmployees} className="rounded-xl border border-black/[0.1] px-4 py-2 text-sm font-semibold dark:border-white/[0.12]">Управлять сотрудниками</button>
+      </div>}
       {/* Appearance & PWA */}
       <div className="rounded-2xl border border-black/[0.06] bg-white p-5 dark:border-white/[0.08] dark:bg-[#15171C]">
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -192,6 +199,12 @@ export function SettingsView({
         className="rounded-2xl border border-black/[0.06] bg-white p-5 dark:border-white/[0.08] dark:bg-[#15171C]"
       >
         <h3 className="font-display text-base font-bold">Мой аккаунт и пароль</h3>
+        <div className="mt-3 flex items-center gap-3">
+          <img src={`/api/chat/avatar/${user.id}?v=${avatarVersion}`} alt="Аватар профиля" onError={e => { e.currentTarget.style.visibility = 'hidden'; }} onLoad={e => { e.currentTarget.style.visibility = 'visible'; }} className="h-14 w-14 rounded-full bg-zinc-300 object-cover" />
+          <label className="cursor-pointer rounded-xl border border-zinc-400 px-3 py-2 text-sm">Выбрать аватар
+            <input type="file" accept="image/jpeg,image/png,image/gif,image/webp" className="hidden" onChange={e => { const file = e.target.files?.[0]; if (!file) return; const form = new FormData(); form.set('file', file); void apiRequest('/api/chat/avatar', { method: 'POST', formData: form, skipOfflineQueue: true }).then(() => { setAvatarVersion(Date.now()); setProfileMsg('Аватар обновлён.'); }).catch(err => setProfileErr(err.message)); e.target.value = ''; }} />
+          </label>
+        </div>
         {profileErr && <div className="mt-2 text-xs text-red-600">{profileErr}</div>}
         {profileMsg && <div className="mt-2 text-xs text-emerald-600">{profileMsg}</div>}
 

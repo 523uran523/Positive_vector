@@ -235,7 +235,7 @@ export function ReportsView({ user, directory, onOpenOrderById }: ReportsViewPro
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Поиск по заказу, работам..."
-              className="w-full rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 py-2 pl-8 pr-3 text-xs outline-none focus:border-[#0071E3] focus:bg-white dark:border-white/[0.1] dark:bg-[#0B0C10]"
+              className="w-full rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 py-2 pl-8 pr-3 text-xs outline-none focus:border-[#0071E3] focus:bg-white dark:focus:bg-[#0B0C10] dark:border-white/[0.1] dark:bg-[#0B0C10]"
             />
           </div>
         </div>

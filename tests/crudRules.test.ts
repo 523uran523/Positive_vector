@@ -4,6 +4,37 @@ import { createApp } from '../server/app.ts';
 import { openDatabase, runMigrations } from '../server/db.ts';
 import { inject } from './httpHarness.ts';
 
+test('draft order can be completed later without changing stock or other planned resources', async () => {
+  const db = openDatabase(':memory:'); runMigrations(db); const app = createApp(db);
+  let cookie = '', csrf = '';
+  async function call(method: string, url: string, body?: unknown) {
+    const res = await inject(app, method, url, body === undefined ? undefined : JSON.stringify(body), { 'Content-Type': 'application/json', Cookie: cookie, 'X-CSRF-Token': csrf });
+    return { res, status: res.status, data: await res.json() };
+  }
+  try {
+    const setup = await call('POST', '/api/auth/setup', { login: 'admin', password: 'long-password-123', fullName: 'Admin' });
+    cookie = setup.res.headers.get('set-cookie')!.split(';')[0]; csrf = setup.data.csrfToken;
+    const material = await call('POST', '/api/warehouse/materials', { name: 'Баннер', unit: 'м', initialQtyMilli: 10000 });
+    const tool = await call('POST', '/api/warehouse/tools', { name: 'Дрель', trackingMode: 'quantity', totalQty: 3 });
+    const draft = await call('POST', '/api/orders', { title: 'Черновик', scheduledAt: '2026-11-20T10:00' });
+    const id = draft.data.order.id, materialId = material.data.material.id, toolId = tool.data.tool.id;
+    const saved = await call('PATCH', `/api/orders/${id}`, { orderNumber: 'ПВ-TEST', scheduledAt: '2026-11-20T14:30', plannedMaterials: [{ materialId, qtyMilli: 1250 }], plannedTools: [{ toolId, qty: 2 }] });
+    assert.equal(saved.status, 200);
+    assert.equal(saved.data.order.order_number, 'ПВ-TEST');
+    assert.equal(saved.data.order.scheduled_at, '2026-11-20T14:30');
+    assert.equal(saved.data.order.plannedResources.find((x: any) => x.item_type === 'material').planned_qty_milli, 1250);
+    assert.equal(saved.data.order.plannedResources.find((x: any) => x.item_type === 'tool').planned_qty_milli, 2000);
+    assert.equal(db.prepare('SELECT quantity_milli FROM materials WHERE id=?').get(materialId)?.quantity_milli, 10000);
+    const invalid = await call('PATCH', `/api/orders/${id}`, { orderNumber: 'changed', plannedMaterials: [{ materialId, qtyMilli: 0 }] });
+    assert.equal(invalid.status, 400);
+    assert.equal(db.prepare('SELECT order_number FROM orders WHERE id=?').get(id)?.order_number, 'ПВ-TEST');
+    const second = await call('POST', '/api/orders', { title: 'Другой заказ' });
+    assert.equal((await call('PATCH', `/api/orders/${second.data.order.id}`, { orderNumber: 'ПВ-TEST' })).status, 409);
+    const later = await call('PATCH', `/api/orders/${id}`, { title: 'Дополнен' });
+    assert.equal(later.data.order.plannedResources.length, 2);
+  } finally { db.close(); }
+});
+
 test('financial corrections recalculate totals and protect history; deleting last report reopens work',async()=>{
   const db=openDatabase(':memory:');runMigrations(db);const app=createApp(db);
   let cookie='',csrf='';

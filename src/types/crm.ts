@@ -19,6 +19,7 @@ export interface AuthUser {
   position: string;
   shiftRateKopecks: number;
   isActive: boolean;
+  dismissedAt: string | null;
   mustChangePassword: boolean;
   permissions: Record<PermissionKey, boolean>;
 }
