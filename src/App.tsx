@@ -205,12 +205,13 @@ function CRMWorkspace() {
   };
 
   const handleOpenOrderById = async (orderId: string) => {
-    const existing = orders.find((o) => o.id === orderId);
-    if (existing) { setSelectedOrder(existing); return; }
     try {
-      const res = await apiRequest<{ order: Order }>(`/api/orders/${orderId}`);
+      const res = await apiRequest<{ order: Order }>(`/api/orders/${orderId}`, { useCache: false });
       setSelectedOrder(res.order);
-    } catch { /* The order is unavailable. */ }
+    } catch {
+      const existing = orders.find((o) => o.id === orderId);
+      if (existing) setSelectedOrder(existing);
+    }
   };
 
   const handleOpenChatOrder = async (orderId: string) => {

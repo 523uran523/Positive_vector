@@ -209,11 +209,21 @@ function enrichOrder(db: DatabaseSync, orderRow: Record<string, unknown>, isAdmi
 
   let paidKopecks: number | undefined;
   let materialCostKopecks: number | undefined;
+  let payments: Array<Record<string, unknown>> = [];
   if (isAdmin) {
     const payRow = db
       .prepare('SELECT COALESCE(SUM(amount_kopecks), 0) as paid FROM client_payments WHERE order_id = ?')
       .get(orderId) as { paid: number };
     paidKopecks = Number(payRow.paid || 0);
+
+    payments = db
+      .prepare(
+        `SELECT id, amount_kopecks, payment_type, payment_method, paid_at, comment, created_at
+         FROM client_payments
+         WHERE order_id = ?
+         ORDER BY paid_at DESC, created_at DESC`
+      )
+      .all(orderId) as Array<Record<string, unknown>>;
 
     const matRow = db
       .prepare(
@@ -238,8 +248,13 @@ function enrichOrder(db: DatabaseSync, orderRow: Record<string, unknown>, isAdmi
   };
 
   if (isAdmin) {
+    base.payments = payments;
     base.paid_kopecks = paidKopecks;
-    base.material_cost_kopecks = materialCostKopecks;
+    base.auto_material_cost_kopecks = materialCostKopecks;
+    base.material_cost_kopecks =
+      orderRow.cost_override_kopecks !== null && orderRow.cost_override_kopecks !== undefined
+        ? Number(orderRow.cost_override_kopecks)
+        : materialCostKopecks;
     if(orderRow.status==='cancelled') {
       const ids=db.prepare("SELECT DISTINCT material_id FROM warehouse_operations WHERE order_id=? AND item_type='material' AND material_id IS NOT NULL").all(orderId) as Array<{material_id:string}>;
       const materials=ids.map(row=>({id:row.material_id,...getOrderMaterialBalance(db,orderId,row.material_id),...db.prepare('SELECT name,unit FROM materials WHERE id=?').get(row.material_id)})).filter(row=>row.unconsumedIssuedMilli>0);

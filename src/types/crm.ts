@@ -183,6 +183,16 @@ export interface WarehouseOp {
   order_number?: string;
 }
 
+export interface OrderPayment {
+  id: string;
+  amount_kopecks: number;
+  payment_type: 'advance' | 'partial' | 'full';
+  payment_method: 'cash' | 'bank' | 'card';
+  paid_at: string;
+  comment: string;
+  created_at?: string;
+}
+
 export interface Order {
   id: string;
   order_number: string;
@@ -200,6 +210,8 @@ export interface Order {
   cost_override_kopecks?: number | null;
   paid_kopecks?: number;
   material_cost_kopecks?: number;
+  auto_material_cost_kopecks?: number;
+  payments?: OrderPayment[];
   tags: string[];
   comments: string;
   created_at: string;

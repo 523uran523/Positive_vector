@@ -87,6 +87,12 @@ export const PAYMENT_METHOD_LABELS: Record<string, string> = {
   card: 'Карта / перевод',
 };
 
+export const PAYMENT_TYPE_LABELS: Record<string, string> = {
+  advance: 'Аванс',
+  partial: 'Доплата',
+  full: 'Полный расчёт',
+};
+
 export const OP_TYPE_LABELS: Record<string, string> = {
   receipt: 'Поступление',
   issue: 'Взято на объект',

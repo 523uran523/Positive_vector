@@ -124,7 +124,15 @@ export function createFinanceRouter(db: DatabaseSync): express.Router {
       };
     });
 
-    const totalClientDebtKopecks = orderBreakdown.reduce((s, o) => s + o.debt_kopecks, 0);
+    // Debt is a running total across all active orders: a month filter must not hide old debt.
+    const totalClientDebtKopecks = orders
+      .filter((o) => o.status !== 'cancelled')
+      .reduce(
+        (s, o) =>
+          s + Math.max(0, Number(o.price_kopecks || 0) - (paidByOrder.get(o.id) || 0)),
+        0
+      );
+    const periodClientDebtKopecks = orderBreakdown.reduce((s, o) => s + o.debt_kopecks, 0);
 
     // Separate accrued salary obligations vs actual cash salary payouts (no double counting!)
     const accruedSalariesKopecks = filteredAccruals.reduce((s, a) => s + a.amount_kopecks, 0);
@@ -162,9 +170,18 @@ export function createFinanceRouter(db: DatabaseSync): express.Router {
       .filter((op) => !op.order_id)
       .reduce((s, op) => s + op.cost_kopecks, 0);
 
+    // Materials consumed on cancelled orders are real costs even though their revenue is gone.
+    const cancelledOrderIds = new Set(
+      orders.filter((o) => o.status === 'cancelled').map((o) => o.id)
+    );
+    const cancelledOrderMaterialCostKopecks = filteredConsumes
+      .filter((op) => op.order_id && cancelledOrderIds.has(op.order_id))
+      .reduce((s, op) => s + op.cost_kopecks, 0);
+
     const totalCostOfGoodsAndOps =
       effectiveTotalMaterialCost +
       workshopMaterialCost +
+      cancelledOrderMaterialCostKopecks +
       accruedSalariesKopecks +
       operatingExpensesExcludingSalariesAndStock;
 
@@ -184,8 +201,10 @@ export function createFinanceRouter(db: DatabaseSync): express.Router {
         totalOrderPriceKopecks,
         totalReceivedCashKopecks,
         totalClientDebtKopecks,
+        periodClientDebtKopecks,
         autoMaterialCostKopecks,
-        effectiveMaterialCostKopecks: effectiveTotalMaterialCost + workshopMaterialCost,
+        effectiveMaterialCostKopecks: effectiveTotalMaterialCost + workshopMaterialCost + cancelledOrderMaterialCostKopecks,
+        cancelledOrderMaterialCostKopecks,
         materialPurchasesCashKopecks,
         accruedSalariesKopecks,
         paidSalariesKopecks,

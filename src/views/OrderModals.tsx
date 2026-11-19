@@ -20,11 +20,14 @@ import {
 } from 'lucide-react';
 import {
   apiRequest,
+  formatDateRu,
   formatDateTimeRu,
   formatQty,
   formatRub,
   OP_TYPE_LABELS,
   ORDER_STATUS_META,
+  PAYMENT_METHOD_LABELS,
+  PAYMENT_TYPE_LABELS,
 } from '../lib/api';
 import type {
   AuthUser,
@@ -33,6 +36,7 @@ import type {
   DirectoryUser,
   MaterialItem,
   Order,
+  OrderPayment,
   ToolItem,
 } from '../types/crm';
 
@@ -713,6 +717,19 @@ export function OrderDetailModal({
   const [editPriceRub, setEditPriceRub] = useState('');
   const [editStatus, setEditStatus] = useState('');
 
+  // Money panel (admin): order price, payments, material cost override
+  const [moneyEditor, setMoneyEditor] = useState<'price' | 'payment' | 'material' | null>(null);
+  const [moneyBusy, setMoneyBusy] = useState(false);
+  const [priceRub, setPriceRub] = useState('');
+  const [payAmountRub, setPayAmountRub] = useState('');
+  const [payType, setPayType] = useState<'advance' | 'partial' | 'full'>('partial');
+  const [payMethod, setPayMethod] = useState<'cash' | 'bank' | 'card'>('bank');
+  const [payDate, setPayDate] = useState('');
+  const [payComment, setPayComment] = useState('');
+  const [editingPaymentId, setEditingPaymentId] = useState<string | null>(null);
+  const [matOverrideRub, setMatOverrideRub] = useState('');
+  const [matOverrideReason, setMatOverrideReason] = useState('');
+
   // Inline reopen & delete confirmation (replaces window.prompt/confirm)
   const [reopenOpen, setReopenOpen] = useState(false);
   const [reopenReason, setReopenReason] = useState('');
@@ -750,6 +767,20 @@ export function OrderDetailModal({
         order.price_kopecks !== undefined ? String(Math.round(order.price_kopecks / 100)) : ''
       );
       setEditStatus(order.status);
+      setMoneyEditor(null);
+      setEditingPaymentId(null);
+      setPriceRub(order.price_kopecks !== undefined ? String(Math.round(order.price_kopecks / 100)) : '');
+      setPayAmountRub('');
+      setPayType('partial');
+      setPayMethod('bank');
+      setPayDate(new Date().toISOString().slice(0, 10));
+      setPayComment('');
+      setMatOverrideRub(
+        order.cost_override_kopecks !== null && order.cost_override_kopecks !== undefined
+          ? String(Math.round(order.cost_override_kopecks / 100))
+          : ''
+      );
+      setMatOverrideReason('');
       setReopenOpen(false);
       setReopenReason('');
       setConfirmDeleteOrder(false);
@@ -773,6 +804,21 @@ export function OrderDetailModal({
   const canTakeWarehouse = isAdmin || user.permissions['warehouse.take'];
   const canEditOrder = isAdmin || user.permissions['orders.edit_assigned'];
   const statusMeta = ORDER_STATUS_META[order.status] || ORDER_STATUS_META.new;
+  const orderPayments = order.payments || [];
+  const orderPriceKopecks = Number(order.price_kopecks || 0);
+  const orderPaidKopecks = Number(order.paid_kopecks || 0);
+  const orderDebtKopecks = Math.max(0, orderPriceKopecks - orderPaidKopecks);
+  const advanceKopecks = orderPayments
+    .filter((payment) => payment.payment_type === 'advance')
+    .reduce((sum, payment) => sum + Number(payment.amount_kopecks || 0), 0);
+  const otherPaymentsKopecks = orderPayments
+    .filter((payment) => payment.payment_type !== 'advance')
+    .reduce((sum, payment) => sum + Number(payment.amount_kopecks || 0), 0);
+  const autoMaterialKopecks = Number(
+    order.auto_material_cost_kopecks ?? order.material_cost_kopecks ?? 0
+  );
+  const hasMaterialOverride =
+    order.cost_override_kopecks !== null && order.cost_override_kopecks !== undefined;
 
   const selectedToolObj = tools.find((t) => t.id === whToolId);
   const editFilteredContacts = editCompanyId
@@ -821,6 +867,190 @@ export function OrderDetailModal({
       setError(err instanceof Error ? err.message : 'Ошибка обновления');
     } finally {
       setBusy(false);
+    }
+  };
+
+  const reloadOrder = async () => {
+    const res = await apiRequest<{ order: Order }>(`/api/orders/${order.id}`);
+    onOrderUpdated(res.order);
+    return res.order;
+  };
+
+  const openPriceEditor = () => {
+    setMoneyEditor((prev) => (prev === 'price' ? null : 'price'));
+    setError('');
+    setPriceRub(
+      order.price_kopecks !== undefined ? String(Math.round(order.price_kopecks / 100)) : ''
+    );
+  };
+
+  const openPaymentEditor = (payment?: OrderPayment) => {
+    setMoneyEditor('payment');
+    setError('');
+    if (payment) {
+      setEditingPaymentId(payment.id);
+      setPayAmountRub(String(Math.round(payment.amount_kopecks / 100)));
+      setPayType(payment.payment_type || 'partial');
+      setPayMethod(payment.payment_method || 'bank');
+      setPayDate((payment.paid_at || '').slice(0, 10));
+      setPayComment(payment.comment || '');
+      return;
+    }
+    setEditingPaymentId(null);
+    setPayAmountRub('');
+    setPayType(Number(order.paid_kopecks || 0) <= 0 ? 'advance' : 'partial');
+    setPayMethod('bank');
+    setPayDate(new Date().toISOString().slice(0, 10));
+    setPayComment('');
+  };
+
+  const openMaterialEditor = () => {
+    setMoneyEditor((prev) => (prev === 'material' ? null : 'material'));
+    setError('');
+    setMatOverrideRub(
+      order.cost_override_kopecks !== null && order.cost_override_kopecks !== undefined
+        ? String(Math.round(order.cost_override_kopecks / 100))
+        : ''
+    );
+    setMatOverrideReason('');
+  };
+
+  const handleSavePrice = async () => {
+    if (!order) return;
+    setMoneyBusy(true);
+    setError('');
+    setOfflineNotice('');
+    try {
+      const rub = priceRub.trim() === '' ? 0 : Number(priceRub);
+      if (!Number.isFinite(rub) || rub < 0) {
+        setError('Укажите неотрицательную сумму заказа.');
+        return;
+      }
+      const res = await apiRequest<{ order?: Order; offlineQueued?: boolean }>(
+        `/api/orders/${order.id}`,
+        {
+          method: 'PATCH',
+          body: { priceKopecks: Math.round(rub * 100) },
+          offlineLabel: `Изменение суммы заказа ${order.order_number}`,
+        }
+      );
+      if (res.offlineQueued) {
+        setOfflineNotice('Изменение суммы сохранено в офлайн-очередь.');
+        setMoneyEditor(null);
+      } else if (res.order) {
+        onOrderUpdated(res.order);
+        setMoneyEditor(null);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Ошибка изменения суммы заказа');
+    } finally {
+      setMoneyBusy(false);
+    }
+  };
+
+  const handleSavePayment = async () => {
+    if (!order) return;
+    setMoneyBusy(true);
+    setError('');
+    setOfflineNotice('');
+    try {
+      const amount = Math.round(Number(payAmountRub) * 100);
+      if (!Number.isSafeInteger(amount) || amount <= 0) {
+        setError('Укажите сумму оплаты больше нуля.');
+        return;
+      }
+      const body = {
+        orderId: order.id,
+        amountKopecks: amount,
+        paymentType: payType,
+        paymentMethod: payMethod,
+        paidAt: payDate || new Date().toISOString().slice(0, 10),
+        comment: payComment,
+      };
+      const res = editingPaymentId
+        ? await apiRequest<{ offlineQueued?: boolean }>(`/api/finance/payments/${editingPaymentId}`, {
+            method: 'PATCH',
+            body,
+            offlineLabel: 'Обновление оплаты по заказу',
+          })
+        : await apiRequest<{ offlineQueued?: boolean }>('/api/finance/payments', {
+            method: 'POST',
+            body,
+            offlineLabel: 'Добавление оплаты по заказу',
+          });
+      if (res.offlineQueued) {
+        setOfflineNotice('Оплата сохранена в офлайн-очередь.');
+        setMoneyEditor(null);
+      } else {
+        await reloadOrder();
+        setEditingPaymentId(null);
+        setMoneyEditor(null);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Ошибка сохранения оплаты');
+    } finally {
+      setMoneyBusy(false);
+    }
+  };
+
+  const handleDeletePayment = async (payment: OrderPayment) => {
+    if (!order) return;
+    if (!window.confirm(`Удалить оплату ${formatRub(payment.amount_kopecks)}?`)) return;
+    setMoneyBusy(true);
+    setError('');
+    setOfflineNotice('');
+    try {
+      const res = await apiRequest<{ offlineQueued?: boolean }>(
+        `/api/finance/payments/${payment.id}`,
+        { method: 'DELETE', offlineLabel: 'Удаление оплаты по заказу' }
+      );
+      if (res.offlineQueued) {
+        setOfflineNotice('Удаление оплаты сохранено в офлайн-очередь.');
+      } else {
+        await reloadOrder();
+      }
+      if (editingPaymentId === payment.id) setEditingPaymentId(null);
+      setMoneyEditor(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Ошибка удаления оплаты');
+    } finally {
+      setMoneyBusy(false);
+    }
+  };
+
+  const saveMaterialOverride = async (reset: boolean) => {
+    if (!order) return;
+    setMoneyBusy(true);
+    setError('');
+    setOfflineNotice('');
+    try {
+      const raw = matOverrideRub.trim();
+      const value = reset || raw === '' ? null : Math.round(Number(raw) * 100);
+      if (value !== null && (!Number.isFinite(Number(raw)) || value < 0)) {
+        setError('Укажите неотрицательную сумму материалов.');
+        return;
+      }
+      const res = await apiRequest<{ offlineQueued?: boolean }>(
+        `/api/finance/orders/${order.id}/cost-override`,
+        {
+          method: 'POST',
+          body: {
+            costOverrideKopecks: value,
+            reason: reset ? 'Сброс ручной суммы' : matOverrideReason,
+          },
+          offlineLabel: 'Корректировка себестоимости материалов',
+        }
+      );
+      if (res.offlineQueued) {
+        setOfflineNotice('Корректировка сохранена в офлайн-очередь.');
+      } else {
+        await reloadOrder();
+      }
+      setMoneyEditor(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Ошибка корректировки материалов');
+    } finally {
+      setMoneyBusy(false);
     }
   };
 
@@ -1265,24 +1495,323 @@ export function OrderDetailModal({
                 <span>{order.scheduled_at ? formatDateTimeRu(order.scheduled_at) : 'Дата не запланирована'}</span>
               </div>
               {isAdmin && (
-                <div className="grid grid-cols-3 gap-3 rounded-2xl border border-black/[0.06] bg-[#F5F5F7] p-4 dark:border-white/[0.08] dark:bg-[#0B0C10]">
-                  <div>
-                    <div className="text-[11px] text-zinc-500">Сумма заказа</div>
-                    <div className="mt-0.5 text-base font-bold tabular-nums">
-                      {formatRub(order.price_kopecks)}
+                <div className="space-y-3">
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                    <div className="rounded-2xl border border-black/[0.06] bg-[#F5F5F7] p-3 dark:border-white/[0.08] dark:bg-[#0B0C10]">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="text-[11px] text-zinc-500">Сумма заказа</div>
+                        <button
+                          type="button"
+                          onClick={openPriceEditor}
+                          aria-label="Изменить сумму заказа"
+                          title="Изменить сумму заказа"
+                          className="rounded-lg p-1 text-zinc-400 hover:bg-black/[0.05] hover:text-[#0071E3] dark:hover:bg-white/[0.08]"
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                      <div className="mt-0.5 text-base font-bold tabular-nums">
+                        {formatRub(order.price_kopecks)}
+                      </div>
+                      <div className="text-[10px] text-zinc-400">
+                        Долг клиента: {formatRub(orderDebtKopecks)}
+                      </div>
+                    </div>
+                    <div className="rounded-2xl border border-black/[0.06] bg-[#F5F5F7] p-3 dark:border-white/[0.08] dark:bg-[#0B0C10]">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="text-[11px] text-zinc-500">Оплачено</div>
+                        <button
+                          type="button"
+                          onClick={() => openPaymentEditor()}
+                          aria-label="Добавить оплату"
+                          title="Добавить или изменить оплату"
+                          className="rounded-lg p-1 text-zinc-400 hover:bg-black/[0.05] hover:text-[#0071E3] dark:hover:bg-white/[0.08]"
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                      <div className="mt-0.5 text-base font-bold text-emerald-600 tabular-nums dark:text-emerald-400">
+                        {formatRub(order.paid_kopecks)}
+                      </div>
+                      <div className="text-[10px] text-zinc-400">
+                        Аванс {formatRub(advanceKopecks)} · Доплаты {formatRub(otherPaymentsKopecks)}
+                      </div>
+                    </div>
+                    <div className="rounded-2xl border border-black/[0.06] bg-[#F5F5F7] p-3 dark:border-white/[0.08] dark:bg-[#0B0C10]">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="text-[11px] text-zinc-500">Материалы (списано)</div>
+                        <button
+                          type="button"
+                          onClick={openMaterialEditor}
+                          aria-label="Изменить себестоимость материалов"
+                          title="Изменить себестоимость материалов"
+                          className="rounded-lg p-1 text-zinc-400 hover:bg-black/[0.05] hover:text-[#0071E3] dark:hover:bg-white/[0.08]"
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                      <div className="mt-0.5 text-base font-bold tabular-nums">
+                        {formatRub(order.material_cost_kopecks)}
+                      </div>
+                      <div className="text-[10px] text-zinc-400">
+                        {hasMaterialOverride
+                          ? `Ручная сумма · по списаниям ${formatRub(autoMaterialKopecks)}`
+                          : 'Расчёт по списаниям со склада'}
+                      </div>
                     </div>
                   </div>
-                  <div>
-                    <div className="text-[11px] text-zinc-500">Оплачено</div>
-                    <div className="mt-0.5 text-base font-bold text-emerald-600 tabular-nums dark:text-emerald-400">
-                      {formatRub(order.paid_kopecks)}
+
+                  {moneyEditor === 'price' && (
+                    <div className="rounded-2xl border border-black/[0.06] bg-white p-4 dark:border-white/[0.08] dark:bg-[#15171C]">
+                      <div className="mb-3 text-xs font-semibold">Сумма заказа</div>
+                      <div className="flex flex-wrap items-end gap-2">
+                        <label className="min-w-40 flex-1 text-[11px] text-zinc-500">
+                          Сумма, ₽
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            autoFocus
+                            value={priceRub}
+                            onChange={(e) => setPriceRub(e.target.value)}
+                            className="mt-1 w-full rounded-xl border border-black/[0.08] bg-white px-3 py-2 text-sm tabular-nums text-zinc-900 dark:border-white/[0.1] dark:bg-[#0B0C10] dark:text-zinc-100"
+                          />
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => void handleSavePrice()}
+                          disabled={moneyBusy}
+                          className="rounded-xl bg-[#0071E3] px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
+                        >
+                          Сохранить
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setMoneyEditor(null)}
+                          className="rounded-xl border border-black/[0.1] px-4 py-2 text-xs font-semibold dark:border-white/[0.12]"
+                        >
+                          Отмена
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                  <div>
-                    <div className="text-[11px] text-zinc-500">Материалы (списано)</div>
-                    <div className="mt-0.5 text-base font-bold tabular-nums">
-                      {formatRub(order.material_cost_kopecks)}
+                  )}
+
+                  {moneyEditor === 'payment' && (
+                    <div className="rounded-2xl border border-black/[0.06] bg-white p-4 dark:border-white/[0.08] dark:bg-[#15171C]">
+                      <div className="mb-3 flex items-center justify-between gap-2">
+                        <div className="text-xs font-semibold">
+                          {editingPaymentId ? 'Изменить оплату' : 'Добавить оплату'}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setMoneyEditor(null);
+                            setEditingPaymentId(null);
+                          }}
+                          className="text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200"
+                          aria-label="Закрыть форму оплаты"
+                        >
+                          <X className="h-4 w-4" />
+                        </button>
+                      </div>
+                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                        <input
+                          type="number"
+                          min="1"
+                          step="0.01"
+                          autoFocus
+                          value={payAmountRub}
+                          onChange={(e) => setPayAmountRub(e.target.value)}
+                          placeholder="Сумма, ₽"
+                          className="w-full rounded-xl border border-black/[0.08] bg-white px-3 py-2 text-sm tabular-nums dark:border-white/[0.1] dark:bg-[#0B0C10]"
+                        />
+                        <select
+                          value={payType}
+                          onChange={(e) => setPayType(e.target.value as 'advance' | 'partial' | 'full')}
+                          className="w-full rounded-xl border border-black/[0.08] bg-white px-3 py-2 text-sm dark:border-white/[0.1] dark:bg-[#0B0C10]"
+                        >
+                          <option value="advance">Аванс</option>
+                          <option value="partial">Доплата</option>
+                          <option value="full">Полный расчёт</option>
+                        </select>
+                        <select
+                          value={payMethod}
+                          onChange={(e) => setPayMethod(e.target.value as 'cash' | 'bank' | 'card')}
+                          className="w-full rounded-xl border border-black/[0.08] bg-white px-3 py-2 text-sm dark:border-white/[0.1] dark:bg-[#0B0C10]"
+                        >
+                          <option value="bank">Безнал (р/с)</option>
+                          <option value="card">Карта / перевод</option>
+                          <option value="cash">Наличные</option>
+                        </select>
+                        <input
+                          type="date"
+                          value={payDate}
+                          onChange={(e) => setPayDate(e.target.value)}
+                          className="w-full rounded-xl border border-black/[0.08] bg-white px-3 py-2 text-sm dark:border-white/[0.1] dark:bg-[#0B0C10]"
+                        />
+                        <input
+                          type="text"
+                          maxLength={300}
+                          value={payComment}
+                          onChange={(e) => setPayComment(e.target.value)}
+                          placeholder="Комментарий"
+                          className="w-full rounded-xl border border-black/[0.08] bg-white px-3 py-2 text-sm sm:col-span-2 dark:border-white/[0.1] dark:bg-[#0B0C10]"
+                        />
+                      </div>
+                      <div className="mt-3 flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void handleSavePayment()}
+                          disabled={moneyBusy}
+                          className="rounded-xl bg-[#0071E3] px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
+                        >
+                          {editingPaymentId ? 'Сохранить оплату' : 'Добавить оплату'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setMoneyEditor(null);
+                            setEditingPaymentId(null);
+                          }}
+                          className="rounded-xl border border-black/[0.1] px-4 py-2 text-xs font-semibold dark:border-white/[0.12]"
+                        >
+                          Отмена
+                        </button>
+                        <span className="text-[11px] text-zinc-500">
+                          Платёж привязывается к заказу и попадает в финансы.
+                        </span>
+                      </div>
                     </div>
+                  )}
+
+                  {moneyEditor === 'material' && (
+                    <div className="rounded-2xl border border-black/[0.06] bg-white p-4 dark:border-white/[0.08] dark:bg-[#15171C]">
+                      <div className="text-xs font-semibold">Себестоимость материалов</div>
+                      <p className="mt-1 text-[11px] text-zinc-500">
+                        По списаниям со склада: {formatRub(autoMaterialKopecks)}. Ручная сумма заменяет
+                        расчёт в финансах по этому заказу. Пустое поле возвращает расчёт по списаниям.
+                      </p>
+                      <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          autoFocus
+                          value={matOverrideRub}
+                          onChange={(e) => setMatOverrideRub(e.target.value)}
+                          placeholder="Сумма, ₽"
+                          className="w-full rounded-xl border border-black/[0.08] bg-white px-3 py-2 text-sm tabular-nums dark:border-white/[0.1] dark:bg-[#0B0C10]"
+                        />
+                        <input
+                          type="text"
+                          maxLength={300}
+                          value={matOverrideReason}
+                          onChange={(e) => setMatOverrideReason(e.target.value)}
+                          placeholder="Причина (для истории)"
+                          className="w-full rounded-xl border border-black/[0.08] bg-white px-3 py-2 text-sm dark:border-white/[0.1] dark:bg-[#0B0C10]"
+                        />
+                      </div>
+                      <div className="mt-3 flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void saveMaterialOverride(false)}
+                          disabled={moneyBusy}
+                          className="rounded-xl bg-[#0071E3] px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
+                        >
+                          Сохранить
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void saveMaterialOverride(true)}
+                          disabled={moneyBusy || !hasMaterialOverride}
+                          className="rounded-xl border border-black/[0.1] px-4 py-2 text-xs font-semibold disabled:opacity-40 dark:border-white/[0.12]"
+                        >
+                          Вернуть расчёт
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setMoneyEditor(null)}
+                          className="rounded-xl border border-black/[0.1] px-4 py-2 text-xs font-semibold dark:border-white/[0.12]"
+                        >
+                          Отмена
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="rounded-2xl border border-black/[0.06] p-4 dark:border-white/[0.08]">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <div className="text-xs font-semibold">Оплаты по заказу</div>
+                        <div className="text-[11px] text-zinc-500">
+                          Аванс {formatRub(advanceKopecks)} · Доплаты {formatRub(otherPaymentsKopecks)} ·
+                          Осталось {formatRub(orderDebtKopecks)}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => openPaymentEditor()}
+                        className="inline-flex items-center gap-1 rounded-xl border border-black/[0.1] px-3 py-1.5 text-xs font-semibold text-[#0071E3] dark:border-white/[0.12] dark:text-[#71b5ff]"
+                      >
+                        <Plus className="h-3.5 w-3.5" /> Добавить
+                      </button>
+                    </div>
+                    {orderPayments.length === 0 ? (
+                      <div className="mt-3 rounded-xl border border-dashed border-black/[0.1] p-3 text-xs text-zinc-400 dark:border-white/[0.1]">
+                        Оплат пока нет. Добавьте аванс или оплату — они появятся в финансах.
+                      </div>
+                    ) : (
+                      <div className="mt-3 space-y-1.5">
+                        {orderPayments.map((payment) => (
+                          <div
+                            key={payment.id}
+                            className="flex items-center justify-between gap-2 rounded-xl border border-black/[0.06] px-3 py-2 dark:border-white/[0.08]"
+                          >
+                            <div className="min-w-0">
+                              <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                                <span
+                                  className={`rounded-md px-1.5 py-0.5 text-[10px] font-semibold ${
+                                    payment.payment_type === 'advance'
+                                      ? 'bg-sky-500/10 text-sky-600 dark:text-sky-400'
+                                      : 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+                                  }`}
+                                >
+                                  {PAYMENT_TYPE_LABELS[payment.payment_type] || payment.payment_type}
+                                </span>
+                                <span className="font-bold text-emerald-600 tabular-nums dark:text-emerald-400">
+                                  {formatRub(payment.amount_kopecks)}
+                                </span>
+                              </div>
+                              <div className="truncate text-[11px] text-zinc-500">
+                                {formatDateRu(payment.paid_at)} ·{' '}
+                                {PAYMENT_METHOD_LABELS[payment.payment_method] || payment.payment_method}
+                                {payment.comment ? ` · ${payment.comment}` : ''}
+                              </div>
+                            </div>
+                            <div className="flex shrink-0 items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => openPaymentEditor(payment)}
+                                aria-label="Изменить оплату"
+                                title="Изменить оплату"
+                                className="rounded-lg p-1.5 text-zinc-400 hover:bg-black/[0.05] hover:text-[#0071E3] dark:hover:bg-white/[0.08]"
+                              >
+                                <Pencil className="h-3.5 w-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void handleDeletePayment(payment)}
+                                aria-label="Удалить оплату"
+                                title="Удалить оплату"
+                                className="rounded-lg p-1.5 text-zinc-400 hover:bg-red-500/10 hover:text-red-600"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </div>
               )}

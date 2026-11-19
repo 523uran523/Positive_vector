@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Download, Pencil, Plus, Receipt, Trash2, TrendingDown, TrendingUp, X } from 'lucide-react';
-import { apiRequest, formatDateRu, formatRub, PAYMENT_METHOD_LABELS } from '../lib/api';
+import { apiRequest, formatDateRu, formatRub, PAYMENT_METHOD_LABELS, PAYMENT_TYPE_LABELS } from '../lib/api';
 import type { Order } from '../types/crm';
 
 interface FinanceOverview {
@@ -9,8 +9,10 @@ interface FinanceOverview {
     totalOrderPriceKopecks: number;
     totalReceivedCashKopecks: number;
     totalClientDebtKopecks: number;
+    periodClientDebtKopecks: number;
     autoMaterialCostKopecks: number;
     effectiveMaterialCostKopecks: number;
+    cancelledOrderMaterialCostKopecks: number;
     materialPurchasesCashKopecks: number;
     accruedSalariesKopecks: number;
     paidSalariesKopecks: number;
@@ -66,7 +68,7 @@ export function FinanceView({ orders, expenseCategories, onOpenOrderById }: Fina
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
   const [data, setData] = useState<FinanceOverview | null>(null);
-  const [modal, setModal] = useState<'payment' | 'expense' | 'override' | null>(null);
+  const [modal, setModal] = useState<'payment' | 'expense' | 'override' | 'price' | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -95,6 +97,10 @@ export function FinanceView({ orders, expenseCategories, onOpenOrderById }: Fina
   const [ovrRub, setOvrRub] = useState('');
   const [ovrReason, setOvrReason] = useState('');
 
+  // Order price correction
+  const [priceOrderId, setPriceOrderId] = useState('');
+  const [priceRub, setPriceRub] = useState('');
+
   const loadOverview = async () => {
     try {
       setError('');
@@ -117,6 +123,17 @@ export function FinanceView({ orders, expenseCategories, onOpenOrderById }: Fina
     setPayOrderId('');
     setPayAmountRub('');
     setPayType('partial');
+    setPayMethod('bank');
+    setPayDate(new Date().toISOString().slice(0, 10));
+    setPayComment('');
+    setModal('payment');
+  };
+
+  const openPaymentForOrder = (orderId: string, paidKopecks: number) => {
+    setEditingPaymentId(null);
+    setPayOrderId(orderId);
+    setPayAmountRub('');
+    setPayType(Number(paidKopecks) <= 0 ? 'advance' : 'partial');
     setPayMethod('bank');
     setPayDate(new Date().toISOString().slice(0, 10));
     setPayComment('');
@@ -310,6 +327,41 @@ export function FinanceView({ orders, expenseCategories, onOpenOrderById }: Fina
     }
   };
 
+  const openPriceEditor = (order: FinanceOverview['orderBreakdown'][number]) => {
+    setPriceOrderId(order.id);
+    setPriceRub(String(Math.round(order.price_kopecks / 100)));
+    setModal('price');
+  };
+
+  const handlePriceSubmit = async (e: React.FormEvent) => {    e.preventDefault();
+    if (!priceOrderId) return;
+    setBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      const rub = priceRub.trim() === '' ? 0 : Number(priceRub);
+      if (!Number.isFinite(rub) || rub < 0) {
+        setError('Укажите неотрицательную сумму заказа.');
+        return;
+      }
+      const res = await apiRequest<{ offlineQueued?: boolean }>(`/api/orders/${priceOrderId}`, {
+        method: 'PATCH',
+        body: { priceKopecks: Math.round(rub * 100) },
+        offlineLabel: 'Изменение суммы заказа',
+      });
+      setModal(null);
+      if (res.offlineQueued) {
+        setNotice('Изменение суммы заказа поставлено в офлайн-очередь.');
+      } else {
+        await loadOverview();
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Ошибка изменения суммы заказа');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const exportUrl = `/api/export/finance.xlsx${from || to ? `?from=${from}&to=${to}` : ''}`;
   const m = data?.metrics;
 
@@ -398,7 +450,12 @@ export function FinanceView({ orders, expenseCategories, onOpenOrderById }: Fina
             <div className="mt-1 text-xl font-bold text-amber-600 tabular-nums dark:text-amber-400">
               {formatRub(m.totalClientDebtKopecks)}
             </div>
-            <div className="mt-1 text-[11px] text-zinc-400">По активным заказам</div>
+            <div className="mt-1 text-[11px] text-zinc-400">
+              По всем активным заказам
+              {(from || to) && (
+                <> · за период: {formatRub(m.periodClientDebtKopecks)}</>
+              )}
+            </div>
           </div>
 
           <div className="rounded-2xl border border-black/[0.06] bg-white p-4 dark:border-white/[0.08] dark:bg-[#15171C]">
@@ -475,22 +532,38 @@ export function FinanceView({ orders, expenseCategories, onOpenOrderById }: Fina
                       )}
                     </td>
                     <td className="py-2.5 pl-3 text-right">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setOvrOrderId(o.id);
-                          setOvrRub(
-                            o.cost_override_kopecks !== null
-                              ? String(Math.round(o.cost_override_kopecks / 100))
-                              : ''
-                          );
-                          setOvrReason('');
-                          setModal('override');
-                        }}
-                        className="text-xs font-medium text-[#0071E3] hover:underline dark:text-[#2997FF]"
-                      >
-                        Изм. себест.
-                      </button>
+                      <div className="flex flex-wrap justify-end gap-x-3 gap-y-1">
+                        <button
+                          type="button"
+                          onClick={() => openPaymentForOrder(o.id, o.paid_kopecks)}
+                          className="text-xs font-medium text-emerald-600 hover:underline dark:text-emerald-400"
+                        >
+                          Оплата
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => openPriceEditor(o)}
+                          className="text-xs font-medium text-[#0071E3] hover:underline dark:text-[#2997FF]"
+                        >
+                          Цена
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setOvrOrderId(o.id);
+                            setOvrRub(
+                              o.cost_override_kopecks !== null
+                                ? String(Math.round(o.cost_override_kopecks / 100))
+                                : ''
+                            );
+                            setOvrReason('');
+                            setModal('override');
+                          }}
+                          className="text-xs font-medium text-[#0071E3] hover:underline dark:text-[#2997FF]"
+                        >
+                          Себест.
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -520,7 +593,8 @@ export function FinanceView({ orders, expenseCategories, onOpenOrderById }: Fina
                         {p.company_name || p.contact_name || 'Платёж клиента'}
                       </div>
                       <div className="text-zinc-400">
-                        {formatDateRu(p.paid_at)} · {PAYMENT_METHOD_LABELS[p.payment_method] || p.payment_method}
+                        {formatDateRu(p.paid_at)} · {PAYMENT_TYPE_LABELS[p.payment_type] || p.payment_type} ·{' '}
+                        {PAYMENT_METHOD_LABELS[p.payment_method] || p.payment_method}
                         {p.comment ? ` · ${p.comment}` : ''}
                       </div>
                     </div>
@@ -804,6 +878,43 @@ export function FinanceView({ orders, expenseCategories, onOpenOrderById }: Fina
               className="mt-4 w-full rounded-2xl bg-[#0071E3] py-3 text-sm font-semibold text-white dark:bg-[#2997FF] dark:text-[#0B0C10]"
             >
               Сохранить расход
+            </button>
+          </form>
+        </div>
+      )}
+
+      {/* Order Price Modal */}
+      {modal === 'price' && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/45 p-0 backdrop-blur-xs sm:items-center sm:p-4">
+          <form
+            onSubmit={handlePriceSubmit}
+            className="w-full max-w-md rounded-t-3xl border border-black/[0.08] bg-white p-6 shadow-2xl sm:rounded-3xl dark:border-white/[0.1] dark:bg-[#15171C]"
+          >
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="font-display text-lg font-bold">Сумма заказа</h3>
+              <button type="button" onClick={() => setModal(null)} className="text-zinc-400">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <p className="mb-3 text-xs text-zinc-500">
+              Сумма участвует в расчёте объёма заказов, долга и прибыли. Изменение попадёт в аудит.
+            </p>
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              autoFocus
+              value={priceRub}
+              onChange={(e) => setPriceRub(e.target.value)}
+              placeholder="Сумма заказа, ₽"
+              className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3.5 py-2.5 text-sm tabular-nums dark:border-white/[0.12] dark:bg-[#0B0C10]"
+            />
+            <button
+              type="submit"
+              disabled={busy}
+              className="mt-4 w-full rounded-2xl bg-[#0071E3] py-3 text-sm font-semibold text-white dark:bg-[#2997FF] dark:text-[#0B0C10]"
+            >
+              Сохранить сумму
             </button>
           </form>
         </div>
