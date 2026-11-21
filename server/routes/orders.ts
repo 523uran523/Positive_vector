@@ -822,6 +822,40 @@ export function createOrdersRouter(db: DatabaseSync): express.Router {
     res.status(201).json({ order: enrichOrder(db, updated, user.role === 'admin', user.id, true) });
   });
 
+  // Personal working hours are independent of completion reports.
+  router.put('/:orderId/visits/:visitId/work-time', requireAuth, (req: AuthedRequest, res) => {
+    const { orderId, visitId } = req.params;
+    const user = req.authUser!;
+    const visit = db.prepare('SELECT id FROM order_visits WHERE id=? AND order_id=?').get(visitId, orderId);
+    if (!visit) { res.sendStatus(404); return; }
+    const assigned = db.prepare('SELECT 1 FROM visit_assignees WHERE visit_id=? AND user_id=? UNION ALL SELECT 1 FROM order_assignees WHERE order_id=? AND user_id=?').get(visitId,user.id,orderId,user.id);
+    if (user.role !== 'admin' && !assigned) { res.sendStatus(403); return; }
+    const { workDate, startTime, endTime } = req.body;
+    if (typeof workDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(workDate) ||
+        !Number.isFinite(Date.parse(`${workDate}T00:00:00Z`)) || new Date(`${workDate}T00:00:00Z`).toISOString().slice(0, 10) !== workDate ||
+        typeof startTime !== 'string' || typeof endTime !== 'string' ||
+        !/^([01]\d|2[0-3]):[0-5]\d$/.test(startTime) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(endTime) || startTime === endTime) {
+      res.status(400).json({error:'Укажите дату и время начала и окончания работы.'}); return;
+    }
+    withTransaction(db, () => {
+      db.prepare(`INSERT INTO visit_work_times(visit_id,user_id,work_date,start_time,end_time,updated_at) VALUES(?,?,?,?,?,?)
+        ON CONFLICT(visit_id,user_id,work_date) DO UPDATE SET start_time=excluded.start_time,end_time=excluded.end_time,updated_at=excluded.updated_at`)
+        .run(visitId,user.id,workDate,startTime,endTime,new Date().toISOString());
+      writeAuditLog(db,user.id,'visit',visitId,'work_time_updated',{workDate});
+    });
+    res.json({ok:true});
+  });
+
+  router.get('/:orderId/visits/:visitId/work-times', requireAuth, (req: AuthedRequest, res) => {
+    const { orderId, visitId } = req.params; const user = req.authUser!;
+    if (!db.prepare('SELECT 1 FROM order_visits WHERE id=? AND order_id=?').get(visitId,orderId)) { res.sendStatus(404); return; }
+    const assigned = db.prepare('SELECT 1 FROM visit_assignees WHERE visit_id=? AND user_id=? UNION ALL SELECT 1 FROM order_assignees WHERE order_id=? AND user_id=?').get(visitId,user.id,orderId,user.id);
+    if (user.role !== 'admin' && !assigned) { res.sendStatus(403); return; }
+    const rows = db.prepare(`SELECT w.user_id,u.full_name,w.work_date,w.start_time,w.end_time FROM visit_work_times w
+      JOIN users u ON u.id=w.user_id WHERE w.visit_id=? AND (?=1 OR w.user_id=?) ORDER BY w.work_date DESC,u.full_name`).all(visitId,user.role === 'admin' ? 1 : 0,user.id);
+    res.json({items:rows});
+  });
+
   // Submit visit completion/participant report (auto-completes visit AND parent order if all visits finished)
   router.post('/:orderId/visits/:visitId/report', requireAuth, (req: AuthedRequest, res) => {
     const user = req.authUser!;

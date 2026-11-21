@@ -2317,6 +2317,8 @@ export function OrderDetailModal({
                         </div>
                       )}
 
+                      {isAssignedHere && <VisitWorkTime orderId={order.id} visitId={v.id} defaultDate={v.scheduled_at.slice(0, 10)} isAdmin={isAdmin} />}
+
                       {/* Visit Report Form */}
                       {isReporting && (
                         <form
@@ -2924,4 +2926,36 @@ export function OrderDetailModal({
       </div>
     </div>
   );
+}
+
+function VisitWorkTime({orderId, visitId, defaultDate, isAdmin}: {orderId:string; visitId:string; defaultDate:string; isAdmin:boolean}) {
+  const [items, setItems] = useState<Array<{user_id:string;full_name:string;work_date:string;start_time:string;end_time:string}>>([]);
+  const [date, setDate] = useState(defaultDate);
+  const [start, setStart] = useState('');
+  const [end, setEnd] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const base = `/api/orders/${encodeURIComponent(orderId)}/visits/${encodeURIComponent(visitId)}/work-times`;
+  const load = async () => { const result = await apiRequest<{items:typeof items}>(base, {useCache:false}); setItems(result.items); };
+  useEffect(() => { void load().catch(() => setError('Не удалось загрузить время работы.')); }, [orderId, visitId]);
+  const save = async (e: React.FormEvent) => {
+    e.preventDefault(); setBusy(true); setError('');
+    try {
+      await apiRequest(base.replace(/work-times$/, 'work-time'), {method:'PUT',body:{workDate:date,startTime:start,endTime:end},skipOfflineQueue:true});
+      await load();
+    } catch (err) { setError(err instanceof Error ? err.message : 'Не удалось сохранить время.'); }
+    finally { setBusy(false); }
+  };
+  return <div className="mt-3 rounded-xl border border-black/10 p-3 dark:border-white/10">
+    <h4 className="text-xs font-semibold">Моё время работы</h4>
+    <form onSubmit={save} className="mt-2 flex flex-wrap items-end gap-2">
+      <label className="text-xs">Дата<input required type="date" value={date} onChange={e => setDate(e.target.value)} className="block rounded-lg border p-2 dark:bg-[#0B0C10]" /></label>
+      <label className="text-xs">Начало<input required type="time" value={start} onChange={e => setStart(e.target.value)} className="block rounded-lg border p-2 dark:bg-[#0B0C10]" /></label>
+      <label className="text-xs">Окончание<input required type="time" value={end} onChange={e => setEnd(e.target.value)} className="block rounded-lg border p-2 dark:bg-[#0B0C10]" /></label>
+      <button disabled={busy} className="rounded-lg bg-[#0071E3] px-3 py-2 text-xs text-white disabled:opacity-50">Сохранить</button>
+    </form>
+    <p className="mt-1 text-[11px] text-zinc-500">Если окончание раньше начала, работа завершилась на следующий день. Повторное сохранение за дату обновит запись.</p>
+    {error && <p role="alert" className="mt-1 text-xs text-red-600">{error}</p>}
+    {items.map(item => { const mins = (s:string) => Number(s.slice(0,2))*60+Number(s.slice(3)); const duration=(mins(item.end_time)-mins(item.start_time)+1440)%1440; return <div key={`${item.user_id}:${item.work_date}`} className="mt-1 text-xs text-zinc-500">{isAdmin && `${item.full_name} · `}{item.work_date} · {item.start_time}–{item.end_time} · {Math.floor(duration/60)} ч {duration%60} мин</div>; })}
+  </div>;
 }
