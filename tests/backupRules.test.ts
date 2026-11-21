@@ -23,7 +23,7 @@ test('WAL backup restores database and attachment checksums, file cleanup surviv
     const accountingName='12345678-1234-4234-8234-123456789abc';
     fs.mkdirSync(path.join(uploads,'accounting'));
     fs.writeFileSync(path.join(uploads,'accounting',accountingName),'accounting document');
-    db.prepare("INSERT INTO accounting_documents(id,original_name,stored_name,size_bytes,uploaded_by,created_at) VALUES ('doc','invoice.txt',?,19,'chat-user',?)").run(accountingName,now);
+    db.prepare("INSERT INTO documents(id,original_name,stored_name,size_bytes,uploaded_by,created_at) VALUES ('doc','invoice.txt',?,19,'chat-user',?)").run(accountingName,now);
     const backup=path.join(root,'snapshot');
     await createBackup(dbPath,uploads,backup);verifyBackup(backup);
     assert.equal(fs.existsSync(path.join(uploads,'.backup-lock')),false);

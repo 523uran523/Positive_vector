@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { Calendar, Clock, Wallet } from 'lucide-react';
-import { apiRequest, formatDateRu, formatDateTimeRu, formatRub, PAYMENT_METHOD_LABELS } from '../lib/api';
+import { apiRequest, formatDateRu, formatDateTimeRu, formatRub } from '../lib/api';
 import type { WorkshopShift } from '../types/crm';
 
 interface MySalaryData {
+  activity: Array<{ month: string; visits: number; shifts: number }>;
   month: string;
   monthAccruedKopecks: number;
   totalAccruedKopecks: number;
@@ -19,7 +20,6 @@ interface MySalaryData {
   payouts: Array<{
     id: string;
     amount_kopecks: number;
-    payment_method: string;
     paid_at: string;
     comment: string;
   }>;
@@ -67,7 +67,7 @@ export function EmployeeSalaryView() {
     );
   }
 
-  const completedShiftsCount = shifts.filter((s) => s.status === 'completed').length;
+  const currentActivity = data.activity.find(item => item.month === data.month);
 
   return (
     <div className="space-y-5">
@@ -78,7 +78,7 @@ export function EmployeeSalaryView() {
             {formatRub(data.monthAccruedKopecks)}
           </div>
           <div className="mt-1 text-[11px] text-zinc-400 tabular-nums">
-            Смен в цеху: {completedShiftsCount}
+            Монтажей: {currentActivity?.visits || 0} · Смен: {currentActivity?.shifts || 0}
           </div>
         </div>
         <div className="rounded-2xl border border-black/[0.06] bg-white p-4 dark:border-white/[0.08] dark:bg-[#15171C]">
@@ -99,6 +99,11 @@ export function EmployeeSalaryView() {
             {formatRub(data.remainingKopecks)}
           </div>
         </div>
+      </div>
+
+      <div className="rounded-2xl border border-black/[0.06] bg-white p-5 dark:border-white/[0.08] dark:bg-[#15171C]">
+        <h3 className="mb-3 font-semibold">Монтажи и смены по месяцам</h3>
+        {data.activity.length === 0 ? <p className="text-sm text-zinc-500">Пока нет завершённых работ.</p> : data.activity.map(item => <div key={item.month} className="flex justify-between gap-3 py-1 text-sm"><span>{item.month}</span><span>Монтажей: {item.visits} · Смен: {item.shifts}</span></div>)}
       </div>
 
       {data.pendingVisits.length > 0 && (
@@ -168,8 +173,7 @@ export function EmployeeSalaryView() {
                 >
                   <div>
                     <div className="font-semibold">
-                      {PAYMENT_METHOD_LABELS[p.payment_method] || p.payment_method}
-                      {p.comment ? ` · ${p.comment}` : ''}
+                      {p.comment ? p.comment : 'Выплата'}
                     </div>
                     <div className="text-zinc-400">{formatDateRu(p.paid_at)}</div>
                   </div>

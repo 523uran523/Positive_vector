@@ -26,7 +26,6 @@ import {
   formatRub,
   OP_TYPE_LABELS,
   ORDER_STATUS_META,
-  PAYMENT_METHOD_LABELS,
   PAYMENT_TYPE_LABELS,
 } from '../lib/api';
 import type {
@@ -723,7 +722,6 @@ export function OrderDetailModal({
   const [priceRub, setPriceRub] = useState('');
   const [payAmountRub, setPayAmountRub] = useState('');
   const [payType, setPayType] = useState<'advance' | 'partial' | 'full'>('partial');
-  const [payMethod, setPayMethod] = useState<'cash' | 'bank' | 'card'>('bank');
   const [payDate, setPayDate] = useState('');
   const [payComment, setPayComment] = useState('');
   const [editingPaymentId, setEditingPaymentId] = useState<string | null>(null);
@@ -772,7 +770,6 @@ export function OrderDetailModal({
       setPriceRub(order.price_kopecks !== undefined ? String(Math.round(order.price_kopecks / 100)) : '');
       setPayAmountRub('');
       setPayType('partial');
-      setPayMethod('bank');
       setPayDate(new Date().toISOString().slice(0, 10));
       setPayComment('');
       setMatOverrideRub(
@@ -891,7 +888,6 @@ export function OrderDetailModal({
       setEditingPaymentId(payment.id);
       setPayAmountRub(String(Math.round(payment.amount_kopecks / 100)));
       setPayType(payment.payment_type || 'partial');
-      setPayMethod(payment.payment_method || 'bank');
       setPayDate((payment.paid_at || '').slice(0, 10));
       setPayComment(payment.comment || '');
       return;
@@ -899,7 +895,6 @@ export function OrderDetailModal({
     setEditingPaymentId(null);
     setPayAmountRub('');
     setPayType(Number(order.paid_kopecks || 0) <= 0 ? 'advance' : 'partial');
-    setPayMethod('bank');
     setPayDate(new Date().toISOString().slice(0, 10));
     setPayComment('');
   };
@@ -963,7 +958,6 @@ export function OrderDetailModal({
         orderId: order.id,
         amountKopecks: amount,
         paymentType: payType,
-        paymentMethod: payMethod,
         paidAt: payDate || new Date().toISOString().slice(0, 10),
         comment: payComment,
       };
@@ -1372,32 +1366,33 @@ export function OrderDetailModal({
     kind: 'photo' | 'document',
     visitId?: string
   ) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const input = e.target;
+    const files = Array.from(input.files || []);
+    if (!files.length) return;
     setBusy(true);
     setError('');
     setOfflineNotice('');
     try {
-      const fd = new FormData();
-      fd.append('file', file);
-      fd.append('kind', kind);
-      if (visitId) fd.append('visitId', visitId);
-      const upRes = await apiRequest<{ offlineQueued?: boolean }>(`/api/orders/${order.id}/attachments`, {
-        method: 'POST',
-        formData: fd,
-        offlineLabel: `Загрузка файла «${file.name}»`,
-      });
-      if (upRes.offlineQueued) {
-        setOfflineNotice(`Файл «${file.name}» сохранён в офлайн-очередь и загрузится при появлении сети.`);
-      } else {
-        const fresh = await apiRequest<{ order: Order }>(`/api/orders/${order.id}`);
-        onOrderUpdated(fresh.order);
+      const failures: string[] = [];
+      for (const file of files) {
+        try {
+          const fd = new FormData();
+          fd.append('file', file);
+          fd.append('kind', kind);
+          if (visitId) fd.append('visitId', visitId);
+          await apiRequest(`/api/orders/${order.id}/attachments`, { method: 'POST', formData: fd, skipOfflineQueue: true });
+        } catch {
+          failures.push(file.name);
+        }
       }
+      const fresh = await apiRequest<{ order: Order }>(`/api/orders/${order.id}`, { useCache: false });
+      onOrderUpdated(fresh.order);
+      if (failures.length) setError(`Не удалось загрузить: ${failures.join(', ')}. Выберите эти файлы ещё раз.`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Ошибка загрузки файла');
     } finally {
       setBusy(false);
-      e.target.value = '';
+      input.value = '';
     }
   };
 
@@ -1634,15 +1629,6 @@ export function OrderDetailModal({
                           <option value="partial">Доплата</option>
                           <option value="full">Полный расчёт</option>
                         </select>
-                        <select
-                          value={payMethod}
-                          onChange={(e) => setPayMethod(e.target.value as 'cash' | 'bank' | 'card')}
-                          className="w-full rounded-xl border border-black/[0.08] bg-white px-3 py-2 text-sm dark:border-white/[0.1] dark:bg-[#0B0C10]"
-                        >
-                          <option value="bank">Безнал (р/с)</option>
-                          <option value="card">Карта / перевод</option>
-                          <option value="cash">Наличные</option>
-                        </select>
                         <input
                           type="date"
                           value={payDate}
@@ -1784,7 +1770,6 @@ export function OrderDetailModal({
                               </div>
                               <div className="truncate text-[11px] text-zinc-500">
                                 {formatDateRu(payment.paid_at)} ·{' '}
-                                {PAYMENT_METHOD_LABELS[payment.payment_method] || payment.payment_method}
                                 {payment.comment ? ` · ${payment.comment}` : ''}
                               </div>
                             </div>
@@ -2391,7 +2376,8 @@ export function OrderDetailModal({
                               <span>Фото к выезду</span>
                               <input
                                 type="file"
-                                accept="image/*"
+                                accept="image/*,video/*"
+                                multiple
                                 className="hidden"
                                 onChange={(e) => void handleFileUpload(e, 'photo', v.id)}
                               />
@@ -2862,7 +2848,8 @@ export function OrderDetailModal({
                   <span>Загрузить фото</span>
                   <input
                     type="file"
-                    accept="image/*"
+                    accept="image/*,video/*"
+                    multiple
                     className="hidden"
                     onChange={(e) => void handleFileUpload(e, 'photo')}
                   />
@@ -2873,6 +2860,7 @@ export function OrderDetailModal({
                   <input
                     type="file"
                     accept=".pdf,.doc,.docx,.xls,.xlsx,.txt"
+                    multiple
                     className="hidden"
                     onChange={(e) => void handleFileUpload(e, 'document')}
                   />
@@ -2890,7 +2878,12 @@ export function OrderDetailModal({
                       key={att.id}
                       className="group relative overflow-hidden rounded-2xl border border-black/[0.07] bg-[#F5F5F7] transition hover:border-[#0071E3] dark:border-white/[0.08] dark:bg-[#0B0C10]"
                     >
-                      <a
+                      {att.mime_type.startsWith('video/') ? (
+                        <div>
+                          <video controls preload="metadata" src={`/api/orders/attachments/${att.id}`} className="h-32 w-full bg-black object-contain" />
+                          <div className="truncate p-2.5 text-xs font-medium">{att.original_name}</div>
+                        </div>
+                      ) : <a
                         href={`/api/orders/attachments/${att.id}`}
                         target="_blank"
                         rel="noreferrer"
@@ -2909,7 +2902,7 @@ export function OrderDetailModal({
                           </div>
                         )}
                         <div className="truncate p-2.5 text-xs font-medium">{att.original_name}</div>
-                      </a>
+                      </a>}
                       {canEditOrder && (
                         <button
                           type="button"

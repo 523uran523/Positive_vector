@@ -57,7 +57,7 @@ test('dismissal revokes sessions but preserves salary history and can be restore
     for (const route of ['/api/chat/rooms','/api/orders','/api/salaries/my','/api/users','/api/export/database.xlsx']) assert.equal((await call('GET',route)).status,403,route);
     assert.equal((await call('POST','/api/chat/messages',{body:'forbidden'})).status,403);
     assert.equal((await call('PATCH','/api/auth/profile',{fullName:'Forbidden'})).status,403);
-    db.prepare("INSERT INTO salary_payouts(id,user_id,amount_kopecks,payment_method,paid_at,created_at) VALUES ('pay',?,12300,'cash',?,?)").run(id,now,now);
+    db.prepare("INSERT INTO salary_payouts(id,user_id,amount_kopecks,paid_at,created_at) VALUES ('pay',?,12300,?,?)").run(id,now,now);
     const paidBalance = await call('GET','/api/auth/dismissal-balance');
     assert.equal(paidBalance.data.remainingKopecks,0); assert.equal(paidBalance.data.settlementPending,true);
     db.prepare("UPDATE workshop_shifts SET status='completed' WHERE id='active-shift'").run();
@@ -98,6 +98,13 @@ test('private rooms restrict access and provide full history to added members', 
     const room = await call('POST', '/api/chat/rooms', { name:'Проект', memberIds:[worker.data.user.id] }); assert.equal(room.status,201);
     const id = room.data.id;
     const msg = await call('POST', '/api/chat/messages', {roomId:id,body:'private'}); assert.equal(msg.status,201);
+    assert.equal((await call('POST','/api/chat/messages',{roomId:'general',body:'cross-room',replyToId:msg.data.id})).status,400);
+    const reply = await call('POST','/api/chat/messages',{roomId:id,body:'answer',replyToId:msg.data.id});
+    assert.equal(reply.status,201);
+    const replyView = (await call('GET',`/api/chat/messages?room=${id}`)).data.messages.find((m:any)=>m.id===reply.data.id);
+    assert.equal(replyView.reply_body,'private');
+    assert.equal(replyView.reply_author,'Admin');
+    assert.equal((await call('DELETE',`/api/chat/messages/${reply.data.id}`)).status,200);
     const fileId = 'private-file';
     db.prepare("INSERT INTO chat_files(id,stored_name,original_name,mime_type,size_bytes,owner_id,kind,created_at) VALUES (?,?,?,?,?,?,?,?)").run(fileId,'00000000-0000-0000-0000-000000000003','file.txt','text/plain',1,setup.data.user.id,'message',new Date().toISOString());
     db.prepare('UPDATE chat_messages SET file_id=? WHERE id=?').run(fileId,msg.data.id);
@@ -230,6 +237,14 @@ test('chat file access follows history and avatar replacement stays inside test 
     const file = db.prepare('SELECT file_id FROM chat_messages WHERE id=?').get(sent.data.id) as { file_id: string };
     const adminDownload = await inject(app, 'GET', `/api/chat/files/${file.file_id}`, undefined, { Cookie: cookie });
     assert.equal(adminDownload.status, 200); assert.equal(await adminDownload.text(), 'test-audio');
+    const video = Buffer.concat([Buffer.from([0,0,0,16]), Buffer.from('ftypisom'), Buffer.from('video-content')]);
+    assert.equal((await upload('/api/chat/messages','video/mp4',Buffer.from('not a video'))).status,400);
+    const videoMsg = await upload('/api/chat/messages','video/mp4',video);
+    assert.equal(videoMsg.status,201);
+    const videoRow = db.prepare('SELECT file_id FROM chat_messages WHERE id=?').get(videoMsg.data.id) as { file_id: string };
+    const videoRes = await inject(app,'GET',`/api/chat/files/${videoRow.file_id}`,undefined,{Cookie:cookie,Range:'bytes=0-3'});
+    assert.equal(videoRes.status,206);
+    assert.match(videoRes.headers.get('content-type') || '', /video\/mp4/);
     assert.equal((await upload('/api/chat/avatar', 'image/png', Buffer.from('not an image'))).status, 400);
     const png = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415408d763f8cfc0f01f00050001ff89993d1d0000000049454e44ae426082', 'hex');
     assert.equal((await upload('/api/chat/avatar', 'image/png', png)).status, 200);

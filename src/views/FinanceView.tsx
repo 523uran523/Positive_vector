@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Download, Pencil, Plus, Receipt, Trash2, TrendingDown, TrendingUp, X } from 'lucide-react';
-import { apiRequest, formatDateRu, formatRub, PAYMENT_METHOD_LABELS, PAYMENT_TYPE_LABELS } from '../lib/api';
+import { apiRequest, formatDateRu, formatRub, PAYMENT_TYPE_LABELS } from '../lib/api';
 import type { Order } from '../types/crm';
 
 interface FinanceOverview {
@@ -42,7 +42,6 @@ interface FinanceOverview {
     contact_name?: string;
     amount_kopecks: number;
     payment_type: string;
-    payment_method: string;
     paid_at: string;
     comment: string;
   }>;
@@ -50,7 +49,6 @@ interface FinanceOverview {
     id: string;
     category: string;
     amount_kopecks: number;
-    payment_method: string;
     expense_date: string;
     description: string;
     order_id?: string | null;
@@ -80,14 +78,12 @@ export function FinanceView({ orders, expenseCategories, onOpenOrderById }: Fina
   const [payOrderId, setPayOrderId] = useState('');
   const [payAmountRub, setPayAmountRub] = useState('');
   const [payType, setPayType] = useState<'advance' | 'partial' | 'full'>('partial');
-  const [payMethod, setPayMethod] = useState<'cash' | 'bank' | 'card'>('bank');
   const [payDate, setPayDate] = useState(new Date().toISOString().slice(0, 10));
   const [payComment, setPayComment] = useState('');
 
   // Expense form
   const [expCategory, setExpCategory] = useState(expenseCategories[0]?.key || 'fuel');
   const [expAmountRub, setExpAmountRub] = useState('');
-  const [expMethod, setExpMethod] = useState<'cash' | 'bank' | 'card'>('card');
   const [expDate, setExpDate] = useState(new Date().toISOString().slice(0, 10));
   const [expOrderId, setExpOrderId] = useState('');
   const [expDesc, setExpDesc] = useState('');
@@ -123,7 +119,6 @@ export function FinanceView({ orders, expenseCategories, onOpenOrderById }: Fina
     setPayOrderId('');
     setPayAmountRub('');
     setPayType('partial');
-    setPayMethod('bank');
     setPayDate(new Date().toISOString().slice(0, 10));
     setPayComment('');
     setModal('payment');
@@ -134,7 +129,6 @@ export function FinanceView({ orders, expenseCategories, onOpenOrderById }: Fina
     setPayOrderId(orderId);
     setPayAmountRub('');
     setPayType(Number(paidKopecks) <= 0 ? 'advance' : 'partial');
-    setPayMethod('bank');
     setPayDate(new Date().toISOString().slice(0, 10));
     setPayComment('');
     setModal('payment');
@@ -145,7 +139,6 @@ export function FinanceView({ orders, expenseCategories, onOpenOrderById }: Fina
     setPayOrderId(p.order_id || '');
     setPayAmountRub(String(Math.round(p.amount_kopecks / 100)));
     setPayType((p.payment_type as 'advance' | 'partial' | 'full') || 'partial');
-    setPayMethod((p.payment_method as 'cash' | 'bank' | 'card') || 'bank');
     setPayDate((p.paid_at || '').slice(0, 10));
     setPayComment(p.comment || '');
     setModal('payment');
@@ -155,7 +148,6 @@ export function FinanceView({ orders, expenseCategories, onOpenOrderById }: Fina
     setEditingExpenseId(null);
     setExpCategory(expenseCategories[0]?.key || 'fuel');
     setExpAmountRub('');
-    setExpMethod('card');
     setExpDate(new Date().toISOString().slice(0, 10));
     setExpOrderId('');
     setExpDesc('');
@@ -166,7 +158,6 @@ export function FinanceView({ orders, expenseCategories, onOpenOrderById }: Fina
     setEditingExpenseId(ex.id);
     setExpCategory(ex.category);
     setExpAmountRub(String(Math.round(ex.amount_kopecks / 100)));
-    setExpMethod((ex.payment_method as 'cash' | 'bank' | 'card') || 'card');
     setExpDate((ex.expense_date || '').slice(0, 10));
     setExpOrderId(ex.order_id || '');
     setExpDesc(ex.description || '');
@@ -183,7 +174,6 @@ export function FinanceView({ orders, expenseCategories, onOpenOrderById }: Fina
         orderId: payOrderId || null,
         amountKopecks: Math.round(Number(payAmountRub) * 100),
         paymentType: payType,
-        paymentMethod: payMethod,
         paidAt: payDate,
         comment: payComment,
       };
@@ -245,7 +235,6 @@ export function FinanceView({ orders, expenseCategories, onOpenOrderById }: Fina
       const payload = {
         category: expCategory,
         amountKopecks: Math.round(Number(expAmountRub) * 100),
-        paymentMethod: expMethod,
         expenseDate: expDate,
         orderId: expOrderId || null,
         description: expDesc,
@@ -593,8 +582,7 @@ export function FinanceView({ orders, expenseCategories, onOpenOrderById }: Fina
                         {p.company_name || p.contact_name || 'Платёж клиента'}
                       </div>
                       <div className="text-zinc-400">
-                        {formatDateRu(p.paid_at)} · {PAYMENT_TYPE_LABELS[p.payment_type] || p.payment_type} ·{' '}
-                        {PAYMENT_METHOD_LABELS[p.payment_method] || p.payment_method}
+                        {formatDateRu(p.paid_at)} · {PAYMENT_TYPE_LABELS[p.payment_type] || p.payment_type}
                         {p.comment ? ` · ${p.comment}` : ''}
                       </div>
                     </div>
@@ -664,7 +652,7 @@ export function FinanceView({ orders, expenseCategories, onOpenOrderById }: Fina
                           {catLabel} {ex.order_number ? `· ${ex.order_number}` : ''}
                         </div>
                         <div className="text-zinc-400">
-                          {formatDateRu(ex.expense_date)} · {ex.description || PAYMENT_METHOD_LABELS[ex.payment_method]}
+                          {formatDateRu(ex.expense_date)} · {ex.description || ''}
                         </div>
                       </div>
                       <div className="flex shrink-0 items-center gap-2">
@@ -764,22 +752,13 @@ export function FinanceView({ orders, expenseCategories, onOpenOrderById }: Fina
                   <option value="partial">Частичная оплата</option>
                   <option value="full">Полный расчёт</option>
                 </select>
-                <select
-                  value={payMethod}
-                  onChange={(e) => setPayMethod(e.target.value as any)}
+                <input
+                  type="date"
+                  value={payDate}
+                  onChange={(e) => setPayDate(e.target.value)}
                   className="rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3 py-2.5 text-sm dark:border-white/[0.12] dark:bg-[#0B0C10]"
-                >
-                  <option value="bank">Безнал (р/с)</option>
-                  <option value="card">Карта</option>
-                  <option value="cash">Наличные</option>
-                </select>
+                />
               </div>
-              <input
-                type="date"
-                value={payDate}
-                onChange={(e) => setPayDate(e.target.value)}
-                className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3.5 py-2.5 text-sm dark:border-white/[0.12] dark:bg-[#0B0C10]"
-              />
               <input
                 type="text"
                 value={payComment}
@@ -836,15 +815,6 @@ export function FinanceView({ orders, expenseCategories, onOpenOrderById }: Fina
                 className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3.5 py-2.5 text-sm tabular-nums dark:border-white/[0.12] dark:bg-[#0B0C10]"
               />
               <div className="grid grid-cols-2 gap-2.5">
-                <select
-                  value={expMethod}
-                  onChange={(e) => setExpMethod(e.target.value as any)}
-                  className="rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3 py-2.5 text-sm dark:border-white/[0.12] dark:bg-[#0B0C10]"
-                >
-                  <option value="card">Карта</option>
-                  <option value="cash">Наличные</option>
-                  <option value="bank">Безнал (р/с)</option>
-                </select>
                 <input
                   type="date"
                   value={expDate}

@@ -197,18 +197,18 @@ withTransaction(db, () => {
   ).run(crypto.randomUUID(), empId, v1, adminId, now);
 
   db.prepare(
-    `INSERT INTO salary_payouts (id, user_id, amount_kopecks, payment_method, paid_at, comment, created_by, created_at)
-     VALUES (?, ?, 300000, 'card', ?, 'Аванс за смену и выезд', ?, ?)`
+    `INSERT INTO salary_payouts (id, user_id, amount_kopecks, paid_at, comment, created_by, created_at)
+     VALUES (?, ?, 300000, ?, 'Аванс за смену и выезд', ?, ?)`
   ).run(crypto.randomUUID(), empId, today, adminId, now);
 
   db.prepare(
-    `INSERT INTO client_payments (id, order_id, company_id, contact_id, amount_kopecks, payment_type, payment_method, paid_at, comment, created_by, created_at)
-     VALUES (?, ?, ?, ?, 3500000, 'advance', 'bank', ?, 'Предоплата 50% по счёту', ?, ?)`
+    `INSERT INTO client_payments (id, order_id, company_id, contact_id, amount_kopecks, payment_type, paid_at, comment, created_by, created_at)
+     VALUES (?, ?, ?, ?, 3500000, 'advance', ?, 'Предоплата 50% по счёту', ?, ?)`
   ).run(crypto.randomUUID(), ord1, comp1, ct1, yesterday, adminId, now);
 
   db.prepare(
-    `INSERT INTO expenses (id, category, amount_kopecks, payment_method, expense_date, description, order_id, created_by, created_at)
-     VALUES (?, 'fuel', 240000, 'card', ?, 'Доставка бруса на объект ТЦ Галерея', ?, ?, ?)`
+    `INSERT INTO expenses (id, category, amount_kopecks, expense_date, description, order_id, created_by, created_at)
+     VALUES (?, 'fuel', 240000, ?, 'Доставка бруса на объект ТЦ Галерея', ?, ?, ?)`
   ).run(crypto.randomUUID(), yesterday, ord1, adminId, now);
 
   writeAuditLog(db, adminId, 'system', 'seed', 'demo_seed_applied', {});

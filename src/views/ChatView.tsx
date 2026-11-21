@@ -1,9 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Mic, Paperclip, Send, Square, Trash2, Pencil } from 'lucide-react';
+import { Mic, Paperclip, Send, Square, Trash2, Pencil, Reply } from 'lucide-react';
 import { apiRequest, formatDateTimeRu } from '../lib/api';
 import type { AuthUser, DirectoryUser } from '../types/crm';
 
-type Message = { seq: number; id: string; author_id: string; author_name: string; body: string; file_id: string | null; original_name: string | null; mime_type: string | null; created_at: string; edited_at: string | null };
+type Message = { seq: number; id: string; author_id: string; author_name: string; body: string; file_id: string | null; original_name: string | null; mime_type: string | null; created_at: string; edited_at: string | null; reply_to_id: string | null; reply_body: string | null; reply_author: string | null };
 type Response = { messages: Message[]; unreadCount: number; hasMore: boolean };
 type Room = { id: string; name: string; unreadCount: number; isMember: boolean };
 export function ChatView({ user, onRead, attachedOrder, onClearOrder, onOpenOrder }: { user: AuthUser; onRead: () => void; attachedOrder: {id:string;number:string} | null; onClearOrder: () => void; onOpenOrder: (id:string) => void }) {
@@ -73,21 +73,29 @@ export function ChatView({ user, onRead, attachedOrder, onClearOrder, onOpenOrde
 }
 
 function ChatRoom({ user, room, onRead, attachedOrder, onClearOrder, onOpenOrder }: { user: AuthUser; room: Room; onRead: () => void; attachedOrder: {id:string;number:string} | null; onClearOrder: () => void; onOpenOrder: (id:string) => void }) {
+  const [file, setFile] = useState<File | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (!file || !(file.type.startsWith('image/') || file.type.startsWith('video/'))) { setPreviewUrl(null); return; }
+    const url = URL.createObjectURL(file);
+    setPreviewUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [file]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [hasMore, setHasMore] = useState(false);
   const [body, setBody] = useState('');
-  const [file, setFile] = useState<File | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [recording, setRecording] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
+  const [replying, setReplying] = useState<Message | null>(null);
   const [pushMessage, setPushMessage] = useState('');
   const recorder = useRef<MediaRecorder | null>(null);
   const stream = useRef<MediaStream | null>(null);
   const end = useRef<HTMLDivElement>(null);
   const initial = useRef(true);
   const atBottom = useRef(true);
-  const pendingMessage = useRef<{id:string;body:string;file:File|null} | null>(null);
+  const pendingMessage = useRef<{id:string;body:string;file:File|null;replyToId:string|null} | null>(null);
   const load = async () => {
     const data = await apiRequest<Response>(`/api/chat/messages?room=${encodeURIComponent(room.id)}`, { useCache: false });
     const firstLoad = initial.current;
@@ -119,13 +127,14 @@ function ChatRoom({ user, room, onRead, attachedOrder, onClearOrder, onOpenOrder
       if (editing) await apiRequest(`/api/chat/messages/${editing}`, { method: 'PATCH', body: { body }, skipOfflineQueue: true });
       else {
         const fullBody = attachedOrder ? `${body.trim()}${body.trim() ? '\n' : ''}[[order:${attachedOrder.id}]]` : body;
-        if (!pendingMessage.current || pendingMessage.current.body !== fullBody || pendingMessage.current.file !== file) pendingMessage.current = {id:crypto.randomUUID(),body:fullBody,file};
-        const data = new FormData(); data.set('body', fullBody); data.set('roomId', room.id); data.set('clientMessageId',pendingMessage.current.id); if (file) data.set('file', file);
+        const replyToId = replying?.id || null;
+        if (!pendingMessage.current || pendingMessage.current.body !== fullBody || pendingMessage.current.file !== file || pendingMessage.current.replyToId !== replyToId) pendingMessage.current = {id:crypto.randomUUID(),body:fullBody,file,replyToId};
+        const data = new FormData(); data.set('body', fullBody); data.set('roomId', room.id); data.set('clientMessageId',pendingMessage.current.id); if (file) data.set('file', file); if (replyToId) data.set('replyToId', replyToId);
         await apiRequest('/api/chat/messages', { method: 'POST', formData: data, skipOfflineQueue: true });
         pendingMessage.current = null;
         onClearOrder();
       }
-      setBody(''); setFile(null); setEditing(null);
+      setBody(''); setFile(null); setEditing(null); setReplying(null);
       try { await load(); end.current?.scrollIntoView({ behavior: 'smooth' }); }
       catch { setError('Сообщение отправлено, но не удалось обновить чат.'); }
     } catch (e) { setError(e instanceof Error ? e.message : 'Ошибка отправки'); } finally { setBusy(false); }
@@ -161,21 +170,37 @@ function ChatRoom({ user, room, onRead, attachedOrder, onClearOrder, onOpenOrder
     <div className="min-h-[45vh] space-y-3 rounded-2xl border border-black/10 bg-white p-4 dark:border-white/10 dark:bg-[#15171C]">
       {hasMore && <button className="text-sm text-[#0071E3]" onClick={() => void older()}>Загрузить более ранние сообщения</button>}
       {!messages.length && <p className="py-10 text-center text-sm text-zinc-500">Пока нет сообщений. Начните общение.</p>}
-      {messages.map(m => { const mine = m.author_id === user.id; const canEdit = mine && Date.now() - Date.parse(m.created_at) < (user.role === 'admin' ? 86400000 : 300000); return <div key={m.id} className={`flex gap-2 ${mine ? 'flex-row-reverse' : ''}`}>
+      {messages.map(m => { const mine = m.author_id === user.id; const canEdit = mine && Date.now() - Date.parse(m.created_at) < (user.role === 'admin' ? 86400000 : 300000); return <div id={`chat-message-${m.id}`} key={m.id} className={`flex gap-2 ${mine ? 'flex-row-reverse' : ''}`}>
         <img src={`/api/chat/avatar/${m.author_id}`} alt="" onError={e => { e.currentTarget.style.visibility = 'hidden'; }} className="h-9 w-9 rounded-full bg-zinc-300 object-cover" />
         <div className={`max-w-[85%] rounded-2xl px-3 py-2 text-sm ${mine ? 'bg-[#dfefff] dark:bg-[#193c5f]' : 'bg-zinc-100 dark:bg-[#282b32]'}`}>
           <div className="text-xs font-semibold text-[#0071E3] dark:text-[#71b5ff]">{m.author_name}</div>
+          {m.reply_to_id && <button type="button" className="my-1 block max-w-full border-l-2 border-blue-500 pl-2 text-left text-xs" onClick={() => document.getElementById(`chat-message-${m.reply_to_id}`)?.scrollIntoView({behavior:'smooth',block:'center'})}><span className="block font-semibold">{m.reply_author || 'Сообщение недоступно'}</span><span className="line-clamp-2">{m.reply_author ? (m.reply_body || 'Вложение') : ''}</span></button>}
           {m.body && <p className="whitespace-pre-wrap break-words">{m.body.split(/(\[\[order:[0-9a-f-]{36}\]\])/gi).map((part,index) => { const match = /^\[\[order:([0-9a-f-]{36})\]\]$/i.exec(part); return match ? <button key={index} type="button" onClick={() => onOpenOrder(match[1])} className="text-[#0071E3] underline dark:text-[#71b5ff]">Открыть заказ</button> : part; })}</p>}
-          {m.file_id && (m.mime_type?.startsWith('audio/') ? <audio controls preload="metadata" src={`/api/chat/files/${m.file_id}`} className="max-w-full" /> : <a className="block break-all text-[#0071E3] underline dark:text-[#71b5ff]" href={`/api/chat/files/${m.file_id}`} target="_blank" rel="noreferrer">{m.original_name}</a>)}
-          <div className="mt-1 flex items-center gap-2 text-[11px] text-zinc-500"><span>{formatDateTimeRu(m.created_at)}{m.edited_at ? ' · изменено' : ''}</span>{canEdit && <button aria-label="Редактировать сообщение" onClick={() => { setEditing(m.id); setBody(m.body); setFile(null); }}><Pencil size={13} /></button>}{(mine || user.role === 'admin') && <button aria-label="Удалить сообщение" onClick={() => { if (window.confirm('Удалить сообщение?')) void apiRequest(`/api/chat/messages/${m.id}`, { method: 'DELETE', skipOfflineQueue: true }).then(load).catch(e => setError(e.message)); }}><Trash2 size={13} /></button>}</div>
+          {m.file_id && (m.mime_type?.startsWith('audio/') ? <audio controls preload="metadata" src={`/api/chat/files/${m.file_id}`} className="max-w-full" /> : (m.mime_type?.startsWith('image/') || m.mime_type?.startsWith('video/')) ? <div className="mt-1 space-y-1"><div className="relative overflow-hidden rounded-xl border border-black/10 bg-white dark:border-white/10 dark:bg-[#0B0C10]">{m.mime_type?.startsWith('video/') ? <video controls preload="metadata" src={`/api/chat/files/${m.file_id}`} className="max-h-48 w-full object-contain" /> : <img src={`/api/chat/files/${m.file_id}`} alt={m.original_name || ''} loading="lazy" className="max-h-48 w-full object-contain" />}</div><a className="block break-all text-[#0071E3] underline dark:text-[#71b5ff]" href={`/api/chat/files/${m.file_id}`} target="_blank" rel="noreferrer">{m.original_name}</a></div> : <a className="block break-all text-[#0071E3] underline dark:text-[#71b5ff]" href={`/api/chat/files/${m.file_id}`} target="_blank" rel="noreferrer">{m.original_name}</a>)}
+          <div className="mt-1 flex items-center gap-2 text-[11px] text-zinc-500"><span>{formatDateTimeRu(m.created_at)}{m.edited_at ? ' · изменено' : ''}</span><button type="button" aria-label="Ответить на сообщение" onClick={() => { setEditing(null); setReplying(m); }}><Reply size={13} /></button>{canEdit && <button aria-label="Редактировать сообщение" onClick={() => { setReplying(null); setEditing(m.id); setBody(m.body); setFile(null); }}><Pencil size={13} /></button>}{(mine || user.role === 'admin') && <button aria-label="Удалить сообщение" onClick={() => { if (window.confirm('Удалить сообщение?')) void apiRequest(`/api/chat/messages/${m.id}`, { method: 'DELETE', skipOfflineQueue: true }).then(load).catch(e => setError(e.message)); }}><Trash2 size={13} /></button>}</div>
         </div></div>; })}<div ref={end} />
     </div>
     <form onSubmit={send} className="sticky bottom-20 flex flex-wrap items-end gap-2 rounded-2xl border border-black/10 bg-white p-3 dark:border-white/10 dark:bg-[#15171C] md:bottom-3">
       {editing && <div className="w-full text-xs">Редактирование сообщения <button type="button" className="text-[#0071E3]" onClick={() => { setEditing(null); setBody(''); }}>Отмена</button></div>}
+      {replying && !editing && <div className="w-full text-xs">Ответ для {replying.author_name}: {(replying.body || 'Вложение').slice(0, 100)} <button type="button" className="text-[#0071E3]" onClick={() => setReplying(null)}>Отмена</button></div>}
       {!editing && attachedOrder && <div className="w-full text-xs">Прикреплён заказ {attachedOrder.number} <button type="button" onClick={onClearOrder} className="text-red-500">Убрать</button></div>}
-      {file && <div className="w-full text-xs">{file.name} <button type="button" className="text-red-500" onClick={() => setFile(null)}>Убрать</button></div>}
+      {file && <div className="w-full text-xs">{file.name} <button type="button" className="text-red-500" onClick={() => setFile(null)}>Убрать</button>{previewUrl && (file.type.startsWith('image/') ? <img src={previewUrl} alt="" className="mt-1 max-h-32 rounded-xl object-contain" /> : <video src={previewUrl} controls preload="metadata" className="mt-1 max-h-32 rounded-xl" />)}</div>}
       {!editing && <label className="cursor-pointer rounded-xl p-2" title="Прикрепить файл"><Paperclip size={20} /><input type="file" className="hidden" onChange={e => setFile(e.target.files?.[0] || null)} /></label>}
-      <textarea aria-label="Сообщение" value={body} onChange={e => setBody(e.target.value)} rows={2} maxLength={5000} placeholder="Напишите сообщение" className="min-w-0 flex-1 resize-y rounded-xl bg-zinc-100 p-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 dark:bg-[#0B0C10]" />
+      <textarea
+        aria-label="Сообщение"
+        value={body}
+        onChange={(e) => setBody(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+            e.preventDefault();
+            if (!busy && !recording) e.currentTarget.form?.requestSubmit();
+          }
+        }}
+        rows={2}
+        maxLength={5000}
+        placeholder="Напишите сообщение"
+        className="min-w-0 flex-1 resize-y rounded-xl bg-zinc-100 p-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 dark:bg-[#0B0C10]"
+      />
       {!editing && <button type="button" aria-label={recording ? 'Остановить запись' : 'Записать голосовое сообщение'} onClick={() => void record()} className={`rounded-xl p-2 ${recording ? 'text-red-500' : ''}`}>{recording ? <Square size={20} /> : <Mic size={20} />}</button>}
       <button type="submit" disabled={busy || recording} aria-label="Отправить" className="rounded-xl bg-[#0071E3] p-2.5 text-white disabled:opacity-50"><Send size={20} /></button>
     </form>

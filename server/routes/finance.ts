@@ -222,14 +222,13 @@ export function createFinanceRouter(db: DatabaseSync): express.Router {
 
   // Record client payment (advance / partial / full)
   router.post('/payments', requireAdmin, (req: AuthedRequest, res) => {
-    const { orderId, companyId, contactId, amountKopecks, paymentType, paymentMethod, paidAt, comment } =
+    const { orderId, companyId, contactId, amountKopecks, paymentType, paidAt, comment } =
       req.body as {
         orderId?: string | null;
         companyId?: string | null;
         contactId?: string | null;
         amountKopecks?: number;
         paymentType?: 'advance' | 'partial' | 'full';
-        paymentMethod?: 'cash' | 'bank' | 'card';
         paidAt?: string;
         comment?: string;
       };
@@ -242,7 +241,6 @@ export function createFinanceRouter(db: DatabaseSync): express.Router {
     const id = crypto.randomUUID();
     const amount = Math.round(Number(amountKopecks));
     const pType = paymentType === 'advance' || paymentType === 'full' ? paymentType : 'partial';
-    const pMethod = paymentMethod === 'bank' || paymentMethod === 'card' ? paymentMethod : 'cash';
     const dateStr = paidAt || new Date().toISOString().slice(0, 10);
     const now = new Date().toISOString();
 
@@ -260,8 +258,8 @@ export function createFinanceRouter(db: DatabaseSync): express.Router {
 
     withTransaction(db, () => {
       db.prepare(
-        `INSERT INTO client_payments (id, order_id, company_id, contact_id, amount_kopecks, payment_type, payment_method, paid_at, comment, created_by, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO client_payments (id, order_id, company_id, contact_id, amount_kopecks, payment_type, paid_at, comment, created_by, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
         id,
         orderId || null,
@@ -269,7 +267,6 @@ export function createFinanceRouter(db: DatabaseSync): express.Router {
         resolvedContactId,
         amount,
         pType,
-        pMethod,
         dateStr,
         (comment || '').trim(),
         req.authUser!.id,
@@ -299,7 +296,6 @@ export function createFinanceRouter(db: DatabaseSync): express.Router {
       orderId?: string | null;
       amountKopecks?: number;
       paymentType?: 'advance' | 'partial' | 'full';
-      paymentMethod?: 'cash' | 'bank' | 'card';
       paidAt?: string;
       comment?: string;
     };
@@ -328,7 +324,7 @@ export function createFinanceRouter(db: DatabaseSync): express.Router {
     withTransaction(db, () => {
       db.prepare(
         `UPDATE client_payments
-         SET order_id = ?, company_id = ?, contact_id = ?, amount_kopecks = ?, payment_type = ?, payment_method = ?, paid_at = ?, comment = ?
+         SET order_id = ?, company_id = ?, contact_id = ?, amount_kopecks = ?, payment_type = ?, paid_at = ?, comment = ?
          WHERE id = ?`
       ).run(
         nextOrderId,
@@ -336,7 +332,6 @@ export function createFinanceRouter(db: DatabaseSync): express.Router {
         resolvedContactId,
         b.amountKopecks !== undefined ? Math.round(Number(b.amountKopecks)) : existing.amount_kopecks,
         b.paymentType || existing.payment_type,
-        b.paymentMethod || existing.payment_method,
         b.paidAt || existing.paid_at,
         b.comment !== undefined ? b.comment.trim() : existing.comment,
         id
@@ -369,10 +364,9 @@ export function createFinanceRouter(db: DatabaseSync): express.Router {
 
   // Record company expense
   router.post('/expenses', requireAdmin, (req: AuthedRequest, res) => {
-    const { category, amountKopecks, paymentMethod, expenseDate, description, orderId } = req.body as {
+    const { category, amountKopecks, expenseDate, description, orderId } = req.body as {
       category?: string;
       amountKopecks?: number;
-      paymentMethod?: 'cash' | 'bank' | 'card';
       expenseDate?: string;
       description?: string;
       orderId?: string | null;
@@ -385,19 +379,17 @@ export function createFinanceRouter(db: DatabaseSync): express.Router {
 
     const id = crypto.randomUUID();
     const amount = Math.round(Number(amountKopecks));
-    const pMethod = paymentMethod === 'bank' || paymentMethod === 'card' ? paymentMethod : 'cash';
     const dateStr = expenseDate || new Date().toISOString().slice(0, 10);
     const now = new Date().toISOString();
 
     withTransaction(db, () => {
       db.prepare(
-        `INSERT INTO expenses (id, category, amount_kopecks, payment_method, expense_date, description, order_id, created_by, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO expenses (id, category, amount_kopecks, expense_date, description, order_id, created_by, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
         id,
         category.trim(),
         amount,
-        pMethod,
         dateStr,
         (description || '').trim(),
         orderId || null,
@@ -426,7 +418,6 @@ export function createFinanceRouter(db: DatabaseSync): express.Router {
     const b = req.body as {
       category?: string;
       amountKopecks?: number;
-      paymentMethod?: 'cash' | 'bank' | 'card';
       expenseDate?: string;
       description?: string;
       orderId?: string | null;
@@ -440,12 +431,11 @@ export function createFinanceRouter(db: DatabaseSync): express.Router {
     withTransaction(db, () => {
       db.prepare(
         `UPDATE expenses
-         SET category = ?, amount_kopecks = ?, payment_method = ?, expense_date = ?, description = ?, order_id = ?
+         SET category = ?, amount_kopecks = ?, expense_date = ?, description = ?, order_id = ?
          WHERE id = ?`
       ).run(
         b.category?.trim() || existing.category,
         b.amountKopecks !== undefined ? Math.round(Number(b.amountKopecks)) : existing.amount_kopecks,
-        b.paymentMethod || existing.payment_method,
         b.expenseDate || existing.expense_date,
         b.description !== undefined ? b.description.trim() : existing.description,
         b.orderId !== undefined ? b.orderId || null : existing.order_id,

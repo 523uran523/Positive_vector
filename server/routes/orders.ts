@@ -17,6 +17,12 @@ const ALLOWED_MIME = new Set([
   'image/png',
   'image/webp',
   'image/gif',
+  'image/heic',
+  'image/heif',
+  'video/mp4',
+  'video/quicktime',
+  'video/webm',
+  'video/x-m4v',
   'application/pdf',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -31,6 +37,8 @@ export function getUploadDir(): string {
 
 function createMulterUpload() {
   const uploadDir = getUploadDir();
+  const maxUploadBytes = Number(process.env.MAX_UPLOAD_BYTES || 0);
+  if (!Number.isSafeInteger(maxUploadBytes) || maxUploadBytes < 0) throw new Error('MAX_UPLOAD_BYTES must be a non-negative integer');
   const storage = multer.diskStorage({
     destination: (_req, _file, cb) => cb(null, uploadDir),
     filename: (_req, file, cb) => {
@@ -40,7 +48,7 @@ function createMulterUpload() {
   });
   return multer({
     storage,
-    limits: { fileSize: 12 * 1024 * 1024 },
+    limits: { files: 1, ...(maxUploadBytes > 0 ? { fileSize: maxUploadBytes } : {}) },
     fileFilter: (_req, file, cb) => {
       if (ALLOWED_MIME.has(file.mimetype)) {
         cb(null, true);
@@ -218,7 +226,7 @@ function enrichOrder(db: DatabaseSync, orderRow: Record<string, unknown>, isAdmi
 
     payments = db
       .prepare(
-        `SELECT id, amount_kopecks, payment_type, payment_method, paid_at, comment, created_at
+        `SELECT id, amount_kopecks, payment_type, paid_at, comment, created_at
          FROM client_payments
          WHERE order_id = ?
          ORDER BY paid_at DESC, created_at DESC`
@@ -1234,7 +1242,7 @@ export function createOrdersRouter(db: DatabaseSync): express.Router {
 
     res.setHeader('Content-Type', att.mime_type);
     res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(att.original_name)}"`);
-    fs.createReadStream(fullPath).pipe(res);
+    res.sendFile(fullPath);
   });
 
   // Delete attachment

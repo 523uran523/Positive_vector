@@ -12,6 +12,20 @@ import { writeAuditLog } from '../security.ts';
 const allowed = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'application/pdf', 'text/plain', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'audio/webm', 'audio/ogg', 'audio/mp4', 'audio/mpeg']);
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 12 * 1024 * 1024, files: 1 } });
 function folder() { const p = path.resolve(process.env.UPLOAD_DIR || './data/uploads', 'chat'); fs.mkdirSync(p, { recursive: true }); return p; }
+const maxUploadBytes = Number(process.env.MAX_UPLOAD_BYTES || 0);
+if (!Number.isSafeInteger(maxUploadBytes) || maxUploadBytes < 0) throw new Error('MAX_UPLOAD_BYTES must be a non-negative integer');
+const messageUpload = multer({
+  storage: multer.diskStorage({ destination: (_req, _file, cb) => cb(null, folder()), filename: (_req, _file, cb) => cb(null, crypto.randomUUID()) }),
+  limits: { files: 1, ...(maxUploadBytes > 0 ? { fileSize: maxUploadBytes } : {}) },
+});
+function hashFile(filePath: string): string {
+  const fd = fs.openSync(filePath, 'r');
+  const hash = crypto.createHash('sha256');
+  const buffer = Buffer.allocUnsafe(64 * 1024);
+  try { let count: number; while ((count = fs.readSync(fd, buffer, 0, buffer.length, null)) > 0) hash.update(buffer.subarray(0, count)); }
+  finally { fs.closeSync(fd); }
+  return hash.digest('hex');
+}
 function cutoff(db: DatabaseSync, userId: string) { return Number((db.prepare('SELECT chat_history_after FROM users WHERE id = ?').get(userId) as { chat_history_after: number }).chat_history_after); }
 function baseType(type: string) { return type.split(';')[0].trim().toLowerCase(); }
 function imageValid(type: string, b: Buffer) {
@@ -108,9 +122,12 @@ export function createChatRouter(db: DatabaseSync) {
     if (!roomAccess(roomId,req.authUser!.id)) { res.sendStatus(403); return; }
     const after = roomCutoff(roomId, req.authUser!.id);
     const before = Math.max(0, Number(req.query.before) || Number.MAX_SAFE_INTEGER);
-    const messages = db.prepare(`SELECT m.seq, m.id, m.author_id, u.full_name AS author_name, m.body, m.file_id, f.original_name, f.mime_type, f.size_bytes, m.created_at, m.edited_at
+    const messages = db.prepare(`SELECT m.seq, m.id, m.author_id, u.full_name AS author_name, m.body, m.file_id, f.original_name, f.mime_type, f.size_bytes, m.created_at, m.edited_at,
+      m.reply_to_id, CASE WHEN parent.deleted_at IS NULL AND parent.seq > ? THEN parent.body END AS reply_body,
+      CASE WHEN parent.deleted_at IS NULL AND parent.seq > ? THEN pu.full_name END AS reply_author
       FROM chat_messages m JOIN users u ON u.id=m.author_id LEFT JOIN chat_files f ON f.id=m.file_id
-      WHERE m.room_id = ? AND m.seq > ? AND m.seq < ? AND m.deleted_at IS NULL ORDER BY m.seq DESC LIMIT 100`).all(roomId, after, before).reverse();
+      LEFT JOIN chat_messages parent ON parent.id=m.reply_to_id AND parent.room_id=m.room_id LEFT JOIN users pu ON pu.id=parent.author_id
+      WHERE m.room_id = ? AND m.seq > ? AND m.seq < ? AND m.deleted_at IS NULL ORDER BY m.seq DESC LIMIT 100`).all(after, after, roomId, after, before).reverse();
     const row = db.prepare(`SELECT COUNT(*) AS count FROM chat_messages WHERE room_id=? AND seq > ? AND seq > COALESCE((SELECT last_read_seq FROM chat_reads WHERE user_id=? AND room_id=?),0) AND author_id != ? AND deleted_at IS NULL`).get(roomId, after, req.authUser!.id, roomId, req.authUser!.id) as { count: number };
     res.json({ messages, unreadCount: row.count, hasMore: messages.length === 100 });
   });
@@ -122,44 +139,54 @@ export function createChatRouter(db: DatabaseSync) {
     db.prepare('INSERT INTO chat_reads(user_id,room_id,last_read_seq) VALUES (?,?,?) ON CONFLICT(user_id,room_id) DO UPDATE SET last_read_seq=MAX(last_read_seq,excluded.last_read_seq)').run(req.authUser!.id,roomId,seq);
     res.json({ ok: true });
   });
-  router.post('/messages', upload.single('file'), (req: AuthedRequest, res) => {
+  router.post('/messages', (req: AuthedRequest, res, next) => {
+    res.once('finish', () => { if (req.file && (res.statusCode >= 400 || res.locals.replayed)) fs.rmSync(req.file.path, {force:true}); });
+    next();
+  }, messageUpload.single('file'), (req: AuthedRequest, res) => {
     const user = req.authUser!, body = typeof req.body.body === 'string' ? req.body.body.trim() : '';
     const roomId = typeof req.body.roomId === 'string' ? req.body.roomId : 'general';
     if (!roomAccess(roomId,user.id)) { res.sendStatus(403); return; }
+    const replyTo = typeof req.body.replyToId === 'string' && req.body.replyToId ? req.body.replyToId : null;
+    if (replyTo && !db.prepare('SELECT 1 FROM chat_messages WHERE id=? AND room_id=? AND seq>? AND deleted_at IS NULL').get(replyTo, roomId, roomCutoff(roomId,user.id))) {
+      res.status(400).json({error:'Сообщение для ответа недоступно.'}); return;
+    }
     if (body.length > 5000 || (!body && !req.file)) { res.status(400).json({ error: 'Введите сообщение до 5000 символов или прикрепите файл.' }); return; }
     const clientId = req.body.clientMessageId;
     if (clientId !== undefined && (typeof clientId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(clientId))) {
       res.status(400).json({error:'Некорректный идентификатор сообщения.'}); return;
     }
     if (clientId) {
-      const previous = db.prepare('SELECT author_id,room_id,body,file_id FROM chat_messages WHERE id=?').get(clientId) as {author_id:string;room_id:string;body:string;file_id:string|null} | undefined;
+      const previous = db.prepare('SELECT author_id,room_id,body,file_id,reply_to_id FROM chat_messages WHERE id=?').get(clientId) as {author_id:string;room_id:string;body:string;file_id:string|null;reply_to_id:string|null} | undefined;
       if (previous) {
         let sameFile = !previous.file_id && !req.file;
         if (previous.file_id && req.file) {
           const saved = db.prepare('SELECT stored_name,original_name,mime_type FROM chat_files WHERE id=?').get(previous.file_id) as {stored_name:string;original_name:string;mime_type:string} | undefined;
           if (saved && saved.original_name === path.basename(req.file.originalname).slice(0,200) && saved.mime_type === baseType(req.file.mimetype)) {
             const savedPath = path.join(folder(),saved.stored_name);
-            sameFile = fs.existsSync(savedPath) && crypto.createHash('sha256').update(fs.readFileSync(savedPath)).digest('hex') === crypto.createHash('sha256').update(req.file.buffer).digest('hex');
+            sameFile = fs.existsSync(savedPath) && hashFile(savedPath) === hashFile(req.file.path);
           }
         }
-        if (previous.author_id !== user.id || previous.room_id !== roomId || previous.body !== body || !sameFile) {
+        if (previous.author_id !== user.id || previous.room_id !== roomId || previous.body !== body || previous.reply_to_id !== replyTo || !sameFile) {
           res.status(409).json({error:'Повторная отправка отличается от исходного сообщения.'}); return;
         }
-        res.status(200).json({id:clientId,replayed:true}); return;
+        res.locals.replayed = true; res.status(200).json({id:clientId,replayed:true}); return;
       }
     }
     let fileId: string | null = null, stored = '';
     if (req.file) {
       const type = baseType(req.file.mimetype);
-      if (!allowed.has(type) || (type.startsWith('image/') && !imageValid(type, req.file.buffer))) { res.status(400).json({ error: 'Формат файла не поддерживается.' }); return; }
-      fileId = crypto.randomUUID(); stored = crypto.randomUUID();
-      fs.writeFileSync(path.join(folder(), stored), req.file.buffer, { flag: 'wx', mode: 0o600 });
+      const fd = fs.openSync(req.file.path, 'r'); const prefix = Buffer.alloc(16);
+      let read: number; try { read = fs.readSync(fd, prefix, 0, prefix.length, 0); } finally { fs.closeSync(fd); }
+      const head = prefix.subarray(0, read);
+      const video = (type === 'video/mp4' || type === 'video/quicktime' || type === 'video/x-m4v') ? head.subarray(4, 8).toString() === 'ftyp' : type === 'video/webm' && head.subarray(0, 4).equals(Buffer.from([0x1a,0x45,0xdf,0xa3]));
+      if ((!allowed.has(type) && !video) || (type.startsWith('image/') && !imageValid(type, head))) { res.status(400).json({ error: 'Формат файла не поддерживается.' }); return; }
+      fileId = crypto.randomUUID(); stored = req.file.filename; fs.chmodSync(req.file.path, 0o600);
     }
     const now = new Date().toISOString(), id = clientId || crypto.randomUUID();
     try {
       withTransaction(db, () => {
         if (req.file && fileId) db.prepare('INSERT INTO chat_files VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(fileId, stored, path.basename(req.file.originalname).slice(0, 200), baseType(req.file.mimetype), req.file.size, user.id, 'message', now);
-        db.prepare('INSERT INTO chat_messages(id,author_id,body,file_id,created_at,room_id) VALUES (?,?,?,?,?,?)').run(id, user.id, body, fileId, now, roomId);
+        db.prepare('INSERT INTO chat_messages(id,author_id,body,file_id,created_at,room_id,reply_to_id) VALUES (?,?,?,?,?,?,?)').run(id, user.id, body, fileId, now, roomId, replyTo);
       });
     } catch (error) { if (stored) fs.rmSync(path.join(folder(), stored), { force: true }); throw error; }
     broadcast(roomId, user.id, user.fullName, body || (req.file?.mimetype.startsWith('audio/') ? 'Голосовое сообщение' : 'Файл'));
@@ -184,8 +211,9 @@ export function createChatRouter(db: DatabaseSync) {
     const user = req.authUser!;
     const file = db.prepare(`SELECT f.*,m.room_id,m.seq FROM chat_files f JOIN chat_messages m ON m.file_id=f.id WHERE f.id=? AND m.deleted_at IS NULL`).get(String(req.params.id)) as any;
     if (!file || !roomAccess(file.room_id,user.id) || file.seq <= roomCutoff(file.room_id,user.id)) { res.sendStatus(404); return; }
-    res.setHeader('Content-Type', file.mime_type.startsWith('image/') || file.mime_type.startsWith('audio/') ? file.mime_type : 'application/octet-stream');
-    res.setHeader('Content-Disposition', `${file.mime_type.startsWith('image/') || file.mime_type.startsWith('audio/') ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(file.original_name)}`);
+    const inline = /^(image|audio|video)\//.test(file.mime_type);
+    res.setHeader('Content-Type', inline ? file.mime_type : 'application/octet-stream');
+    res.setHeader('Content-Disposition', `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(file.original_name)}`);
     res.sendFile(path.join(folder(), file.stored_name));
   });
   router.get('/avatar/:id', (req, res) => {

@@ -29,7 +29,7 @@ export type NavTab =
   | 'clients'
   | 'warehouse'
   | 'finance'
-  | 'accounting'
+  | 'documents'
   | 'employees'
   | 'salary'
   | 'settings';
@@ -78,7 +78,7 @@ export function AppShell({
         { id: 'clients', label: 'Клиенты', icon: Building2 },
         { id: 'warehouse', label: 'Склад', icon: Package },
         { id: 'finance', label: 'Финансы', icon: Wallet },
-        ...(user.accountingAccess ? [{ id: 'accounting' as const, label: 'Бухгалтерия', icon: FileText }] : []),
+        ...(user.documentsAccess ? [{ id: 'documents' as const, label: 'Документы', icon: FileText }] : []),
         { id: 'employees', label: 'Сотрудники', icon: Users },
         { id: 'settings', label: 'Настройки', icon: Settings },
       ]

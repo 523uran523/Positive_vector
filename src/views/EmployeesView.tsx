@@ -14,6 +14,7 @@ import { apiRequest, formatDateTimeRu, formatRub } from '../lib/api';
 import type { AuthUser, PermissionKey } from '../types/crm';
 
 interface SalaryEmployeeSummary {
+  activity: Array<{ month: string; visits: number; shifts: number }>;
   id: string;
   full_name: string;
   login: string;
@@ -21,9 +22,41 @@ interface SalaryEmployeeSummary {
   position: string;
   shift_rate_kopecks: number;
   is_active: number;
+  visitAccruedKopecks: number;
+  shiftAccruedKopecks: number;
+  manualAccruedKopecks: number;
   totalAccruedKopecks: number;
   totalPaidKopecks: number;
   remainingKopecks: number;
+  overpaidKopecks: number;
+  lastOperationAt: string | null;
+}
+
+interface LedgerEntry {
+  id: string;
+  kind: 'accrual' | 'payout';
+  source: 'visit' | 'shift' | 'manual' | 'payout';
+  amount_kopecks: number;
+  description: string;
+  occurred_at: string;
+  order_id: string | null;
+  order_number: string | null;
+  visit_title: string | null;
+}
+
+interface MonthlyRow {
+  month: string;
+  accruedKopecks: number;
+  paidKopecks: number;
+  deltaKopecks: number;
+  employees: Array<{
+    userId: string;
+    fullName: string;
+    visitKopecks: number;
+    shiftKopecks: number;
+    manualKopecks: number;
+    paidKopecks: number;
+  }>;
 }
 
 interface VisitAssignmentRow {
@@ -81,11 +114,47 @@ export function EmployeesView({ onOpenOrderById, currentUserId, onCurrentUserUpd
   // Payout & Adjustment forms
   const [targetUserId, setTargetUserId] = useState('');
   const [amountRub, setAmountRub] = useState('');
-  const [payMethod, setPayMethod] = useState<'cash' | 'bank' | 'card'>('card');
   const [comment, setComment] = useState('');
 
   // Inline visit wage inputs
   const [wageDrafts, setWageDrafts] = useState<Record<string, string>>({});
+
+  // Payout form: payment date (payment method is no longer part of accounting)
+  const [payDate, setPayDate] = useState(new Date().toISOString().slice(0, 10));
+
+  // Per-employee ledger and monthly breakdown
+  const [ledgerUser, setLedgerUser] = useState<AuthUser | null>(null);
+  const [ledger, setLedger] = useState<LedgerEntry[]>([]);
+  const [ledgerBusy, setLedgerBusy] = useState(false);
+  const [months, setMonths] = useState<MonthlyRow[]>([]);
+
+  const openLedger = async (user: AuthUser) => {
+    setLedgerUser(user);
+    setLedger([]);
+    setLedgerBusy(true);
+    try {
+      const result = await apiRequest<{ entries: LedgerEntry[] }>(
+        `/api/salaries/ledger?userId=${encodeURIComponent(user.id)}&limit=200`,
+        { useCache: false }
+      );
+      setLedger(result.entries);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Не удалось загрузить операции');
+    } finally {
+      setLedgerBusy(false);
+    }
+  };
+
+  const loadMonthly = async () => {
+    try {
+      const result = await apiRequest<{ months: MonthlyRow[] }>('/api/salaries/monthly', {
+        useCache: false,
+      });
+      setMonths(result.months);
+    } catch {
+      // Monthly breakdown is a nice-to-have; do not block the page on failure.
+    }
+  };
 
   const loadAll = async () => {
     try {
@@ -101,6 +170,7 @@ export function EmployeesView({ onOpenOrderById, currentUserId, onCurrentUserUpd
       setPermissionLabels(uRes.permissionLabels);
       setSalaries(sRes.employees);
       setVisitAssignments(sRes.visitAssignments);
+      void loadMonthly();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Ошибка загрузки списка сотрудников');
     }
@@ -108,6 +178,8 @@ export function EmployeesView({ onOpenOrderById, currentUserId, onCurrentUserUpd
 
   useEffect(() => {
     void loadAll();
+    void loadMonthly();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const openCreate = () => {
@@ -125,7 +197,7 @@ export function EmployeesView({ onOpenOrderById, currentUserId, onCurrentUserUpd
   };
 
   const openEdit = (u: AuthUser) => {
-    setFAccountingAccess(u.role === 'admin' ? u.accountingAccess : true);
+    setFAccountingAccess(u.role === 'admin' ? u.documentsAccess : true);
     setEditingUser(u);
     setFLogin(u.login);
     setFName(u.fullName);
@@ -154,7 +226,7 @@ export function EmployeesView({ onOpenOrderById, currentUserId, onCurrentUserUpd
           role: fRole,
           shiftRateKopecks: Math.round(Number(fRateRub || 0) * 100),
           permissions: fPerms,
-          ...(fRole === 'admin' ? { accountingAccess: fAccountingAccess } : {}),
+          ...(fRole === 'admin' ? { documentsAccess: fAccountingAccess } : {}),
           chatHistory: fChatHistory,
         },
       });
@@ -184,7 +256,7 @@ export function EmployeesView({ onOpenOrderById, currentUserId, onCurrentUserUpd
           role: fRole,
           shiftRateKopecks: Math.round(Number(fRateRub || 0) * 100),
           permissions: fPerms,
-          ...(fRole === 'admin' ? { accountingAccess: fAccountingAccess } : {}),
+          ...(fRole === 'admin' ? { documentsAccess: fAccountingAccess } : {}),
         },
       });
       if (result.user.id === currentUserId) onCurrentUserUpdated(result.user);
@@ -253,13 +325,14 @@ export function EmployeesView({ onOpenOrderById, currentUserId, onCurrentUserUpd
         body: {
           userId: targetUserId,
           amountKopecks: Math.round(Number(amountRub) * 100),
-          paymentMethod: payMethod,
+          paidAt: payDate,
           comment,
         },
       });
       setModal(null);
       setAmountRub('');
       setComment('');
+      setPayDate(new Date().toISOString().slice(0, 10));
       await loadAll();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Ошибка проведения выплаты');
@@ -391,6 +464,110 @@ export function EmployeesView({ onOpenOrderById, currentUserId, onCurrentUserUpd
         </div>
       )}
 
+      {/* Cross-employee summary table */}
+      {salaries.length > 0 && (
+        <div className="overflow-x-auto rounded-2xl border border-black/[0.06] bg-white p-4 dark:border-white/[0.08] dark:bg-[#15171C]">
+          <h3 className="mb-3 font-display text-base font-bold">Сводка по сотрудникам</h3>
+          <table className="w-full min-w-[900px] text-left text-xs">
+            <thead>
+              <tr className="border-b border-black/[0.06] text-zinc-400 dark:border-white/[0.08]">
+                <th className="py-2 pr-3 font-semibold">Сотрудник</th>
+                <th className="px-3 py-2 font-semibold">Выезды</th>
+                <th className="px-3 py-2 font-semibold">Смены</th>
+                <th className="px-3 py-2 font-semibold">Премии / удержания</th>
+                <th className="px-3 py-2 font-semibold">Начислено</th>
+                <th className="px-3 py-2 font-semibold">Выплачено</th>
+                <th className="px-3 py-2 font-semibold">Долг</th>
+                <th className="px-3 py-2 text-right font-semibold">История</th>
+              </tr>
+            </thead>
+            <tbody>
+              {salaries.map((s) => {
+                const user = users.find((u) => u.id === s.id);
+                const dismissed = Boolean(user?.dismissedAt);
+                return (
+                  <tr
+                    key={s.id}
+                    className={`border-b border-black/[0.04] last:border-0 dark:border-white/[0.05] ${dismissed ? 'opacity-50' : ''}`}
+                  >
+                    <td className="py-2.5 pr-3 font-semibold">
+                      {s.full_name}
+                      {dismissed && <span className="ml-1 text-[10px] font-normal text-zinc-400">· уволен</span>}
+                    </td>
+                    <td className="px-3 py-2.5 tabular-nums">{formatRub(s.visitAccruedKopecks)}</td>
+                    <td className="px-3 py-2.5 tabular-nums">{formatRub(s.shiftAccruedKopecks)}</td>
+                    <td className="px-3 py-2.5 tabular-nums">{formatRub(s.manualAccruedKopecks)}</td>
+                    <td className="px-3 py-2.5 font-semibold tabular-nums">{formatRub(s.totalAccruedKopecks)}</td>
+                    <td className="px-3 py-2.5 text-emerald-600 tabular-nums dark:text-emerald-400">
+                      {formatRub(s.totalPaidKopecks)}
+                    </td>
+                    <td
+                      className={`px-3 py-2.5 font-bold tabular-nums ${
+                        s.remainingKopecks >= 0
+                          ? 'text-[#0071E3] dark:text-[#2997FF]'
+                          : 'text-emerald-600 dark:text-emerald-400'
+                      }`}
+                    >
+                      {formatRub(Math.abs(s.remainingKopecks))}
+                      <span className="ml-1 text-[10px] font-normal text-zinc-400">
+                        {s.remainingKopecks >= 0 ? 'к выплате' : 'переплата'}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2.5 text-right">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (user) void openLedger(user);
+                        }}
+                        className="text-[#0071E3] hover:underline dark:text-[#2997FF]"
+                      >
+                        Операции
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Monthly breakdown */}
+      {months.length > 0 && (
+        <div className="rounded-2xl border border-black/[0.06] bg-white p-4 dark:border-white/[0.08] dark:bg-[#15171C]">
+          <h3 className="mb-3 font-display text-base font-bold">Сводка по месяцам</h3>
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[700px] text-left text-xs">
+              <thead>
+                <tr className="border-b text-zinc-400">
+                  <th className="py-2 pr-3">Месяц</th>
+                  <th className="px-3 py-2">Начислено</th>
+                  <th className="px-3 py-2">Выплачено</th>
+                  <th className="px-3 py-2">Изменение долга</th>
+                </tr>
+              </thead>
+              <tbody>
+                {months.map((month) => (
+                  <tr
+                    key={month.month}
+                    className="border-b border-black/[0.04] last:border-0 dark:border-white/[0.05]"
+                  >
+                    <td className="py-2.5 pr-3 font-semibold">{month.month}</td>
+                    <td className="px-3 py-2.5 tabular-nums">{formatRub(month.accruedKopecks)}</td>
+                    <td className="px-3 py-2.5 text-emerald-600 tabular-nums dark:text-emerald-400">
+                      {formatRub(month.paidKopecks)}
+                    </td>
+                    <td className="px-3 py-2.5 font-semibold tabular-nums">
+                      {formatRub(month.deltaKopecks)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
       {/* Employees Cards */}
       <div className="flex flex-wrap gap-2" aria-label="Списки сотрудников">
         <button type="button" onClick={() => setShowDismissed(false)} className={`rounded-xl px-4 py-2 text-sm font-semibold ${!showDismissed ? 'bg-[#0071E3] text-white' : 'bg-zinc-200 dark:bg-[#282b32]'}`}>Сотрудники ({users.filter(u => !u.dismissedAt).length})</button>
@@ -422,23 +599,51 @@ export function EmployeesView({ onOpenOrderById, currentUserId, onCurrentUserUpd
               </div>
 
               {sal && (
-                <div className="mt-4 grid grid-cols-3 gap-2 rounded-xl bg-[#F5F5F7] p-3 text-xs dark:bg-[#0B0C10]">
-                  <div>
-                    <div className="text-zinc-400">Начислено</div>
-                    <div className="mt-0.5 font-bold tabular-nums">
-                      {formatRub(sal.totalAccruedKopecks)}
+                <div className="mt-4 rounded-xl bg-[#F5F5F7] p-3.5 dark:bg-[#0B0C10]">
+                  {sal.activity.length > 0 && <details className="mb-3 text-xs"><summary className="cursor-pointer font-semibold">Монтажи и смены по месяцам</summary>{sal.activity.map(item => <div key={item.month} className="mt-1 flex justify-between gap-2"><span>{item.month}</span><span>Монтажей: {item.visits} · Смен: {item.shifts}</span></div>)}</details>}
+                  <div className="flex flex-wrap items-end justify-between gap-3">
+                    <div>
+                      <div className="text-xs text-zinc-400">Общий долг</div>
+                      <div
+                        className={`mt-0.5 text-2xl font-bold tabular-nums ${
+                          sal.remainingKopecks >= 0
+                            ? 'text-[#0071E3] dark:text-[#2997FF]'
+                            : 'text-emerald-600 dark:text-emerald-400'
+                        }`}
+                      >
+                        {formatRub(Math.abs(sal.remainingKopecks))}
+                      </div>
+                      <div className="text-[11px] text-zinc-500">
+                        {sal.remainingKopecks >= 0 ? 'К выплате сотруднику' : 'Переплата сотруднику'}
+                      </div>
                     </div>
+                    <button
+                      type="button"
+                      onClick={() => void openLedger(u)}
+                      className="rounded-xl border border-black/[0.08] px-3 py-1.5 text-xs font-semibold dark:border-white/[0.1]"
+                    >
+                      Все операции
+                    </button>
                   </div>
-                  <div>
-                    <div className="text-zinc-400">Выплачено</div>
-                    <div className="mt-0.5 font-bold text-emerald-600 tabular-nums dark:text-emerald-400">
-                      {formatRub(sal.totalPaidKopecks)}
+
+                  <div className="mt-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
+                    <div>
+                      <div className="text-zinc-400">Выезды</div>
+                      <div className="font-semibold tabular-nums">{formatRub(sal.visitAccruedKopecks)}</div>
                     </div>
-                  </div>
-                  <div>
-                    <div className="text-zinc-400">К выплате</div>
-                    <div className="mt-0.5 font-bold text-[#0071E3] tabular-nums dark:text-[#2997FF]">
-                      {formatRub(sal.remainingKopecks)}
+                    <div>
+                      <div className="text-zinc-400">Смены</div>
+                      <div className="font-semibold tabular-nums">{formatRub(sal.shiftAccruedKopecks)}</div>
+                    </div>
+                    <div>
+                      <div className="text-zinc-400">Премии / удержания</div>
+                      <div className="font-semibold tabular-nums">{formatRub(sal.manualAccruedKopecks)}</div>
+                    </div>
+                    <div>
+                      <div className="text-zinc-400">Выплачено</div>
+                      <div className="font-semibold text-emerald-600 tabular-nums dark:text-emerald-400">
+                        {formatRub(sal.totalPaidKopecks)}
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -459,6 +664,7 @@ export function EmployeesView({ onOpenOrderById, currentUserId, onCurrentUserUpd
                     setTargetUserId(u.id);
                     setAmountRub('');
                     setComment('');
+                    setPayDate(new Date().toISOString().slice(0, 10));
                     setModal('payout');
                   }}
                   className="inline-flex items-center gap-1 rounded-xl bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-700 dark:text-emerald-300"
@@ -646,6 +852,29 @@ export function EmployeesView({ onOpenOrderById, currentUserId, onCurrentUserUpd
               </button>
             </div>
             <div className="space-y-3">
+              {modal === 'payout' && (
+                <div className="rounded-xl bg-[#F5F5F7] p-3 text-xs dark:bg-[#0B0C10]">
+                  <div className="text-zinc-400">Текущий долг</div>
+                  <div className="font-bold text-[#0071E3] dark:text-[#2997FF]">
+                    {formatRub(Math.max(0, salaries.find((s) => s.id === targetUserId)?.remainingKopecks || 0))}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setAmountRub(
+                        String(
+                          Math.round(
+                            Math.max(0, salaries.find((s) => s.id === targetUserId)?.remainingKopecks || 0) / 100
+                          )
+                        )
+                      )
+                    }
+                    className="mt-1 text-[#0071E3] underline dark:text-[#2997FF]"
+                  >
+                    Выплатить весь долг
+                  </button>
+                </div>
+              )}
               <input
                 type="number"
                 required
@@ -659,15 +888,13 @@ export function EmployeesView({ onOpenOrderById, currentUserId, onCurrentUserUpd
                 className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3.5 py-2.5 text-sm tabular-nums dark:border-white/[0.12] dark:bg-[#0B0C10]"
               />
               {modal === 'payout' && (
-                <select
-                  value={payMethod}
-                  onChange={(e) => setPayMethod(e.target.value as any)}
+                <input
+                  type="date"
+                  value={payDate}
+                  onChange={(e) => setPayDate(e.target.value)}
+                  aria-label="Дата выплаты"
                   className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3.5 py-2.5 text-sm dark:border-white/[0.12] dark:bg-[#0B0C10]"
-                >
-                  <option value="card">Перевод на карту</option>
-                  <option value="cash">Наличные</option>
-                  <option value="bank">Банк (р/с)</option>
-                </select>
+                />
               )}
               <input
                 type="text"
@@ -686,6 +913,80 @@ export function EmployeesView({ onOpenOrderById, currentUserId, onCurrentUserUpd
               Сохранить
             </button>
           </form>
+        </div>
+      )}
+
+      {/* Ledger Modal: normalized operation history for a single employee */}
+      {ledgerUser && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/45 p-0 sm:items-center sm:p-4">
+          <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-t-3xl bg-white p-5 dark:bg-[#15171C] sm:rounded-3xl">
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="font-display text-lg font-bold">Операции: {ledgerUser.fullName}</h3>
+              <button type="button" onClick={() => setLedgerUser(null)} className="text-zinc-400">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            {ledgerBusy ? (
+              <p className="text-sm text-zinc-500">Загрузка…</p>
+            ) : (
+              <table className="w-full text-left text-xs">
+                <thead>
+                  <tr className="border-b text-zinc-400">
+                    <th className="py-2 pr-3">Дата</th>
+                    <th className="px-3 py-2">Тип</th>
+                    <th className="px-3 py-2">Описание</th>
+                    <th className="px-3 py-2 text-right">Сумма</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {ledger.map((entry) => (
+                    <tr
+                      key={entry.id}
+                      className="border-b border-black/[0.04] last:border-0 dark:border-white/[0.05]"
+                    >
+                      <td className="py-2.5 pr-3 tabular-nums">{formatDateTimeRu(entry.occurred_at)}</td>
+                      <td className="px-3 py-2.5">
+                        {entry.kind === 'payout'
+                          ? 'Выплата'
+                          : entry.source === 'visit'
+                            ? 'Выезд'
+                            : entry.source === 'shift'
+                              ? 'Смена'
+                              : 'Корректировка'}
+                      </td>
+                      <td className="px-3 py-2.5">
+                        {entry.description || '—'}
+                        {entry.order_number && entry.order_id && (
+                          <button
+                            type="button"
+                            onClick={() => onOpenOrderById(entry.order_id!)}
+                            className="ml-1 text-[#0071E3] hover:underline dark:text-[#2997FF]"
+                          >
+                            {entry.order_number}
+                          </button>
+                        )}
+                      </td>
+                      <td
+                        className={`px-3 py-2.5 text-right font-semibold tabular-nums ${
+                          entry.kind === 'payout'
+                            ? 'text-emerald-600'
+                            : entry.amount_kopecks < 0
+                              ? 'text-red-600'
+                              : ''
+                        }`}
+                      >
+                        {entry.kind === 'payout' ? '−' : entry.amount_kopecks < 0 ? '' : '+'}
+                        {formatRub(Math.abs(entry.amount_kopecks))}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            {!ledgerBusy && ledger.length === 0 && (
+              <p className="text-sm text-zinc-500">Операций пока нет.</p>
+            )}
+          </div>
         </div>
       )}
 

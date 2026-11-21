@@ -38,8 +38,11 @@ export async function createBackup(dbPath:string,uploadDir:string,destination:st
           files[`uploads/chat/${name}`] = sha(target);
         }
       }
-      if (snapshot.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='accounting_documents'").get()) {
-        const documents=snapshot.prepare('SELECT DISTINCT stored_name FROM accounting_documents').all();
+      const documentTable = snapshot.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='documents'").get()
+        ? 'documents'
+        : 'accounting_documents';
+      if (snapshot.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(documentTable)) {
+        const documents=snapshot.prepare(`SELECT DISTINCT stored_name FROM ${documentTable}`).all();
         if(documents.length) fs.mkdirSync(path.join(destination,'uploads','accounting'),{mode:0o700});
         for(const row of documents) {
           const name=String(row.stored_name);

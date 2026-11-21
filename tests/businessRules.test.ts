@@ -391,7 +391,7 @@ describe('Позитив Вектор CRM/ERP — бизнес-логика и �
       baseUrl,
       'POST',
       '/api/finance/payments',
-      { amountKopecks: 2500000, paymentType: 'advance', paymentMethod: 'bank' },
+      { amountKopecks: 2500000, paymentType: 'advance' },
       adminClient
     );
     assert.equal(pay.status, 201);
@@ -400,7 +400,7 @@ describe('Позитив Вектор CRM/ERP — бизнес-логика и �
       baseUrl,
       'POST',
       '/api/salaries/payouts',
-      { userId: empId, amountKopecks: 100000, paymentMethod: 'cash', comment: 'Частичная выплата' },
+      { userId: empId, amountKopecks: 100000, comment: 'Частичная выплата' },
       adminClient
     );
     assert.equal(payout.status, 201);
@@ -409,7 +409,7 @@ describe('Позитив Вектор CRM/ERP — бизнес-логика и �
       baseUrl,
       'POST',
       '/api/finance/expenses',
-      { category: 'fuel', amountKopecks: 200000, paymentMethod: 'card', description: 'ГСМ' },
+      { category: 'fuel', amountKopecks: 200000, description: 'ГСМ' },
       adminClient
     );
     assert.equal(exp.status, 201);

@@ -18,7 +18,7 @@ import { createUsersRouter } from './routes/users.ts';
 import { createWarehouseRouter } from './routes/warehouse.ts';
 import { createChatRouter } from './routes/chat.ts';
 import { createQuickTasksRouter } from './routes/quickTasks.ts';
-import { createAccountingRouter } from './routes/accounting.ts';
+import { createDocumentsRouter } from './routes/documents.ts';
 import { createYandexOAuth } from './services/yandexOAuth.ts';
 import { createYandexIntegrationRouter } from './routes/yandexIntegration.ts';
 
@@ -85,7 +85,7 @@ export function createApp(db: DatabaseSync,oauth=createYandexOAuth(db)): express
   app.use('/api/auth', createAuthRouter(db));
   app.use('/api/chat', createChatRouter(db));
   app.use('/api/quick-tasks', createQuickTasksRouter(db));
-  app.use('/api/accounting', createAccountingRouter(db));
+  app.use('/api/documents', createDocumentsRouter(db));
   app.use('/api/integrations/yandex', createYandexIntegrationRouter(db,oauth));
   app.use('/api/users', createUsersRouter(db));
   app.use('/api/clients', createClientsRouter(db));
@@ -112,7 +112,7 @@ export function createApp(db: DatabaseSync,oauth=createYandexOAuth(db)): express
     ) => {
       if (err instanceof multer.MulterError) {
         if (err.code === 'LIMIT_FILE_SIZE') {
-          res.status(400).json({ error: 'Размер файла превышает лимит 12 МБ.' });
+          res.status(400).json({ error: 'Размер файла превышает установленный для этой загрузки лимит.' });
           return;
         }
         res.status(400).json({ error: 'Некорректная загрузка файла.' });

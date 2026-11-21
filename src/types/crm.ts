@@ -14,7 +14,7 @@ export interface AuthUser {
   id: string;
   login: string;
   role: 'admin' | 'employee';
-  accountingAccess: boolean;
+  documentsAccess: boolean;
   fullName: string;
   phone: string;
   position: string;
@@ -187,7 +187,6 @@ export interface OrderPayment {
   id: string;
   amount_kopecks: number;
   payment_type: 'advance' | 'partial' | 'full';
-  payment_method: 'cash' | 'bank' | 'card';
   paid_at: string;
   comment: string;
   created_at?: string;

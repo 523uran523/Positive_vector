@@ -200,7 +200,6 @@ export function createExportRouter(db: DatabaseSync): express.Router {
         'Дата выплаты': p.paid_at,
         'Сотрудник': p.employee_name,
         'Сумма, ₽': toRub(Number(p.amount_kopecks)),
-        'Способ': p.payment_method,
         'Комментарий': p.comment,
       }));
     addSheet(wb, 'Выплаты ЗП', payouts);
@@ -222,7 +221,6 @@ export function createExportRouter(db: DatabaseSync): express.Router {
         'Заказ': p.order_number || '',
         'Компания': p.company_name || '',
         'Тип': p.payment_type,
-        'Способ': p.payment_method,
         'Сумма, ₽': toRub(Number(p.amount_kopecks)),
         'Комментарий': p.comment,
       }));
@@ -241,7 +239,6 @@ export function createExportRouter(db: DatabaseSync): express.Router {
       .map((e) => ({
         'Дата': e.expense_date,
         'Категория': e.category,
-        'Способ': e.payment_method,
         'Сумма, ₽': toRub(Number(e.amount_kopecks)),
         'Заказ': e.order_number || '',
         'Описание': e.description,
@@ -416,7 +413,6 @@ export function createExportRouter(db: DatabaseSync): express.Router {
           'Дата': p.paid_at,
           'Сотрудник': p.employee_name,
           'Сумма, ₽': toRub(Number(p.amount_kopecks)),
-          'Способ': p.payment_method,
           'Комментарий': p.comment,
         }));
       addSheet(wb, 'Начисления', accruals);
@@ -444,7 +440,6 @@ export function createExportRouter(db: DatabaseSync): express.Router {
           'Компания': p.company_name || '',
           'Сумма, ₽': toRub(Number(p.amount_kopecks)),
           'Тип': p.payment_type,
-          'Способ': p.payment_method,
           'Комментарий': p.comment,
         }));
       const expenses = (
@@ -455,7 +450,6 @@ export function createExportRouter(db: DatabaseSync): express.Router {
           'Дата': e.expense_date,
           'Категория': e.category,
           'Сумма, ₽': toRub(Number(e.amount_kopecks)),
-          'Способ': e.payment_method,
           'Описание': e.description,
         }));
       addSheet(wb, 'Платежи клиентов', payments);

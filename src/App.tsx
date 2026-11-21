@@ -29,7 +29,7 @@ import { ReportsView } from './views/ReportsView';
 import { SettingsView } from './views/SettingsView';
 import { WarehouseView } from './views/WarehouseView';
 import { ChatView } from './views/ChatView';
-import { AccountingView } from './views/AccountingView';
+import { DocumentsView } from './views/DocumentsView';
 
 function CRMWorkspace() {
   const [booting, setBooting] = useState(true);
@@ -410,7 +410,7 @@ function CRMWorkspace() {
         />
       )}
 
-      {activeTab === 'accounting' && isAdmin && user.accountingAccess && <AccountingView />}
+      {activeTab === 'documents' && isAdmin && user.documentsAccess && <DocumentsView />}
 
       {activeTab === 'employees' && isAdmin && (
         <EmployeesView onOpenOrderById={(id) => void handleOpenOrderById(id)} currentUserId={user.id} onCurrentUserUpdated={setUser} />
