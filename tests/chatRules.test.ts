@@ -199,9 +199,9 @@ test('push subscription is scoped to session and removed on logout', async () =>
     const subscription = { endpoint: 'https://fcm.googleapis.com/test', keys: { p256dh: 'example', auth: 'example' } };
     assert.equal((await call('POST', '/api/chat/push-subscription', { ...subscription, endpoint: 'https://127.0.0.1/test' })).status, 400);
     assert.equal((await call('POST', '/api/chat/push-subscription', subscription)).status, 200);
-    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM chat_push_subscriptions').get()?.n, 1);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM push_subscriptions').get()?.n, 1);
     assert.equal((await call('POST', '/api/auth/logout', {})).status, 200);
-    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM chat_push_subscriptions').get()?.n, 0);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM push_subscriptions').get()?.n, 0);
   } finally {
     if (previousPublic === undefined) delete process.env.WEB_PUSH_PUBLIC_KEY; else process.env.WEB_PUSH_PUBLIC_KEY = previousPublic;
     if (previousPrivate === undefined) delete process.env.WEB_PUSH_PRIVATE_KEY; else process.env.WEB_PUSH_PRIVATE_KEY = previousPrivate;

@@ -88,8 +88,10 @@ export function EmployeesView({ onOpenOrderById, currentUserId, onCurrentUserUpd
   const [visitAssignments, setVisitAssignments] = useState<VisitAssignmentRow[]>([]);
   const [busy, setBusy] = useState(false);
   const [showDismissed, setShowDismissed] = useState(false);
+  const [salaryOnly, setSalaryOnly] = useState(false);
   const [error, setError] = useState('');
   const [employmentNotice, setEmploymentNotice] = useState('');
+  const [confirmEmployment, setConfirmEmployment] = useState<{ user: AuthUser; restoring: boolean } | null>(null);
 
   // Modals
   const [modal, setModal] = useState<'create' | 'edit' | 'payout' | 'adjust' | null>(null);
@@ -287,9 +289,11 @@ export function EmployeesView({ onOpenOrderById, currentUserId, onCurrentUserUpd
 
   const handleEmployment = async (u: AuthUser) => {
     const restoring = Boolean(u.dismissedAt);
-    if (!window.confirm(restoring
-      ? `Восстановить ${u.fullName}? Учётная запись снова сможет входить с прежним паролем и увидит напоминание сменить его.`
-      : `Переместить ${u.fullName} в уволенные? Доступ к системе будет закрыт, история и расчёты сохранятся.`)) return;
+    if (!confirmEmployment || confirmEmployment.user.id !== u.id) {
+      setConfirmEmployment({ user: u, restoring });
+      return;
+    }
+    setConfirmEmployment(null);
     setBusy(true); setError(''); setEmploymentNotice('');
     try {
       const result = await apiRequest<{activeShift?:boolean}>(`/api/users/${u.id}/${restoring ? 'restore' : 'dismiss'}`, { method:'POST',body:{},skipOfflineQueue:true });
@@ -570,10 +574,11 @@ export function EmployeesView({ onOpenOrderById, currentUserId, onCurrentUserUpd
 
       {/* Employees Cards */}
       <div className="flex flex-wrap gap-2" aria-label="Списки сотрудников">
-        <button type="button" onClick={() => setShowDismissed(false)} className={`rounded-xl px-4 py-2 text-sm font-semibold ${!showDismissed ? 'bg-[#0071E3] text-white' : 'bg-zinc-200 dark:bg-[#282b32]'}`}>Сотрудники ({users.filter(u => !u.dismissedAt).length})</button>
-        <button type="button" onClick={() => setShowDismissed(true)} className={`rounded-xl px-4 py-2 text-sm font-semibold ${showDismissed ? 'bg-[#0071E3] text-white' : 'bg-zinc-200 dark:bg-[#282b32]'}`}>Уволенные ({users.filter(u => u.dismissedAt).length})</button>
+        <button type="button" onClick={() => { setSalaryOnly(false); setShowDismissed(false); }} className={`rounded-xl px-4 py-2 text-sm font-semibold ${!salaryOnly && !showDismissed ? 'bg-[#0071E3] text-white' : 'bg-zinc-200 dark:bg-[#282b32]'}`}>Сотрудники ({users.filter(u => !u.dismissedAt).length})</button>
+        <button type="button" onClick={() => { setSalaryOnly(false); setShowDismissed(true); }} className={`rounded-xl px-4 py-2 text-sm font-semibold ${!salaryOnly && showDismissed ? 'bg-[#0071E3] text-white' : 'bg-zinc-200 dark:bg-[#282b32]'}`}>Уволенные ({users.filter(u => u.dismissedAt).length})</button>
+        <button type="button" onClick={() => setSalaryOnly(true)} className={`rounded-xl px-4 py-2 text-sm font-semibold ${salaryOnly ? 'bg-[#0071E3] text-white' : 'bg-zinc-200 dark:bg-[#282b32]'}`}>Зарплаты</button>
       </div>
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      {!salaryOnly && <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         {users.filter(u => Boolean(u.dismissedAt) === showDismissed).map((u) => {
           const sal = salaries.find((s) => s.id === u.id);
           return (
@@ -714,13 +719,13 @@ export function EmployeesView({ onOpenOrderById, currentUserId, onCurrentUserUpd
                   )}
                 </button>}
                 <button type="button" disabled={busy} onClick={() => void handleEmployment(u)} className={`rounded-xl px-3 py-1.5 text-xs font-semibold ${u.dismissedAt ? 'bg-emerald-500/10 text-emerald-600' : 'bg-red-500/10 text-red-600 dark:text-red-400'}`}>
-                  {u.dismissedAt ? 'Восстановить' : 'Уволить'}
+                  {confirmEmployment?.user.id === u.id ? 'Нажмите ещё раз' : u.dismissedAt ? 'Восстановить' : 'Уволить'}
                 </button>
               </div>
             </div>
           );
         })}
-      </div>
+      </div>}
 
       {/* Create / Edit Modal with Permission Checkboxes */}
       {(modal === 'create' || modal === 'edit') && (

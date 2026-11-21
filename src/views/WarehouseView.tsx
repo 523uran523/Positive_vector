@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { AlertTriangle, ArrowDownLeft, ArrowUpRight, Package, Pencil, Plus, Trash2, Wrench, X } from 'lucide-react';
+import { AlertTriangle, ArrowDownLeft, ArrowUpRight, ChevronDown, Package, Pencil, Plus, Trash2, Wrench, X } from 'lucide-react';
 import { apiRequest, formatDateTimeRu, formatQty, formatRub, OP_TYPE_LABELS } from '../lib/api';
 import type { AuthUser, MaterialItem, Order, ToolItem, WarehouseOp } from '../types/crm';
 
@@ -72,6 +72,7 @@ export function WarehouseView({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [confirmOp, setConfirmOp] = useState<{ text: string; run: () => void } | null>(null);
   const [confirmDeleteToolId, setConfirmDeleteToolId] = useState<string | null>(null);
   const [confirmDeleteMat, setConfirmDeleteMat] = useState(false);
 
@@ -218,12 +219,18 @@ export function WarehouseView({
     const estimatedAfter=opType==='adjust' ? Number(opQty)*1000 : selectedMat.quantity_milli-Number(opQty)*1000;
     const conflict=['issue','consume','adjust'].includes(opType) && (selectedMat.reserved_milli||0)>estimatedAfter;
     const confirmReserved=conflict || (!navigator.onLine && ['issue','consume','adjust'].includes(opType));
-    if(confirmReserved && !window.confirm('Материал может быть зарезервирован под другой заказ. Выполнить операцию?')) return;
+    if(confirmReserved) {
+      setConfirmOp({ text: 'Материал может быть зарезервирован под другой заказ. Выполнить операцию?', run: () => { setConfirmOp(null); void doMaterialOp(selectedMat, confirmReserved); } });
+      return;
+    }
+    await doMaterialOp(selectedMat, confirmReserved);
+  };
+  const doMaterialOp = async (mat: MaterialItem, reserved: boolean) => {
     setBusy(true);
     setError('');
     setNotice('');
     try {
-      const res = await apiRequest<{ offlineQueued?: boolean }>(`/api/warehouse/materials/${selectedMat.id}/operations`, {
+      const res = await apiRequest<{ offlineQueued?: boolean }>(`/api/warehouse/materials/${mat.id}/operations`, {
         method: 'POST',
         body: {
           opType,
@@ -231,9 +238,9 @@ export function WarehouseView({
           unitCostKopecks: opCostRub ? Math.round(Number(opCostRub) * 100) : undefined,
           note: opNote,
           orderId: ['issue','return'].includes(opType) ? opOrderId : undefined,
-          confirmReserved,
+          confirmReserved: reserved,
         },
-        offlineLabel: `Операция по «${selectedMat.name}»`,
+        offlineLabel: `Операция по «${mat.name}»`,
       });
       setModal(null);
       setOpNote('');
@@ -370,21 +377,27 @@ export function WarehouseView({
     e.preventDefault();
     if (!selectedTool) return;
     const confirmReserved=tOpType==='issue' && ((selectedTool.reserved_milli||0)>(selectedTool.available_qty-Number(tOpQty||1))*1000 || !navigator.onLine);
-    if(confirmReserved && !window.confirm('Инструмент может быть зарезервирован под другой заказ. Выдать его?')) return;
+    if(confirmReserved) {
+      setConfirmOp({ text: 'Инструмент может быть зарезервирован под другой заказ. Выдать его?', run: () => { setConfirmOp(null); void doToolOp(selectedTool, confirmReserved); } });
+      return;
+    }
+    await doToolOp(selectedTool, confirmReserved);
+  };
+  const doToolOp = async (tool: ToolItem, reserved: boolean) => {
     setBusy(true);
     setError('');
     setNotice('');
     try {
-      const res = await apiRequest<{ offlineQueued?: boolean }>(`/api/warehouse/tools/${selectedTool.id}/operations`, {
+      const res = await apiRequest<{ offlineQueued?: boolean }>(`/api/warehouse/tools/${tool.id}/operations`, {
         method: 'POST',
         body: {
           opType: tOpType,
           toolInstanceId: tInstanceId || undefined,
           qty: Number(tOpQty || 1),
           note: tOpNote,
-          confirmReserved,
+          confirmReserved: reserved,
         },
-        offlineLabel: `Операция с «${selectedTool.name}»`,
+        offlineLabel: `Операция с «${tool.name}»`,
       });
       setModal(null);
       setTOpNote('');
@@ -403,6 +416,17 @@ export function WarehouseView({
 
   return (
     <div className="space-y-4">
+      {confirmOp && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true">
+          <div className="w-full max-w-sm rounded-2xl bg-white p-5 dark:bg-[#15171C]">
+            <p className="text-sm">{confirmOp.text}</p>
+            <div className="mt-4 flex justify-end gap-2">
+              <button type="button" onClick={() => setConfirmOp(null)} className="rounded-xl border border-zinc-400 px-3 py-1.5 text-sm">Отмена</button>
+              <button type="button" onClick={confirmOp.run} className="rounded-xl bg-red-600 px-3 py-1.5 text-sm font-semibold text-white">Подтвердить</button>
+            </div>
+          </div>
+        </div>
+      )}
       {error && !modal && (
         <div className="rounded-2xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-600 dark:text-red-400">
           {error}
@@ -444,7 +468,7 @@ export function WarehouseView({
               tab === 'history' ? 'bg-white shadow-xs dark:bg-[#15171C]' : 'text-zinc-500'
             }`}
           >
-            Журнал ({operations.length})
+            Журнал операций ({operations.length})
           </button>
         </div>
 

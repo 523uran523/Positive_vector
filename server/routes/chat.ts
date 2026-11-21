@@ -4,6 +4,7 @@ import path from 'node:path';
 import express from 'express';
 import multer from 'multer';
 import * as webpush from 'web-push';
+import { savePushSubscription, sendPushToRoom } from '../services/push.ts';
 import type { DatabaseSync } from 'node:sqlite';
 import { requireAuth, type AuthedRequest } from '../middleware.ts';
 import { withTransaction } from '../db.ts';
@@ -112,10 +113,12 @@ export function createChatRouter(db: DatabaseSync) {
   });
   function broadcast(roomId: string, authorId: string, author: string, body: string) {
     if (!pub || !priv) return;
-    const rows = db.prepare("SELECT p.endpoint, p.subscription_json FROM chat_push_subscriptions p JOIN sessions s ON s.id=p.session_id JOIN users u ON u.id=p.user_id WHERE p.user_id != ? AND u.is_active=1 AND s.expires_at > ? AND (?='general' OR EXISTS(SELECT 1 FROM chat_room_members m WHERE m.room_id=? AND m.user_id=p.user_id))").all(authorId, new Date().toISOString(), roomId, roomId) as Array<{ endpoint: string; subscription_json: string }>;
-    for (const row of rows) void webpush.sendNotification(JSON.parse(row.subscription_json), JSON.stringify({ title: author, body: body.slice(0, 180) || 'Вложение', roomId })).catch((error: any) => {
-      if (error?.statusCode === 404 || error?.statusCode === 410) db.prepare('DELETE FROM chat_push_subscriptions WHERE endpoint = ?').run(row.endpoint);
-    });
+    void sendPushToRoom(db, roomId, authorId, {
+      title: author,
+      body: body.slice(0, 180) || 'Вложение',
+      roomId,
+      url: `/?chat=${encodeURIComponent(roomId)}`,
+    }).catch(() => {});
   }
   router.get('/messages', (req: AuthedRequest, res) => {
     const roomId = typeof req.query.room === 'string' ? req.query.room : 'general';
@@ -235,9 +238,12 @@ export function createChatRouter(db: DatabaseSync) {
   router.post('/push-subscription', (req: AuthedRequest, res) => {
     const sub = req.body;
     if (!pub || !priv) { res.status(503).json({ error: 'Push-уведомления ещё не настроены на сервере.' }); return; }
-    try { const url = new URL(sub.endpoint); if (url.protocol !== 'https:' || url.username || url.password || url.port || !['fcm.googleapis.com', 'updates.push.services.mozilla.com'].includes(url.hostname) && !url.hostname.endsWith('.push.apple.com') || !sub.keys?.p256dh || !sub.keys?.auth) throw new Error(); }
-    catch { res.status(400).json({ error: 'Некорректная подписка.' }); return; }
-    db.prepare('INSERT INTO chat_push_subscriptions(endpoint,user_id,session_id,subscription_json) VALUES (?,?,?,?) ON CONFLICT(endpoint) DO UPDATE SET user_id=excluded.user_id, session_id=excluded.session_id, subscription_json=excluded.subscription_json').run(sub.endpoint, req.authUser!.id, req.sessionId!, JSON.stringify(sub)); res.json({ ok: true });
+    try {
+      savePushSubscription(db, req.authUser!.id, req.sessionId || null, sub);
+      res.json({ ok: true });
+    } catch {
+      res.status(400).json({ error: 'Некорректная подписка.' });
+    }
   });
   return router;
 }

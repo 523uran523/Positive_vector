@@ -86,6 +86,13 @@ async function startServer() {
     console.log(`[Позитив Вектор] Сервер запущен на http://${host}:${port}`);
   });
 
+  // Большие загрузки фото/видео не должны упираться в дефолтные таймауты Node.
+  // Отключаем таймауты, чтобы загрузка файла не обрывалась на середине.
+  server.requestTimeout = 0;
+  server.headersTimeout = 60_000;
+  server.timeout = 0;
+  server.keepAliveTimeout = 61_000;
+
   server.on('error', (err: NodeJS.ErrnoException) => {
     if (err.code === 'EADDRINUSE') {
       console.error(`[Позитив Вектор] Порт ${port} уже занят другим процессом.`);

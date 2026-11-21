@@ -28,6 +28,7 @@ import {
   ORDER_STATUS_META,
   PAYMENT_TYPE_LABELS,
 } from '../lib/api';
+import { uploadWithRetry } from '../lib/upload';
 import type {
   AuthUser,
   Company,
@@ -734,6 +735,12 @@ export function OrderDetailModal({
   const [confirmDeleteOrder, setConfirmDeleteOrder] = useState(false);
   const [offlineNotice, setOfflineNotice] = useState('');
 
+  // Upload progress & retry state
+  const [uploadItems, setUploadItems] = useState<Array<{ name: string; percent: number; status: 'uploading' | 'done' | 'error'; error?: string }>>([]);
+  const [failedUploads, setFailedUploads] = useState<Array<{ file: File; kind: 'photo' | 'document'; visitId?: string }>>([]);
+  const [photoViewer, setPhotoViewer] = useState<string | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<{ text: string; run: () => void } | null>(null);
+
   // Report edit & delete state
   const [editingReportId, setEditingReportId] = useState<string | null>(null);
   const [editRepStart, setEditRepStart] = useState('');
@@ -989,7 +996,13 @@ export function OrderDetailModal({
 
   const handleDeletePayment = async (payment: OrderPayment) => {
     if (!order) return;
-    if (!window.confirm(`Удалить оплату ${formatRub(payment.amount_kopecks)}?`)) return;
+    setConfirmDialog({
+      text: `Удалить оплату ${formatRub(payment.amount_kopecks)}?`,
+      run: () => { setConfirmDialog(null); void doDeletePayment(payment); },
+    });
+  };
+  const doDeletePayment = async (payment: OrderPayment) => {
+    if (!order) return;
     setMoneyBusy(true);
     setError('');
     setOfflineNotice('');
@@ -1303,7 +1316,21 @@ export function OrderDetailModal({
     const reservedOther=Math.max(0,(whMode==='material'?material?.reserved_milli:tool?.reserved_milli)||0)-Number(resource?.reserved_remaining_milli||0);
     const available=whMode==='material'?(material?.quantity_milli||0):(tool?.available_qty||0)*1000;
     const confirmReserved=whOpType!=='return' && (reservedOther>available-Number(whQty||1)*1000 || !navigator.onLine);
-    if(confirmReserved && !window.confirm('Часть материала или инструмента может быть зарезервирована для других заказов. Продолжить?')) return;
+    if(confirmReserved) {
+      setConfirmDialog({
+        text: 'Часть материала или инструмента может быть зарезервирована для других заказов. Продолжить?',
+        run: () => { setConfirmDialog(null); void doWarehouseAction(); },
+      });
+      return;
+    }
+    await doWarehouseAction();
+  };
+  const doWarehouseAction = async () => {
+    const material=materials.find(item=>item.id===whMatId), tool=tools.find(item=>item.id===whToolId);
+    const resource=order.plannedResources.find(item=>whMode==='material'?item.material_id===whMatId:item.tool_id===whToolId);
+    const reservedOther=Math.max(0,(whMode==='material'?material?.reserved_milli:tool?.reserved_milli)||0)-Number(resource?.reserved_remaining_milli||0);
+    const available=whMode==='material'?(material?.quantity_milli||0):(tool?.available_qty||0)*1000;
+    const confirmReserved=whOpType!=='return' && (reservedOther>available-Number(whQty||1)*1000 || !navigator.onLine);
     setBusy(true);
     setError('');
     setOfflineNotice('');
@@ -1361,6 +1388,47 @@ export function OrderDetailModal({
     finally {setBusy(false);}
   };
 
+  const uploadOneFile = async (file: File, kind: 'photo' | 'document', visitId?: string) => {
+    const name = file.name;
+    // Не даём экрану гаснуть на время загрузки (Screen Wake Lock, где поддерживается).
+    let wakeLock: { release: () => Promise<void> } | null = null;
+    try {
+      const wl = (navigator as any).wakeLock;
+      if (wl?.request) wakeLock = await wl.request('screen');
+    } catch {
+      // Wake Lock недоступен — игнорируем.
+    }
+    setUploadItems((items) => [...items.filter((i) => i.name !== name), { name, percent: 0, status: 'uploading' }]);
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      fd.append('kind', kind);
+      if (visitId) fd.append('visitId', visitId);
+      await uploadWithRetry({
+        url: `/api/orders/${order.id}/attachments`,
+        formData: fd,
+        attempts: 3,
+        onProgress: (percent) =>
+          setUploadItems((items) => items.map((i) => (i.name === name && i.status === 'uploading' ? { ...i, percent } : i))),
+      });
+      setUploadItems((items) => items.map((i) => (i.name === name ? { ...i, percent: 100, status: 'done' } : i)));
+      return true;
+    } catch (err) {
+      setUploadItems((items) =>
+        items.map((i) => (i.name === name ? { ...i, status: 'error', error: err instanceof Error ? err.message : 'Ошибка' } : i))
+      );
+      setFailedUploads((prev) => [...prev.filter((f) => f.file.name !== name), { file, kind, visitId }]);
+      return false;
+    } finally {
+      if (wakeLock) void wakeLock.release().catch(() => {});
+    }
+  };
+
+  const refreshOrder = async () => {
+    const fresh = await apiRequest<{ order: Order }>(`/api/orders/${order.id}`, { useCache: false });
+    onOrderUpdated(fresh.order);
+  };
+
   const handleFileUpload = async (
     e: React.ChangeEvent<HTMLInputElement>,
     kind: 'photo' | 'document',
@@ -1373,26 +1441,33 @@ export function OrderDetailModal({
     setError('');
     setOfflineNotice('');
     try {
-      const failures: string[] = [];
       for (const file of files) {
-        try {
-          const fd = new FormData();
-          fd.append('file', file);
-          fd.append('kind', kind);
-          if (visitId) fd.append('visitId', visitId);
-          await apiRequest(`/api/orders/${order.id}/attachments`, { method: 'POST', formData: fd, skipOfflineQueue: true });
-        } catch {
-          failures.push(file.name);
-        }
+        await uploadOneFile(file, kind, visitId);
       }
-      const fresh = await apiRequest<{ order: Order }>(`/api/orders/${order.id}`, { useCache: false });
-      onOrderUpdated(fresh.order);
-      if (failures.length) setError(`Не удалось загрузить: ${failures.join(', ')}. Выберите эти файлы ещё раз.`);
+      await refreshOrder();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Ошибка загрузки файла');
     } finally {
       setBusy(false);
       input.value = '';
+    }
+  };
+
+  const retryFailedUploads = async () => {
+    if (!failedUploads.length) return;
+    setBusy(true);
+    setError('');
+    const snapshot = [...failedUploads];
+    setFailedUploads([]);
+    try {
+      for (const item of snapshot) {
+        await uploadOneFile(item.file, item.kind, item.visitId);
+      }
+      await refreshOrder();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Ошибка повторной загрузки');
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -2869,6 +2944,36 @@ export function OrderDetailModal({
                 </label>
               </div>
 
+              {uploadItems.length > 0 && (
+                <div className="space-y-1.5">
+                  {uploadItems.map((item, idx) => (
+                    <div key={`${item.name}-${idx}`} className="text-xs">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="truncate">{item.name}</span>
+                        <span className={item.status === 'error' ? 'text-red-600' : item.status === 'done' ? 'text-emerald-600' : 'text-zinc-500'}>
+                          {item.status === 'done' ? 'Готово' : item.status === 'error' ? 'Ошибка' : `${item.percent}%`}
+                        </span>
+                      </div>
+                      {item.status === 'uploading' && (
+                        <div className="mt-0.5 h-1 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-700">
+                          <div className="h-full bg-[#0071E3] transition-all" style={{ width: `${item.percent}%` }} />
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                  {failedUploads.length > 0 && (
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => void retryFailedUploads()}
+                      className="rounded-xl border border-red-300 px-3 py-1.5 text-xs font-semibold text-red-600 disabled:opacity-50"
+                    >
+                      Повторить неудачные ({failedUploads.length})
+                    </button>
+                  )}
+                </div>
+              )}
+
               {order.attachments.length === 0 ? (
                 <div className="rounded-2xl border border-dashed border-black/[0.1] p-8 text-center text-sm text-zinc-400 dark:border-white/[0.1]">
                   Прикреплённых фотографий и макетов пока нет
@@ -2892,12 +2997,18 @@ export function OrderDetailModal({
                         className="block"
                       >
                         {att.mime_type.startsWith('image/') ? (
-                          <img
-                            src={`/api/orders/attachments/${att.id}`}
-                            alt={att.original_name}
-                            referrerPolicy="no-referrer"
-                            className="h-32 w-full object-cover"
-                          />
+                          <button
+                            type="button"
+                            onClick={() => setPhotoViewer(`/api/orders/attachments/${att.id}`)}
+                            className="block w-full"
+                          >
+                            <img
+                              src={`/api/orders/attachments/${att.id}`}
+                              alt={att.original_name}
+                              referrerPolicy="no-referrer"
+                              className="h-32 w-full object-cover"
+                            />
+                          </button>
                         ) : (
                           <div className="flex h-32 items-center justify-center text-zinc-400">
                             <FileText className="h-10 w-10" />
@@ -2924,6 +3035,39 @@ export function OrderDetailModal({
           )}
         </div>
       </div>
+      {photoViewer && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-4"
+          onClick={() => setPhotoViewer(null)}
+          role="dialog"
+          aria-modal="true"
+        >
+          <img
+            src={photoViewer}
+            alt="Просмотр фото"
+            className="max-h-[85vh] max-w-full rounded-lg object-contain"
+            onClick={(e) => e.stopPropagation()}
+          />
+          <button
+            type="button"
+            onClick={() => setPhotoViewer(null)}
+            className="absolute right-4 top-4 flex h-9 w-9 items-center justify-center rounded-full bg-white/90 text-black"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+      )}
+      {confirmDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true">
+          <div className="w-full max-w-sm rounded-2xl bg-white p-5 dark:bg-[#15171C]">
+            <p className="text-sm">{confirmDialog.text}</p>
+            <div className="mt-4 flex justify-end gap-2">
+              <button type="button" onClick={() => setConfirmDialog(null)} className="rounded-xl border border-zinc-400 px-3 py-1.5 text-sm">Отмена</button>
+              <button type="button" onClick={confirmDialog.run} className="rounded-xl bg-red-600 px-3 py-1.5 text-sm font-semibold text-white">Подтвердить</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

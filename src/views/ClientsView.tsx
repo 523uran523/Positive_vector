@@ -288,7 +288,7 @@ export function ClientsView({
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Поиск по названию, ИНН, телефону..."
+              placeholder="Поиск по названию, телефону..."
               className="w-full rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 py-2 pl-9 pr-3 text-sm outline-none focus:border-[#0071E3] focus:bg-white dark:focus:bg-[#0B0C10] dark:border-white/[0.1] dark:bg-[#0B0C10]"
             />
           </div>
@@ -322,7 +322,6 @@ export function ClientsView({
                   <div>
                     <h3 className="font-display text-base font-bold">{comp.name}</h3>
                     <div className="mt-1 flex flex-wrap items-center gap-x-2 text-xs text-zinc-500">
-                      {comp.inn && <span className="font-mono">ИНН {comp.inn}</span>}
                       {comp.phone && (
                         <span className="inline-flex items-center gap-1">
                           <Phone className="h-3 w-3" />
@@ -386,9 +385,6 @@ export function ClientsView({
 
                 {comp.address && (
                   <div className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">{comp.address}</div>
-                )}
-                {comp.requisites && (
-                  <div className="mt-1 text-[11px] text-zinc-400">{comp.requisites}</div>
                 )}
                 {comp.notes && (
                   <div className="mt-1 text-xs text-zinc-500 italic dark:text-zinc-400">{comp.notes}</div>
@@ -576,39 +572,25 @@ export function ClientsView({
               />
               <div className="grid grid-cols-2 gap-2.5">
                 <input
-                  type="text"
-                  value={compInn}
-                  onChange={(e) => setCompInn(e.target.value)}
-                  placeholder="ИНН"
-                  className="rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3.5 py-2.5 text-sm dark:border-white/[0.12] dark:bg-[#0B0C10]"
-                />
-                <input
                   type="tel"
                   value={compPhone}
                   onChange={(e) => setCompPhone(e.target.value)}
                   placeholder="Телефон"
                   className="rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3.5 py-2.5 text-sm dark:border-white/[0.12] dark:bg-[#0B0C10]"
                 />
+                <input
+                  type="email"
+                  value={compEmail}
+                  onChange={(e) => setCompEmail(e.target.value)}
+                  placeholder="Email"
+                  className="rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3.5 py-2.5 text-sm dark:border-white/[0.12] dark:bg-[#0B0C10]"
+                />
               </div>
-              <input
-                type="email"
-                value={compEmail}
-                onChange={(e) => setCompEmail(e.target.value)}
-                placeholder="Email"
-                className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3.5 py-2.5 text-sm dark:border-white/[0.12] dark:bg-[#0B0C10]"
-              />
               <input
                 type="text"
                 value={compAddr}
                 onChange={(e) => setCompAddr(e.target.value)}
                 placeholder="Адрес"
-                className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3.5 py-2.5 text-sm dark:border-white/[0.12] dark:bg-[#0B0C10]"
-              />
-              <input
-                type="text"
-                value={compReq}
-                onChange={(e) => setCompReq(e.target.value)}
-                placeholder="Реквизиты (р/с, БИК...)"
                 className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3.5 py-2.5 text-sm dark:border-white/[0.12] dark:bg-[#0B0C10]"
               />
               <textarea

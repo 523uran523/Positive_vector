@@ -73,6 +73,7 @@ export function FinanceView({ orders, expenseCategories, onOpenOrderById }: Fina
   const [editingPaymentId, setEditingPaymentId] = useState<string | null>(null);
   const [editingExpenseId, setEditingExpenseId] = useState<string | null>(null);
   const [confirmDeleteKey, setConfirmDeleteKey] = useState<string | null>(null);
+  const [financeTab, setFinanceTab] = useState<'overview' | 'payments' | 'expenses' | 'economy'>('overview');
 
   // Payment form
   const [payOrderId, setPayOrderId] = useState('');
@@ -423,8 +424,31 @@ export function FinanceView({ orders, expenseCategories, onOpenOrderById }: Fina
         </div>
       </div>
 
+      {/* Finance sub-tabs */}
+      <div className="flex flex-wrap gap-2" role="tablist" aria-label="Разделы финансов">
+        {([
+          ['overview', 'Обзор'],
+          ['payments', 'Платежи клиентов'],
+          ['expenses', 'Расходы'],
+          ['economy', 'Экономика заказов'],
+        ] as const).map(([key, label]) => (
+          <button
+            key={key}
+            type="button"
+            role="tab"
+            aria-selected={financeTab === key}
+            onClick={() => setFinanceTab(key)}
+            className={`rounded-xl px-3.5 py-2 text-xs font-semibold transition ${
+              financeTab === key ? 'bg-[#0071E3] text-white dark:bg-[#2997FF] dark:text-[#0B0C10]' : 'border border-black/[0.08] dark:border-white/[0.1]'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
       {/* KPI Metrics Grid — cleanly separated accrual vs cash flows */}
-      {m && (
+      {m && financeTab === 'overview' && (
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
           <div className="rounded-2xl border border-black/[0.06] bg-white p-4 dark:border-white/[0.08] dark:bg-[#15171C]">
             <div className="text-xs text-zinc-500">Объём заказов</div>
@@ -476,7 +500,7 @@ export function FinanceView({ orders, expenseCategories, onOpenOrderById }: Fina
       )}
 
       {/* Order Financial Breakdown */}
-      {data && (
+      {data && financeTab === 'economy' && (
         <div className="rounded-2xl border border-black/[0.06] bg-white p-4 sm:p-5 dark:border-white/[0.08] dark:bg-[#15171C]">
           <h3 className="mb-3 font-display text-base font-bold">Экономика заказов</h3>
           <div className="overflow-x-auto">
@@ -563,9 +587,9 @@ export function FinanceView({ orders, expenseCategories, onOpenOrderById }: Fina
       )}
 
       {/* Payments & Expenses Feed */}
-      {data && (
+      {data && (financeTab === 'payments' || financeTab === 'expenses') && (
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-          <div className="rounded-2xl border border-black/[0.06] bg-white p-4 sm:p-5 dark:border-white/[0.08] dark:bg-[#15171C]">
+          {financeTab === 'payments' && <div className="rounded-2xl border border-black/[0.06] bg-white p-4 sm:p-5 dark:border-white/[0.08] dark:bg-[#15171C]">
             <h3 className="mb-3 font-display text-base font-bold">Поступления от клиентов</h3>
             <div className="space-y-2">
               {data.payments.length === 0 ? (
@@ -631,9 +655,9 @@ export function FinanceView({ orders, expenseCategories, onOpenOrderById }: Fina
                 ))
               )}
             </div>
-          </div>
+          </div>}
 
-          <div className="rounded-2xl border border-black/[0.06] bg-white p-4 sm:p-5 dark:border-white/[0.08] dark:bg-[#15171C]">
+          {financeTab === 'expenses' && <div className="rounded-2xl border border-black/[0.06] bg-white p-4 sm:p-5 dark:border-white/[0.08] dark:bg-[#15171C]">
             <h3 className="mb-3 font-display text-base font-bold">Расходы компании</h3>
             <div className="space-y-2">
               {data.expenses.length === 0 ? (
@@ -701,7 +725,7 @@ export function FinanceView({ orders, expenseCategories, onOpenOrderById }: Fina
                 })
               )}
             </div>
-          </div>
+          </div>}
         </div>
       )}
 

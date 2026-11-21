@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { sessionSecret } from './config.ts';
+import { notifyPush } from './services/push.ts';
 
 export const ALL_PERMISSIONS = [
   'orders.create',
@@ -180,6 +181,14 @@ export function notifyUser(
     linkEntityId || null,
     new Date().toISOString()
   );
+
+  let url = '/';
+  let tag = type;
+  if (linkEntityType === 'order' && linkEntityId) { url = `/?order=${encodeURIComponent(linkEntityId)}`; tag = `order:${linkEntityId}`; }
+  else if (linkEntityType === 'quick_task' && linkEntityId) { url = `/?task=${encodeURIComponent(linkEntityId)}`; tag = `task:${linkEntityId}`; }
+  else if (linkEntityType === 'chat_room' && linkEntityId) { url = `/?chat=${encodeURIComponent(linkEntityId)}`; tag = `chat:${linkEntityId}`; }
+  else if (linkEntityType === 'salary') { url = '/?salary=1'; tag = 'salary:1'; }
+  notifyPush(db, userId, { title, body, url, tag });
 }
 
 export function notifyAdmins(

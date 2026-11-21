@@ -81,11 +81,7 @@ export const PRIORITY_LABELS: Record<string, string> = {
   urgent: 'Срочный',
 };
 
-export const PAYMENT_METHOD_LABELS: Record<string, string> = {
-  cash: 'Наличные',
-  bank: 'Безнал (р/с)',
-  card: 'Карта / перевод',
-};
+
 
 export const PAYMENT_TYPE_LABELS: Record<string, string> = {
   advance: 'Аванс',

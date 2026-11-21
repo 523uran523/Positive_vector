@@ -3,6 +3,7 @@ import { Download, LogOut, Moon, Save, Sun } from 'lucide-react';
 import { PWAInstallButton } from '../components/PWAInstallButton';
 import { useTheme } from '../components/ThemeContext';
 import { apiRequest, formatDateTimeRu } from '../lib/api';
+import { enablePushNotifications } from '../lib/push';
 import type { AppSettings, AuthUser } from '../types/crm';
 
 interface SettingsViewProps {
@@ -35,6 +36,10 @@ export function SettingsView({
   const [profileErr, setProfileErr] = useState('');
   const [busy, setBusy] = useState(false);
   const [avatarVersion, setAvatarVersion] = useState(0);
+  const [pushMsg, setPushMsg] = useState('');
+  const [pushBusy, setPushBusy] = useState(false);
+  const [confirmDisconnect, setConfirmDisconnect] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<'profile' | 'company'>('profile');
 
   // Admin global settings
   const [companyName, setCompanyName] = useState(settings.company_name || 'Позитив Вектор');
@@ -69,7 +74,8 @@ export function SettingsView({
     } catch(err){setYandexMessage(err instanceof Error?err.message:'Не удалось начать подключение.');setBusy(false);}
   };
   const disconnectYandex=async()=>{
-    if(!window.confirm('Отключить автоматические копии на Яндекс Диск? Уже сохранённые копии останутся на Диске.')) return;
+    if(!confirmDisconnect){setConfirmDisconnect(true);return;}
+    setConfirmDisconnect(false);
     setBusy(true);setYandexMessage('');
     try {await apiRequest('/api/integrations/yandex/disconnect',{method:'POST',body:{},skipOfflineQueue:true});await loadYandex();setYandexMessage('Диск отключён. Сохранённые копии не удалены.');}
     catch(err){setYandexMessage(err instanceof Error?err.message:'Не удалось отключить Диск.');}
@@ -166,14 +172,46 @@ export function SettingsView({
 
   const qs = expFrom || expTo ? `?from=${expFrom}&to=${expTo}` : '';
 
+  const handleEnablePush = async () => {
+    setPushBusy(true);
+    setPushMsg('');
+    try {
+      await enablePushNotifications();
+      setPushMsg('Push-уведомления включены.');
+    } catch (err) {
+      setPushMsg(err instanceof Error ? err.message : 'Не удалось включить push-уведомления.');
+    } finally {
+      setPushBusy(false);
+    }
+  };
+
   return (
     <div className="space-y-5">
+      <div className="flex gap-2" role="tablist" aria-label="Разделы настроек">
+        {([
+          ['profile', 'Мой профиль'],
+          ['company', 'Компания'],
+        ] as const).map(([key, label]) => (
+          <button
+            key={key}
+            type="button"
+            role="tab"
+            aria-selected={settingsTab === key}
+            onClick={() => setSettingsTab(key)}
+            className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${
+              settingsTab === key ? 'bg-[#0071E3] text-white' : 'bg-zinc-200 dark:bg-[#282b32]'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
       {isAdmin && <div className="space-y-3 rounded-2xl border border-black/[0.06] bg-white p-5 dark:border-white/[0.08] dark:bg-[#15171C]">
         <h3 className="font-display text-base font-bold">Резервные копии на Яндекс Диск</h3>
         <p className="text-sm text-zinc-500">После подключения копия базы и файлов будет сохраняться раз в неделю в отдельной папке приложения и храниться месяц. Пароль вводится только на странице Яндекса.</p>
         {yandexStatus && <p className="text-sm">{yandexStatus.connected?'Диск подключён.':yandexStatus.configured?'Диск не подключён.':'Для подключения сначала нужно настроить приложение Яндекса на сервере.'}</p>}
         {yandexMessage && <p role="status" className="text-sm text-blue-600 dark:text-blue-300">{yandexMessage}</p>}
-        {yandexStatus?.connected ? <button type="button" disabled={busy} onClick={()=>void disconnectYandex()} className="rounded-xl border border-zinc-400 px-4 py-2 text-sm">Отключить Диск</button> : <button type="button" disabled={busy || !yandexStatus?.configured} onClick={()=>void connectYandex()} className="rounded-xl bg-[#0071E3] px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">Подключить Яндекс Диск</button>}
+        {yandexStatus?.connected ? <button type="button" disabled={busy} onClick={()=>void disconnectYandex()} className="rounded-xl border border-zinc-400 px-4 py-2 text-sm">{confirmDisconnect ? 'Нажмите ещё раз для отключения' : 'Отключить Диск'}</button> : <button type="button" disabled={busy || !yandexStatus?.configured} onClick={()=>void connectYandex()} className="rounded-xl bg-[#0071E3] px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">Подключить Яндекс Диск</button>}
       </div>}
       {isAdmin && <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-black/[0.06] bg-white p-5 dark:border-white/[0.08] dark:bg-[#15171C]">
         <div><h3 className="font-display text-base font-bold">Учётные записи сотрудников</h3><p className="text-xs text-zinc-500">Добавление администраторов, увольнение и восстановление сотрудников</p></div>
@@ -214,6 +252,14 @@ export function SettingsView({
             <PWAInstallButton compact />
             <button
               type="button"
+              disabled={pushBusy}
+              onClick={() => void handleEnablePush()}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-black/[0.08] px-3.5 py-2 text-xs font-semibold dark:border-white/[0.1] disabled:opacity-50"
+            >
+              <span>{pushBusy ? 'Включаю…' : 'Включить push'}</span>
+            </button>
+            <button
+              type="button"
               onClick={onLogout}
               className="inline-flex items-center gap-1.5 rounded-xl bg-red-500/10 px-3.5 py-2 text-xs font-semibold text-red-600 dark:text-red-400"
             >
@@ -222,10 +268,11 @@ export function SettingsView({
             </button>
           </div>
         </div>
+        {pushMsg && <p role="status" className="mt-2 text-xs text-blue-600 dark:text-blue-300">{pushMsg}</p>}
       </div>
 
       {/* Self-service Login / Password / Profile */}
-      <form
+      {settingsTab === 'profile' && <form
         onSubmit={handleSaveProfile}
         className="rounded-2xl border border-black/[0.06] bg-white p-5 dark:border-white/[0.08] dark:bg-[#15171C]"
       >
@@ -296,10 +343,10 @@ export function SettingsView({
           <Save className="h-3.5 w-3.5" />
           <span>Сохранить профиль</span>
         </button>
-      </form>
+      </form>}
 
       {/* Admin-only Company Settings, XLSX Exports & Audit Log */}
-      {isAdmin && (
+      {isAdmin && settingsTab === 'company' && (
         <>
           <form
             onSubmit={handleSaveSettings}

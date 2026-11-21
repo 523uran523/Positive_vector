@@ -15,6 +15,9 @@ export function createReportsRouter(db: DatabaseSync): express.Router {
 
     const requestedUserId = req.query.userId ? String(req.query.userId).trim() : '';
     const search = req.query.q ? String(req.query.q).trim().toLowerCase() : '';
+    const from = req.query.from ? String(req.query.from).trim() : '';
+    const to = req.query.to ? String(req.query.to).trim() : '';
+    const orderId = req.query.orderId ? String(req.query.orderId).trim() : '';
     const scopeUserId = canViewOthers ? requestedUserId : user.id;
 
     const visitReportsAll = db
@@ -29,23 +32,30 @@ export function createReportsRouter(db: DatabaseSync): express.Router {
          JOIN orders o ON o.id = vr.order_id
          JOIN order_visits ov ON ov.id = vr.visit_id
          WHERE (? = '' OR vr.user_id = ?)
+           AND (? = '' OR vr.order_id = ?)
+           AND (? = '' OR vr.created_at >= ?)
+           AND (? = '' OR vr.created_at <= ?)
          ORDER BY vr.created_at DESC
          LIMIT 300`
       )
-      .all(scopeUserId, scopeUserId) as Array<Record<string, unknown>>;
+      .all(scopeUserId, scopeUserId, orderId, orderId, from, from, to ? to + 'T23:59:59.999Z' : '', to ? to + 'T23:59:59.999Z' : '') as Array<Record<string, unknown>>;
 
-    const shiftReportsAll = db
-      .prepare(
-        `SELECT ws.id, ws.user_id, ws.started_at, ws.ended_at, ws.work_done, ws.status,
-                ws.rate_snapshot_kopecks, ws.created_at,
-                u.full_name as employee_name, u.position as employee_position
-         FROM workshop_shifts ws
-         JOIN users u ON u.id = ws.user_id
-         WHERE ws.status = 'completed' AND (? = '' OR ws.user_id = ?)
-         ORDER BY COALESCE(ws.ended_at, ws.started_at) DESC
-         LIMIT 300`
-      )
-      .all(scopeUserId, scopeUserId) as Array<Record<string, unknown>>;
+    const shiftReportsAll = orderId
+      ? []
+      : (db
+        .prepare(
+          `SELECT ws.id, ws.user_id, ws.started_at, ws.ended_at, ws.work_done, ws.status,
+                  ws.rate_snapshot_kopecks, ws.created_at,
+                  u.full_name as employee_name, u.position as employee_position
+           FROM workshop_shifts ws
+           JOIN users u ON u.id = ws.user_id
+           WHERE ws.status = 'completed' AND (? = '' OR ws.user_id = ?)
+             AND (? = '' OR ws.created_at >= ?)
+             AND (? = '' OR ws.created_at <= ?)
+           ORDER BY COALESCE(ws.ended_at, ws.started_at) DESC
+           LIMIT 300`
+        )
+        .all(scopeUserId, scopeUserId, from, from, to ? to + 'T23:59:59.999Z' : '', to ? to + 'T23:59:59.999Z' : '') as Array<Record<string, unknown>>);
 
     const visitReports = visitReportsAll
       .filter((r) => {

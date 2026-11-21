@@ -18,6 +18,7 @@ export function DocumentsView() {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [inputKey, setInputKey] = useState(0);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -55,7 +56,8 @@ export function DocumentsView() {
   };
 
   const remove = async (id: string) => {
-    if (!window.confirm('Удалить этот документ?')) return;
+    if (confirmDeleteId !== id) { setConfirmDeleteId(id); return; }
+    setConfirmDeleteId(null);
     setBusy(true);
     setError('');
     try {
@@ -103,7 +105,7 @@ export function DocumentsView() {
       </div>
       <div className="flex flex-wrap items-center gap-3">
         <input key={inputKey} type="file" aria-label="Выбрать документ" onChange={(e) => setFile(e.target.files?.[0] || null)} />
-        <button type="button" disabled={!file || busy} onClick={() => void upload()} className="rounded-xl bg-[#0071E3] px-4 py-2 text-white disabled:opacity-50">
+        <button type="button" disabled={busy} onClick={() => void upload()} className="rounded-xl bg-[#0071E3] px-4 py-2 text-white disabled:opacity-50">
           {busy ? 'Загрузка…' : 'Загрузить файл'}
         </button>
       </div>
@@ -131,7 +133,7 @@ export function DocumentsView() {
                 disabled={busy}
                 className="text-sm font-semibold text-red-600 hover:underline disabled:opacity-50"
               >
-                Удалить
+                {confirmDeleteId === doc.id ? 'Точно удалить?' : 'Удалить'}
               </button>
             </div>
           </li>

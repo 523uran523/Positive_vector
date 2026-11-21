@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Clock,
@@ -84,6 +85,8 @@ export function CalendarView({
     return new Date(d.getFullYear(), d.getMonth(), 1);
   });
   const [showUnplanned, setShowUnplanned] = useState(false);
+  const [calendarView, setCalendarView] = useState<'calendar' | 'orders' | 'tasks' | 'shifts'>('calendar');
+  const [viewMenuOpen, setViewMenuOpen] = useState(false);
   const [quickTasks, setQuickTasks] = useState<QuickTask[]>([]);
   const [taskLoadError, setTaskLoadError] = useState('');
   const loadQuickTasks = useCallback(async () => {
@@ -332,6 +335,40 @@ export function CalendarView({
         {/* Calendar Grid Card */}
         <div className="rounded-2xl border border-black/[0.06] bg-white p-4 shadow-[0_1px_3px_rgba(0,0,0,0.04)] sm:p-5 lg:col-span-7 dark:border-white/[0.08] dark:bg-[#15171C]">
           <div className="mb-4 flex items-center justify-between">
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setViewMenuOpen((v) => !v)}
+                className="inline-flex items-center gap-1.5 rounded-xl border border-black/[0.07] px-3 py-1.5 text-sm font-semibold hover:bg-black/[0.03] dark:border-white/[0.08]"
+              >
+                <span>
+                  {calendarView === 'calendar' && 'Календарь'}
+                  {calendarView === 'orders' && 'Заказы'}
+                  {calendarView === 'tasks' && 'Быстрые задачи'}
+                  {calendarView === 'shifts' && 'Смены'}
+                </span>
+                <ChevronDown className="h-4 w-4" />
+              </button>
+              {viewMenuOpen && (
+                <div className="absolute left-0 z-20 mt-1 w-48 overflow-hidden rounded-xl border border-black/[0.08] bg-white py-1 shadow-lg dark:border-white/[0.1] dark:bg-[#15171C]">
+                  {([
+                    ['calendar', 'Календарь'],
+                    ['orders', 'Заказы'],
+                    ['tasks', 'Быстрые задачи'],
+                    ['shifts', 'Смены'],
+                  ] as const).map(([key, label]) => (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => { setCalendarView(key); setViewMenuOpen(false); }}
+                      className={`block w-full px-3 py-1.5 text-left text-sm hover:bg-black/[0.04] dark:hover:bg-white/[0.06] ${calendarView === key ? 'font-semibold text-[#0071E3] dark:text-[#2997FF]' : ''}`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
             <h2 className="font-display text-base font-bold sm:text-lg">
               {MONTHS_RU[cursorMonth.getMonth()]} {cursorMonth.getFullYear()}
             </h2>
@@ -474,12 +511,12 @@ export function CalendarView({
               className="mb-4 flex min-h-[44px] w-full items-center justify-center gap-2 rounded-2xl bg-[#0071E3] px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-[#0077ED] active:scale-[0.99] dark:bg-[#2997FF] dark:text-[#0B0C10]"
             >
               <Plus className="h-4 w-4" />
-              <span>+ Добавить заказ</span>
+              <span>Добавить заказ</span>
             </button>
           )}
 
           {taskLoadError && <div role="alert" className="mb-3 text-sm text-red-600 dark:text-red-400">{taskLoadError}</div>}
-          <QuickTasks user={user} directory={directory} selectedDate={selectedDate} dayTasks={showUnplanned ? [] : selectedDayData.tasks} openTaskId={openTaskId} onConsumeOpenTask={onConsumeOpenTask} onRefresh={() => void loadQuickTasks()} />
+          {(calendarView === 'calendar' || calendarView === 'tasks') && <QuickTasks user={user} directory={directory} selectedDate={selectedDate} dayTasks={showUnplanned ? [] : selectedDayData.tasks} openTaskId={openTaskId} onConsumeOpenTask={onConsumeOpenTask} onRefresh={() => void loadQuickTasks()} />}
 
           {cancelledWithIssues.length>0 && <section className="mb-4 space-y-2 rounded-2xl border border-amber-500/30 bg-amber-500/10 p-3"><h3 className="text-sm font-semibold">Отменённые заказы: вопросы требуют решения</h3>{cancelledWithIssues.map(order=><button type="button" key={order.id} onClick={()=>onOpenOrder(order)} className="block w-full rounded-xl bg-white p-2 text-left text-sm dark:bg-[#15171C]">{order.order_number} · {order.title}</button>)}</section>}
 
@@ -548,7 +585,7 @@ export function CalendarView({
                   </div>
                 )}
 
-                {selectedDayData.entries.map(({ order, visit, time }, idx) => {
+                {(calendarView === 'calendar' || calendarView === 'orders') && selectedDayData.entries.map(({ order, visit, time }, idx) => {
                   const st = visit ? visit.status : order.status;
                   const meta = ORDER_STATUS_META[st] || ORDER_STATUS_META.new;
                   return (
@@ -597,7 +634,7 @@ export function CalendarView({
                   );
                 })}
 
-                {selectedDayData.shifts.map((sh) => (
+                {(calendarView === 'calendar' || calendarView === 'shifts') && selectedDayData.shifts.map((sh) => (
                   <div
                     key={sh.id}
                     className="rounded-2xl border border-emerald-500/20 bg-emerald-500/[0.06] p-3.5 text-xs"

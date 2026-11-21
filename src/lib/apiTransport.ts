@@ -8,6 +8,7 @@ if(typeof window!=='undefined') window.addEventListener('storage',event=>{
   if([SESSION_KEY,'pv-queue-owner','pv-local-logout'].includes(event.key||'') && offlineOwner() && localStorage.getItem('pv-queue-owner')!==offlineOwner()) unauthorized();
 });
 export function setCsrfToken(value:string|null) {csrf=value;}
+export function getCsrfToken():string|null {return csrf;}
 export async function establishOfflineSession(user:AuthUser) {
   if (user.dismissedAt) {
     setOfflineOwner(null); versions.clear(); results.clear();

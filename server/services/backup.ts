@@ -42,14 +42,24 @@ export async function createBackup(dbPath:string,uploadDir:string,destination:st
         ? 'documents'
         : 'accounting_documents';
       if (snapshot.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(documentTable)) {
+        const primaryFolder = documentTable === 'documents' ? 'documents' : 'accounting';
+        const fallbackFolder = primaryFolder === 'documents' ? 'accounting' : 'documents';
         const documents=snapshot.prepare(`SELECT DISTINCT stored_name FROM ${documentTable}`).all();
-        if(documents.length) fs.mkdirSync(path.join(destination,'uploads','accounting'),{mode:0o700});
-        for(const row of documents) {
-          const name=String(row.stored_name);
-          if(!/^[0-9a-f-]{36}$/.test(name)) throw new Error('Unsafe accounting file name');
-          const target=path.join(destination,'uploads','accounting',name);
-          fs.copyFileSync(path.join(uploadDir,'accounting',name),target);
-          files[`uploads/accounting/${name}`]=sha(target);
+        if (documents.length) {
+          // Определяем, в какой папке реально лежат файлы (новая documents или старая accounting).
+          let sourceFolder = primaryFolder;
+          const first = String((documents[0] as { stored_name: string }).stored_name);
+          if (!fs.existsSync(path.join(uploadDir, primaryFolder, first)) && fs.existsSync(path.join(uploadDir, fallbackFolder, first))) {
+            sourceFolder = fallbackFolder;
+          }
+          fs.mkdirSync(path.join(destination,'uploads',sourceFolder),{mode:0o700});
+          for(const row of documents) {
+            const name=String(row.stored_name);
+            if(!/^[0-9a-f-]{36}$/.test(name)) throw new Error('Unsafe accounting file name');
+            const target=path.join(destination,'uploads',sourceFolder,name);
+            fs.copyFileSync(path.join(uploadDir,sourceFolder,name),target);
+            files[`uploads/${sourceFolder}/${name}`]=sha(target);
+          }
         }
       }
       fs.writeFileSync(path.join(destination,'manifest.json'),JSON.stringify({createdAt:new Date().toISOString(),files},null,2),{mode:0o600});

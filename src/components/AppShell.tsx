@@ -72,7 +72,7 @@ export function AppShell({
 
   const navItems: Array<{ id: NavTab; label: string; icon: React.ComponentType<{ className?: string }> }> = isAdmin
     ? [
-        { id: 'calendar', label: 'Календарь', icon: CalendarDays },
+        { id: 'calendar', label: 'Работа', icon: CalendarDays },
         { id: 'chat', label: 'Чат', icon: MessageCircle },
         { id: 'reports', label: 'Отчёты', icon: ClipboardCheck },
         { id: 'clients', label: 'Клиенты', icon: Building2 },
@@ -83,14 +83,14 @@ export function AppShell({
         { id: 'settings', label: 'Настройки', icon: Settings },
       ]
     : [
-        { id: 'calendar', label: 'Календарь', icon: CalendarDays },
+        { id: 'calendar', label: 'Работа', icon: CalendarDays },
         { id: 'chat', label: 'Чат', icon: MessageCircle },
         { id: 'reports', label: 'Отчёты', icon: ClipboardCheck },
-        { id: 'salary', label: 'Зарплата', icon: Wallet },
+        { id: 'salary', label: 'Моя зарплата', icon: Wallet },
         { id: 'settings', label: 'Настройки', icon: Settings },
       ];
 
-  const activeTitle = navItems.find((n) => n.id === activeTab)?.label || 'Календарь';
+  const activeTitle = navItems.find((n) => n.id === activeTab)?.label || 'Работа';
 
   return (
     <div className="min-h-screen bg-[#F5F5F7] text-[#1D1D1F] transition-colors dark:bg-[#0B0C10] dark:text-[#F5F5F7]">

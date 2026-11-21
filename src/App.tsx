@@ -35,7 +35,14 @@ function CRMWorkspace() {
   const [booting, setBooting] = useState(true);
   const [needsSetup, setNeedsSetup] = useState(false);
   const [user, setUser] = useState<AuthUser | null>(null);
-  const [activeTab, setActiveTab] = useState<NavTab>(() => new URLSearchParams(window.location.search).has('yandex_connection') ? 'settings' : new URLSearchParams(window.location.search).has('chat') ? 'chat' : 'calendar');
+  const [activeTab, setActiveTab] = useState<NavTab>(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.has('yandex_connection')) return 'settings';
+    if (params.has('chat')) return 'chat';
+    if (params.has('order')) return 'calendar';
+    if (params.has('task')) return 'calendar';
+    return 'calendar';
+  });
 
   // Shared CRM data
   const [settings, setSettings] = useState<AppSettings>({});
@@ -58,6 +65,23 @@ function CRMWorkspace() {
     const timer = window.setInterval(refreshChatUnread, 10000);
     return () => clearInterval(timer);
   }, [user?.id, user?.dismissedAt, refreshChatUnread]);
+
+  // Deep links from push notifications: ?order=… opens order card, ?task=… opens quick task.
+  const deepLinkHandled = React.useRef(false);
+  useEffect(() => {
+    if (!user || user.dismissedAt || deepLinkHandled.current) return;
+    const params = new URLSearchParams(window.location.search);
+    const orderId = params.get('order');
+    const taskId = params.get('task');
+    if (!orderId && !taskId) return;
+    deepLinkHandled.current = true;
+    if (orderId) {
+      void handleOpenOrderById(orderId);
+    }
+    if (taskId) {
+      setOpenQuickTaskId(taskId);
+    }
+  }, [user?.id, user?.dismissedAt]);
 
   // Modals
   const [createOrderDate, setCreateOrderDate] = useState<string | undefined>(undefined);
@@ -218,8 +242,8 @@ function CRMWorkspace() {
     try {
       const res = await apiRequest<{ order: Order }>(`/api/orders/${orderId}`, {useCache:false});
       setSelectedOrder(res.order);
-    } catch {
-      window.alert('Не удалось открыть заказ. Проверьте подключение и доступ к заказу.');
+    } catch (err) {
+      console.error('Не удалось открыть заказ:', err);
     }
   };
 
