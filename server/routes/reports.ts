@@ -14,10 +14,10 @@ export function createReportsRouter(db: DatabaseSync): express.Router {
     const canViewOthers = isAdmin || hasPermission(user, 'reports.view_others');
 
     const requestedUserId = req.query.userId ? String(req.query.userId).trim() : '';
+    const requestedOrderId = req.query.orderId ? String(req.query.orderId).trim() : '';
+    const fromDate = req.query.from ? String(req.query.from).trim().slice(0, 10) : '';
+    const toDate = req.query.to ? String(req.query.to).trim().slice(0, 10) : '';
     const search = req.query.q ? String(req.query.q).trim().toLowerCase() : '';
-    const from = req.query.from ? String(req.query.from).trim() : '';
-    const to = req.query.to ? String(req.query.to).trim() : '';
-    const orderId = req.query.orderId ? String(req.query.orderId).trim() : '';
     const scopeUserId = canViewOthers ? requestedUserId : user.id;
 
     const visitReportsAll = db
@@ -33,29 +33,41 @@ export function createReportsRouter(db: DatabaseSync): express.Router {
          JOIN order_visits ov ON ov.id = vr.visit_id
          WHERE (? = '' OR vr.user_id = ?)
            AND (? = '' OR vr.order_id = ?)
-           AND (? = '' OR vr.created_at >= ?)
-           AND (? = '' OR vr.created_at <= ?)
+           AND (? = '' OR date(COALESCE(ov.scheduled_at, vr.created_at)) >= date(?))
+           AND (? = '' OR date(COALESCE(ov.scheduled_at, vr.created_at)) <= date(?))
          ORDER BY vr.created_at DESC
          LIMIT 300`
       )
-      .all(scopeUserId, scopeUserId, orderId, orderId, from, from, to ? to + 'T23:59:59.999Z' : '', to ? to + 'T23:59:59.999Z' : '') as Array<Record<string, unknown>>;
+      .all(
+        scopeUserId,
+        scopeUserId,
+        requestedOrderId,
+        requestedOrderId,
+        fromDate,
+        fromDate,
+        toDate,
+        toDate
+      ) as Array<Record<string, unknown>>;
 
-    const shiftReportsAll = orderId
+    const shiftReportsAll = requestedOrderId
       ? []
       : (db
-        .prepare(
-          `SELECT ws.id, ws.user_id, ws.started_at, ws.ended_at, ws.work_done, ws.status,
-                  ws.rate_snapshot_kopecks, ws.created_at,
-                  u.full_name as employee_name, u.position as employee_position
-           FROM workshop_shifts ws
-           JOIN users u ON u.id = ws.user_id
-           WHERE ws.status = 'completed' AND (? = '' OR ws.user_id = ?)
-             AND (? = '' OR ws.created_at >= ?)
-             AND (? = '' OR ws.created_at <= ?)
-           ORDER BY COALESCE(ws.ended_at, ws.started_at) DESC
-           LIMIT 300`
-        )
-        .all(scopeUserId, scopeUserId, from, from, to ? to + 'T23:59:59.999Z' : '', to ? to + 'T23:59:59.999Z' : '') as Array<Record<string, unknown>>);
+          .prepare(
+            `SELECT ws.id, ws.user_id, ws.started_at, ws.ended_at, ws.work_done, ws.status,
+                    ws.rate_snapshot_kopecks, ws.created_at,
+                    u.full_name as employee_name, u.position as employee_position
+             FROM workshop_shifts ws
+             JOIN users u ON u.id = ws.user_id
+             WHERE ws.status = 'completed'
+               AND (? = '' OR ws.user_id = ?)
+               AND (? = '' OR date(ws.started_at) >= date(?))
+               AND (? = '' OR date(ws.started_at) <= date(?))
+             ORDER BY COALESCE(ws.ended_at, ws.started_at) DESC
+             LIMIT 300`
+          )
+          .all(scopeUserId, scopeUserId, fromDate, fromDate, toDate, toDate) as Array<
+          Record<string, unknown>
+        >);
 
     const visitReports = visitReportsAll
       .filter((r) => {

@@ -91,11 +91,44 @@ export function OfflineIndicator() {
                       <span>{item.lastError}</span>
                     </div>
                   )}
-                  {item.status==='failed' && item.lastError?.includes('зарезервирована') && Boolean(item.body) && typeof item.body==='object' && <button type="button" className="mt-1 text-blue-600 underline dark:text-blue-300" onClick={()=>{
-                    if (confirmReservedId !== item.id) { setConfirmReservedId(item.id); return; }
-                    setConfirmReservedId(null);
-                    void updateQueuedMutation(item.id,{body:{...item.body as Record<string,unknown>,confirmReserved:true},status:'pending',lastError:undefined}).then(()=>syncOfflineQueue()).catch(error=>setStorageError(String(error)));
-                  }}>{confirmReservedId === item.id ? 'Нажмите ещё раз для подтверждения' : 'Подтвердить выдачу и повторить'}</button>}
+                  {item.status === 'failed' && item.lastError?.includes('зарезервирована') && Boolean(item.body) && typeof item.body === 'object' && (
+                    confirmReservedId !== item.id ? (
+                      <button
+                        type="button"
+                        className="mt-1 text-blue-600 underline dark:text-blue-300"
+                        onClick={() => setConfirmReservedId(item.id)}
+                      >
+                        Подтвердить выдачу и повторить
+                      </button>
+                    ) : (
+                      <div className="mt-1.5 flex flex-wrap items-center gap-1.5 rounded-lg border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[11px]">
+                        <span className="text-amber-800 dark:text-amber-200">Выдать из резерва?</span>
+                        <button
+                          type="button"
+                          className="font-semibold text-amber-700 underline dark:text-amber-300"
+                          onClick={() => {
+                            setConfirmReservedId(null);
+                            void updateQueuedMutation(item.id, {
+                              body: { ...(item.body as Record<string, unknown>), confirmReserved: true },
+                              status: 'pending',
+                              lastError: undefined,
+                            })
+                              .then(() => syncOfflineQueue())
+                              .catch((error) => setStorageError(String(error)));
+                          }}
+                        >
+                          Подтвердить
+                        </button>
+                        <button
+                          type="button"
+                          className="text-zinc-500 underline"
+                          onClick={() => setConfirmReservedId(null)}
+                        >
+                          Отмена
+                        </button>
+                      </div>
+                    )
+                  )}
                 </div>
                 <button
                   type="button"

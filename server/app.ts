@@ -19,9 +19,9 @@ import { createWarehouseRouter } from './routes/warehouse.ts';
 import { createChatRouter } from './routes/chat.ts';
 import { createQuickTasksRouter } from './routes/quickTasks.ts';
 import { createDocumentsRouter } from './routes/documents.ts';
-import { createPushRouter } from './routes/push.ts';
 import { createYandexOAuth } from './services/yandexOAuth.ts';
 import { createYandexIntegrationRouter } from './routes/yandexIntegration.ts';
+import { createPushRouter } from './routes/push.ts';
 
 export function createApp(db: DatabaseSync,oauth=createYandexOAuth(db)): express.Express {
   const app = express();
@@ -31,7 +31,9 @@ export function createApp(db: DatabaseSync,oauth=createYandexOAuth(db)): express
   // Conservative security headers. CSP is production-only so Vite HMR keeps working.
   app.use((req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('X-Frame-Options', 'DENY');
+    if (!process.env.K_SERVICE) {
+      res.setHeader('X-Frame-Options', 'DENY');
+    }
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
     res.setHeader('Permissions-Policy', 'camera=(), microphone=(self), geolocation=()');
     res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
@@ -87,7 +89,6 @@ export function createApp(db: DatabaseSync,oauth=createYandexOAuth(db)): express
   app.use('/api/chat', createChatRouter(db));
   app.use('/api/quick-tasks', createQuickTasksRouter(db));
   app.use('/api/documents', createDocumentsRouter(db));
-  app.use('/api/push', createPushRouter(db));
   app.use('/api/integrations/yandex', createYandexIntegrationRouter(db,oauth));
   app.use('/api/users', createUsersRouter(db));
   app.use('/api/clients', createClientsRouter(db));
@@ -98,6 +99,7 @@ export function createApp(db: DatabaseSync,oauth=createYandexOAuth(db)): express
   app.use('/api/warehouse', createWarehouseRouter(db));
   app.use('/api/finance', createFinanceRouter(db));
   app.use('/api/notifications', createNotificationsRouter(db));
+  app.use('/api/push', createPushRouter(db));
   app.use('/api/settings', createSettingsRouter(db));
   app.use('/api/export', createExportRouter(db));
 
@@ -115,10 +117,12 @@ export function createApp(db: DatabaseSync,oauth=createYandexOAuth(db)): express
       if (err instanceof multer.MulterError) {
         if (err.code === 'LIMIT_FILE_SIZE') {
           const limitMb = Math.round(Number(process.env.MAX_UPLOAD_BYTES || 0) / 1024 / 1024);
-          const message = limitMb > 0
-            ? `Размер файла превышает лимит ${limitMb} МБ.`
-            : 'Размер файла превышает допустимый лимит.';
-          res.status(400).json({ error: message });
+          res.status(400).json({
+            error:
+              limitMb > 0
+                ? `Размер файла превышает лимит ${limitMb} МБ.`
+                : 'Размер файла превышает допустимый лимит.',
+          });
           return;
         }
         res.status(400).json({ error: 'Некорректная загрузка файла.' });

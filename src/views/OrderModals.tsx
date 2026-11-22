@@ -3,10 +3,12 @@ import {
   Calendar,
   Check,
   CheckCircle2,
+  ChevronDown,
   ClipboardList,
   FileText,
   Image as ImageIcon,
   MapPin,
+  MessageSquare,
   Package,
   Pencil,
   Phone,
@@ -28,6 +30,7 @@ import {
   ORDER_STATUS_META,
   PAYMENT_TYPE_LABELS,
 } from '../lib/api';
+import { getMapHref, getTelHref } from '../lib/links';
 import { uploadWithRetry } from '../lib/upload';
 import type {
   AuthUser,
@@ -43,6 +46,8 @@ import type {
 interface CreateOrderModalProps {
   open: boolean;
   defaultDate?: string;
+  defaultCompanyId?: string;
+  defaultContactId?: string;
   user: AuthUser;
   directory: DirectoryUser[];
   companies: Company[];
@@ -57,6 +62,8 @@ interface CreateOrderModalProps {
 export function CreateOrderModal({
   open,
   defaultDate,
+  defaultCompanyId,
+  defaultContactId,
   user,
   directory,
   companies,
@@ -91,9 +98,11 @@ export function CreateOrderModal({
     if (open) {
       setScheduledAt(defaultDate ? `${defaultDate}T10:00` : '');
       setUnplanned(!defaultDate);
+      setCompanyId(defaultCompanyId || '');
+      setClientContactId(defaultContactId || '');
       setError('');
     }
-  }, [open, defaultDate]);
+  }, [open, defaultDate, defaultCompanyId, defaultContactId]);
 
   if (!open) return null;
 
@@ -694,6 +703,7 @@ export function OrderDetailModal({
   const [whToolInstanceId, setWhToolInstanceId] = useState('');
   const [whQty, setWhQty] = useState('1');
   const [whNote, setWhNote] = useState('');
+  const [whConfirmReserved, setWhConfirmReserved] = useState(false);
   const [reviewNote, setReviewNote] = useState('');
 
   // Wage input per assignee key `${visitId}:${userId}`
@@ -726,6 +736,7 @@ export function OrderDetailModal({
   const [payDate, setPayDate] = useState('');
   const [payComment, setPayComment] = useState('');
   const [editingPaymentId, setEditingPaymentId] = useState<string | null>(null);
+  const [paymentsExpanded, setPaymentsExpanded] = useState(false);
   const [matOverrideRub, setMatOverrideRub] = useState('');
   const [matOverrideReason, setMatOverrideReason] = useState('');
 
@@ -733,13 +744,15 @@ export function OrderDetailModal({
   const [reopenOpen, setReopenOpen] = useState(false);
   const [reopenReason, setReopenReason] = useState('');
   const [confirmDeleteOrder, setConfirmDeleteOrder] = useState(false);
+  const [confirmDeletePaymentId, setConfirmDeletePaymentId] = useState<string | null>(null);
   const [offlineNotice, setOfflineNotice] = useState('');
-
-  // Upload progress & retry state
-  const [uploadItems, setUploadItems] = useState<Array<{ name: string; percent: number; status: 'uploading' | 'done' | 'error'; error?: string }>>([]);
-  const [failedUploads, setFailedUploads] = useState<Array<{ file: File; kind: 'photo' | 'document'; visitId?: string }>>([]);
-  const [photoViewer, setPhotoViewer] = useState<string | null>(null);
-  const [confirmDialog, setConfirmDialog] = useState<{ text: string; run: () => void } | null>(null);
+  const [uploadItems, setUploadItems] = useState<
+    Array<{ id: string; name: string; progress: number; status: 'uploading' | 'done' | 'error'; error?: string }>
+  >([]);
+  const [failedUploads, setFailedUploads] = useState<
+    Array<{ id: string; file: File; kind: 'photo' | 'document'; visitId?: string; error: string }>
+  >([]);
+  const [previewImage, setPreviewImage] = useState<{ url: string; title: string } | null>(null);
 
   // Report edit & delete state
   const [editingReportId, setEditingReportId] = useState<string | null>(null);
@@ -795,6 +808,10 @@ export function OrderDetailModal({
 
   useEffect(() => {
     setTab('info');
+    setPaymentsExpanded(false);
+    setUploadItems([]);
+    setFailedUploads([]);
+    setPreviewImage(null);
   }, [order?.id]);
 
   useEffect(() => {
@@ -996,13 +1013,6 @@ export function OrderDetailModal({
 
   const handleDeletePayment = async (payment: OrderPayment) => {
     if (!order) return;
-    setConfirmDialog({
-      text: `Удалить оплату ${formatRub(payment.amount_kopecks)}?`,
-      run: () => { setConfirmDialog(null); void doDeletePayment(payment); },
-    });
-  };
-  const doDeletePayment = async (payment: OrderPayment) => {
-    if (!order) return;
     setMoneyBusy(true);
     setError('');
     setOfflineNotice('');
@@ -1011,6 +1021,7 @@ export function OrderDetailModal({
         `/api/finance/payments/${payment.id}`,
         { method: 'DELETE', offlineLabel: 'Удаление оплаты по заказу' }
       );
+      setConfirmDeletePaymentId(null);
       if (res.offlineQueued) {
         setOfflineNotice('Удаление оплаты сохранено в офлайн-очередь.');
       } else {
@@ -1309,28 +1320,18 @@ export function OrderDetailModal({
     }
   };
 
-  const handleWarehouseAction = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleWarehouseAction = async (e?: React.FormEvent, forceConfirm = false) => {
+    e?.preventDefault();
     const material=materials.find(item=>item.id===whMatId), tool=tools.find(item=>item.id===whToolId);
     const resource=order.plannedResources.find(item=>whMode==='material'?item.material_id===whMatId:item.tool_id===whToolId);
     const reservedOther=Math.max(0,(whMode==='material'?material?.reserved_milli:tool?.reserved_milli)||0)-Number(resource?.reserved_remaining_milli||0);
     const available=whMode==='material'?(material?.quantity_milli||0):(tool?.available_qty||0)*1000;
     const confirmReserved=whOpType!=='return' && (reservedOther>available-Number(whQty||1)*1000 || !navigator.onLine);
-    if(confirmReserved) {
-      setConfirmDialog({
-        text: 'Часть материала или инструмента может быть зарезервирована для других заказов. Продолжить?',
-        run: () => { setConfirmDialog(null); void doWarehouseAction(); },
-      });
+    if(confirmReserved && !forceConfirm && !whConfirmReserved) {
+      setWhConfirmReserved(true);
       return;
     }
-    await doWarehouseAction();
-  };
-  const doWarehouseAction = async () => {
-    const material=materials.find(item=>item.id===whMatId), tool=tools.find(item=>item.id===whToolId);
-    const resource=order.plannedResources.find(item=>whMode==='material'?item.material_id===whMatId:item.tool_id===whToolId);
-    const reservedOther=Math.max(0,(whMode==='material'?material?.reserved_milli:tool?.reserved_milli)||0)-Number(resource?.reserved_remaining_milli||0);
-    const available=whMode==='material'?(material?.quantity_milli||0):(tool?.available_qty||0)*1000;
-    const confirmReserved=whOpType!=='return' && (reservedOther>available-Number(whQty||1)*1000 || !navigator.onLine);
+    setWhConfirmReserved(false);
     setBusy(true);
     setError('');
     setOfflineNotice('');
@@ -1378,6 +1379,136 @@ export function OrderDetailModal({
     }
   };
 
+  const handleQuickResourceOp = async (
+    pr: Order['plannedResources'][number],
+    actionType: 'issue' | 'return'
+  ) => {
+    const qtyNum = Math.max(
+      0.001,
+      Number(pr.reserved_remaining_milli || pr.planned_qty_milli || 1000) / 1000
+    );
+    if (pr.item_type === 'material' && pr.material_id) {
+      const material = materials.find((item) => item.id === pr.material_id);
+      const reservedOther =
+        Math.max(0, material?.reserved_milli || 0) - Number(pr.reserved_remaining_milli || 0);
+      const available = material?.quantity_milli || 0;
+      const needsConfirm =
+        actionType !== 'return' &&
+        (reservedOther > available - qtyNum * 1000 || !navigator.onLine);
+      if (needsConfirm) {
+        setWhMode('material');
+        setWhOpType('issue');
+        setWhMatId(pr.material_id);
+        setWhQty(String(qtyNum));
+        setWhConfirmReserved(true);
+        return;
+      }
+      setBusy(true);
+      setError('');
+      setOfflineNotice('');
+      try {
+        const res = await apiRequest<{
+          order?: Order;
+          negativeStockWarning?: boolean;
+          offlineQueued?: boolean;
+        }>(`/api/orders/${order.id}/resources`, {
+          method: 'POST',
+          body: {
+            itemType: 'material',
+            opType: actionType,
+            materialId: pr.material_id,
+            qtyMilli: Math.round(qtyNum * 1000),
+            note: '',
+            confirmReserved: false,
+          },
+          offlineLabel: `Склад по заказу ${order.order_number}`,
+        });
+        if (res.offlineQueued) {
+          setOfflineNotice('Операция со складом сохранена в офлайн-очередь.');
+        } else if (res.order) {
+          onOrderUpdated(res.order);
+          onWarehouseRefresh();
+          if (res.negativeStockWarning) {
+            setError(
+              'Внимание: остаток материала на складе ушёл в минус. Администратору отправлено уведомление.'
+            );
+          }
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Ошибка складской операции');
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+
+    if (pr.item_type === 'tool' && pr.tool_id) {
+      const tool = tools.find((item) => item.id === pr.tool_id);
+      const intQty = Math.max(1, Math.round(qtyNum));
+      const reservedOther =
+        Math.max(0, tool?.reserved_milli || 0) - Number(pr.reserved_remaining_milli || 0);
+      const available = (tool?.available_qty || 0) * 1000;
+      const needsConfirm =
+        actionType !== 'return' &&
+        (reservedOther > available - intQty * 1000 || !navigator.onLine);
+      if (needsConfirm) {
+        setWhMode('tool');
+        setWhOpType('issue');
+        setWhToolId(pr.tool_id);
+        setWhToolInstanceId('');
+        setWhQty(String(intQty));
+        setWhConfirmReserved(true);
+        return;
+      }
+      const instanceId =
+        tool?.tracking_mode === 'individual'
+          ? actionType === 'issue'
+            ? tool.instances.find((i) => i.status === 'available')?.id
+            : tool.instances.find((i) => i.status === 'issued' && i.holder_user_id === user.id)
+                ?.id || tool.instances.find((i) => i.status === 'issued')?.id
+          : undefined;
+      if (tool?.tracking_mode === 'individual' && !instanceId) {
+        setWhMode('tool');
+        setWhOpType(actionType);
+        setWhToolId(pr.tool_id);
+        setWhToolInstanceId('');
+        setError('Выберите конкретный экземпляр инструмента в форме ниже.');
+        return;
+      }
+      setBusy(true);
+      setError('');
+      setOfflineNotice('');
+      try {
+        const res = await apiRequest<{ order?: Order; offlineQueued?: boolean }>(
+          `/api/orders/${order.id}/resources`,
+          {
+            method: 'POST',
+            body: {
+              itemType: 'tool',
+              opType: actionType,
+              toolId: pr.tool_id,
+              toolInstanceId: instanceId,
+              qty: intQty,
+              note: '',
+              confirmReserved: false,
+            },
+            offlineLabel: `Инструмент по заказу ${order.order_number}`,
+          }
+        );
+        if (res.offlineQueued) {
+          setOfflineNotice('Операция со складом сохранена в офлайн-очередь.');
+        } else if (res.order) {
+          onOrderUpdated(res.order);
+          onWarehouseRefresh();
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Ошибка складской операции');
+      } finally {
+        setBusy(false);
+      }
+    }
+  };
+
   const reviewCancellation = async (issueKey:'payments'|'accruals') => {
     if(!reviewNote.trim()){setError('Опишите, как решён вопрос.');return;}
     setBusy(true);setError('');
@@ -1388,45 +1519,75 @@ export function OrderDetailModal({
     finally {setBusy(false);}
   };
 
-  const uploadOneFile = async (file: File, kind: 'photo' | 'document', visitId?: string) => {
-    const name = file.name;
-    // Не даём экрану гаснуть на время загрузки (Screen Wake Lock, где поддерживается).
-    let wakeLock: { release: () => Promise<void> } | null = null;
-    try {
-      const wl = (navigator as any).wakeLock;
-      if (wl?.request) wakeLock = await wl.request('screen');
-    } catch {
-      // Wake Lock недоступен — игнорируем.
-    }
-    setUploadItems((items) => [...items.filter((i) => i.name !== name), { name, percent: 0, status: 'uploading' }]);
-    try {
-      const fd = new FormData();
-      fd.append('file', file);
-      fd.append('kind', kind);
-      if (visitId) fd.append('visitId', visitId);
-      await uploadWithRetry({
-        url: `/api/orders/${order.id}/attachments`,
-        formData: fd,
-        attempts: 3,
-        onProgress: (percent) =>
-          setUploadItems((items) => items.map((i) => (i.name === name && i.status === 'uploading' ? { ...i, percent } : i))),
-      });
-      setUploadItems((items) => items.map((i) => (i.name === name ? { ...i, percent: 100, status: 'done' } : i)));
-      return true;
-    } catch (err) {
-      setUploadItems((items) =>
-        items.map((i) => (i.name === name ? { ...i, status: 'error', error: err instanceof Error ? err.message : 'Ошибка' } : i))
-      );
-      setFailedUploads((prev) => [...prev.filter((f) => f.file.name !== name), { file, kind, visitId }]);
-      return false;
-    } finally {
-      if (wakeLock) void wakeLock.release().catch(() => {});
-    }
-  };
+  const runUploadBatch = async (
+    batch: Array<{ id: string; file: File; kind: 'photo' | 'document'; visitId?: string }>
+  ) => {
+    if (!batch.length) return;
+    setBusy(true);
+    setError('');
+    setOfflineNotice('');
 
-  const refreshOrder = async () => {
-    const fresh = await apiRequest<{ order: Order }>(`/api/orders/${order.id}`, { useCache: false });
-    onOrderUpdated(fresh.order);
+    setUploadItems((prev) => {
+      const next = prev.filter((item) => item.status === 'error');
+      const incomingIds = new Set(batch.map((b) => b.id));
+      return [
+        ...next.filter((item) => !incomingIds.has(item.id)),
+        ...batch.map((b) => ({ id: b.id, name: b.file.name, progress: 0, status: 'uploading' as const })),
+      ];
+    });
+
+    const wakeLock = await navigator.wakeLock?.request('screen').catch(() => null);
+    const nextFailed: Array<{ id: string; file: File; kind: 'photo' | 'document'; visitId?: string; error: string }> = [];
+    const succeededIds = new Set<string>();
+
+    try {
+      for (const item of batch) {
+        try {
+          const fd = new FormData();
+          fd.append('file', item.file);
+          fd.append('kind', item.kind);
+          if (item.visitId) fd.append('visitId', item.visitId);
+
+          await uploadWithRetry({
+            url: `/api/orders/${order.id}/attachments`,
+            formData: fd,
+            attempts: 3,
+            onProgress: (progress) => {
+              setUploadItems((prev) =>
+                prev.map((row) => (row.id === item.id ? { ...row, progress, status: 'uploading' } : row))
+              );
+            },
+          });
+
+          succeededIds.add(item.id);
+          setUploadItems((prev) =>
+            prev.map((row) => (row.id === item.id ? { ...row, progress: 100, status: 'done', error: undefined } : row))
+          );
+        } catch (err) {
+          const message = err instanceof Error ? err.message : 'Ошибка загрузки';
+          nextFailed.push({ ...item, error: message });
+          setUploadItems((prev) =>
+            prev.map((row) => (row.id === item.id ? { ...row, status: 'error', error: message } : row))
+          );
+        }
+      }
+
+      setFailedUploads((prev) => {
+        const remainingOld = prev.filter((f) => !succeededIds.has(f.id) && !nextFailed.some((nf) => nf.id === f.id));
+        return [...remainingOld, ...nextFailed];
+      });
+
+      const fresh = await apiRequest<{ order: Order }>(`/api/orders/${order.id}`, { useCache: false });
+      onOrderUpdated(fresh.order);
+      if (nextFailed.length) {
+        setError(`Не удалось загрузить: ${nextFailed.map((f) => f.file.name).join(', ')}. Нажмите «Повторить неудачные».`);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Ошибка загрузки файла');
+    } finally {
+      await wakeLock?.release().catch(() => {});
+      setBusy(false);
+    }
   };
 
   const handleFileUpload = async (
@@ -1436,47 +1597,24 @@ export function OrderDetailModal({
   ) => {
     const input = e.target;
     const files = Array.from(input.files || []);
+    input.value = '';
     if (!files.length) return;
-    setBusy(true);
-    setError('');
-    setOfflineNotice('');
-    try {
-      for (const file of files) {
-        await uploadOneFile(file, kind, visitId);
-      }
-      await refreshOrder();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Ошибка загрузки файла');
-    } finally {
-      setBusy(false);
-      input.value = '';
-    }
-  };
-
-  const retryFailedUploads = async () => {
-    if (!failedUploads.length) return;
-    setBusy(true);
-    setError('');
-    const snapshot = [...failedUploads];
-    setFailedUploads([]);
-    try {
-      for (const item of snapshot) {
-        await uploadOneFile(item.file, item.kind, item.visitId);
-      }
-      await refreshOrder();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Ошибка повторной загрузки');
-    } finally {
-      setBusy(false);
-    }
+    await runUploadBatch(
+      files.map((file) => ({
+        id: crypto.randomUUID(),
+        file,
+        kind,
+        visitId,
+      }))
+    );
   };
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 p-0 backdrop-blur-xs sm:items-center sm:p-4">
       <div className="flex max-h-[94vh] w-full max-w-3xl flex-col overflow-hidden rounded-t-3xl border border-black/[0.08] bg-white shadow-2xl sm:rounded-3xl dark:border-white/[0.1] dark:bg-[#15171C]">
         {/* Header */}
-        <div className="flex items-start justify-between gap-3 border-b border-black/[0.06] px-5 py-4 sm:px-6 dark:border-white/[0.08]">
-          <div className="min-w-0">
+        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-black/[0.06] px-5 py-4 sm:px-6 dark:border-white/[0.08]">
+          <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2 text-xs">
               <span className="font-mono font-bold text-zinc-500 dark:text-zinc-400">
                 {order.order_number}
@@ -1496,13 +1634,41 @@ export function OrderDetailModal({
               </div>
             )}
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-black/[0.05] text-zinc-500 hover:text-zinc-800 dark:bg-white/[0.06] dark:text-zinc-300"
-          >
-            <X className="h-5 w-5" />
-          </button>
+          <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => onDiscussOrder(order)}
+              className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-black/[0.08] bg-[#F5F5F7] px-3 text-xs font-semibold text-[#0071E3] hover:bg-black/[0.06] dark:border-white/[0.1] dark:bg-[#0B0C10] dark:text-[#71b5ff]"
+            >
+              <MessageSquare className="h-3.5 w-3.5" />
+              <span>Перейти в чат</span>
+            </button>
+            {canEditOrder && (
+              <button
+                type="button"
+                onClick={() => {
+                  setTab('info');
+                  setEditOpen((prev) => !prev);
+                }}
+                className={`inline-flex h-9 items-center gap-1.5 rounded-xl border px-3 text-xs font-semibold transition ${
+                  editOpen
+                    ? 'border-[#0071E3] bg-[#0071E3] text-white dark:border-[#2997FF] dark:bg-[#2997FF] dark:text-[#0B0C10]'
+                    : 'border-black/[0.08] bg-[#F5F5F7] text-[#0071E3] hover:bg-black/[0.06] dark:border-white/[0.1] dark:bg-[#0B0C10] dark:text-[#71b5ff]'
+                }`}
+              >
+                <Pencil className="h-3.5 w-3.5" />
+                <span>Редактировать</span>
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Закрыть карточку заказа"
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-black/[0.05] text-zinc-500 hover:text-zinc-800 dark:bg-white/[0.06] dark:text-zinc-300"
+            >
+              <X className="h-5 w-5" />
+            </button>
+          </div>
         </div>
 
         {/* Section Tabs */}
@@ -1555,6 +1721,72 @@ export function OrderDetailModal({
           {offlineNotice && (
             <div className="mb-4 rounded-xl border border-amber-500/25 bg-amber-500/10 px-3.5 py-2.5 text-sm text-amber-800 dark:text-amber-300">
               {offlineNotice}
+            </div>
+          )}
+          {uploadItems.length > 0 && (
+            <div className="mb-4 space-y-2 rounded-2xl border border-black/[0.08] bg-[#F5F5F7] p-3.5 text-xs dark:border-white/[0.1] dark:bg-[#0B0C10]">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="font-semibold">Загрузка файлов</span>
+                <div className="flex items-center gap-2">
+                  {failedUploads.length > 0 && !busy && (
+                    <button
+                      type="button"
+                      onClick={() => void runUploadBatch(failedUploads)}
+                      className="rounded-lg bg-[#0071E3] px-2.5 py-1 text-[11px] font-semibold text-white"
+                    >
+                      Повторить неудачные ({failedUploads.length})
+                    </button>
+                  )}
+                  {!busy && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setUploadItems([]);
+                        setFailedUploads([]);
+                      }}
+                      className="text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"
+                    >
+                      Скрыть
+                    </button>
+                  )}
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                {uploadItems.map((item) => (
+                  <div key={item.id} className="space-y-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="truncate font-medium">{item.name}</span>
+                      <span
+                        className={`shrink-0 tabular-nums ${
+                          item.status === 'error'
+                            ? 'text-red-600 dark:text-red-400'
+                            : item.status === 'done'
+                              ? 'text-emerald-600 dark:text-emerald-400'
+                              : 'text-zinc-500'
+                        }`}
+                      >
+                        {item.status === 'error'
+                          ? item.error || 'Ошибка'
+                          : item.status === 'done'
+                            ? 'Готово'
+                            : `${item.progress}%`}
+                      </span>
+                    </div>
+                    <div className="h-1.5 w-full overflow-hidden rounded-full bg-black/[0.08] dark:bg-white/[0.1]">
+                      <div
+                        className={`h-full transition-all ${
+                          item.status === 'error'
+                            ? 'bg-red-500'
+                            : item.status === 'done'
+                              ? 'bg-emerald-500'
+                              : 'bg-[#0071E3]'
+                        }`}
+                        style={{ width: `${item.status === 'error' ? 100 : item.progress}%` }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
 
@@ -1809,19 +2041,35 @@ export function OrderDetailModal({
                           Осталось {formatRub(orderDebtKopecks)}
                         </div>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => openPaymentEditor()}
-                        className="inline-flex items-center gap-1 rounded-xl border border-black/[0.1] px-3 py-1.5 text-xs font-semibold text-[#0071E3] dark:border-white/[0.12] dark:text-[#71b5ff]"
-                      >
-                        <Plus className="h-3.5 w-3.5" /> Добавить
-                      </button>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        {orderPayments.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => setPaymentsExpanded((v) => !v)}
+                            className="inline-flex items-center gap-1 rounded-xl border border-black/[0.1] px-3 py-1.5 text-xs font-semibold text-zinc-600 hover:bg-black/[0.03] dark:border-white/[0.12] dark:text-zinc-300"
+                          >
+                            <span>История оплат ({orderPayments.length})</span>
+                            <ChevronDown
+                              className={`h-3.5 w-3.5 transition-transform ${
+                                paymentsExpanded ? 'rotate-180' : ''
+                              }`}
+                            />
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => openPaymentEditor()}
+                          className="inline-flex items-center gap-1 rounded-xl border border-black/[0.1] px-3 py-1.5 text-xs font-semibold text-[#0071E3] dark:border-white/[0.12] dark:text-[#71b5ff]"
+                        >
+                          <Plus className="h-3.5 w-3.5" /> Добавить
+                        </button>
+                      </div>
                     </div>
                     {orderPayments.length === 0 ? (
                       <div className="mt-3 rounded-xl border border-dashed border-black/[0.1] p-3 text-xs text-zinc-400 dark:border-white/[0.1]">
                         Оплат пока нет. Добавьте аванс или оплату — они появятся в финансах.
                       </div>
-                    ) : (
+                    ) : paymentsExpanded ? (
                       <div className="mt-3 space-y-1.5">
                         {orderPayments.map((payment) => (
                           <div
@@ -1844,7 +2092,7 @@ export function OrderDetailModal({
                                 </span>
                               </div>
                               <div className="truncate text-[11px] text-zinc-500">
-                                {formatDateRu(payment.paid_at)} ·{' '}
+                                {formatDateRu(payment.paid_at)}
                                 {payment.comment ? ` · ${payment.comment}` : ''}
                               </div>
                             </div>
@@ -1858,20 +2106,40 @@ export function OrderDetailModal({
                               >
                                 <Pencil className="h-3.5 w-3.5" />
                               </button>
-                              <button
-                                type="button"
-                                onClick={() => void handleDeletePayment(payment)}
-                                aria-label="Удалить оплату"
-                                title="Удалить оплату"
-                                className="rounded-lg p-1.5 text-zinc-400 hover:bg-red-500/10 hover:text-red-600"
-                              >
-                                <Trash2 className="h-3.5 w-3.5" />
-                              </button>
+                              {confirmDeletePaymentId !== payment.id ? (
+                                <button
+                                  type="button"
+                                  onClick={() => setConfirmDeletePaymentId(payment.id)}
+                                  aria-label="Удалить оплату"
+                                  title="Удалить оплату"
+                                  className="rounded-lg p-1.5 text-zinc-400 hover:bg-red-500/10 hover:text-red-600"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </button>
+                              ) : (
+                                <div className="inline-flex items-center gap-1 rounded-lg border border-red-500/30 bg-red-500/10 px-2 py-1 text-[11px]">
+                                  <button
+                                    type="button"
+                                    disabled={moneyBusy}
+                                    onClick={() => void handleDeletePayment(payment)}
+                                    className="font-semibold text-red-600 dark:text-red-400"
+                                  >
+                                    Удалить
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setConfirmDeletePaymentId(null)}
+                                    className="text-zinc-500"
+                                  >
+                                    Отмена
+                                  </button>
+                                </div>
+                              )}
                             </div>
                           </div>
                         ))}
                       </div>
-                    )}
+                    ) : null}
                   </div>
                 </div>
               )}
@@ -1882,22 +2150,55 @@ export function OrderDetailModal({
                   <div className="mt-2 space-y-1.5 text-sm">
                     {order.company && <div className="font-semibold">{order.company.name}</div>}
                     {order.contact && (
-                      <div className="text-zinc-600 dark:text-zinc-300">
-                        {order.contact.full_name} {order.contact.phone ? `· ${order.contact.phone}` : ''}
+                      <div className="flex flex-wrap items-center gap-1.5 text-zinc-600 dark:text-zinc-300">
+                        <span>{order.contact.full_name}</span>
+                        {order.contact.phone && (
+                          getTelHref(order.contact.phone) ? (
+                            <a
+                              href={getTelHref(order.contact.phone)}
+                              className="inline-flex items-center gap-1 font-medium text-emerald-700 hover:underline dark:text-emerald-400"
+                            >
+                              <Phone className="h-3.5 w-3.5" />
+                              <span>{order.contact.phone}</span>
+                            </a>
+                          ) : (
+                            <span>· {order.contact.phone}</span>
+                          )
+                        )}
                       </div>
                     )}
                     {order.address && (
-                      <div className="flex items-start gap-1.5 text-zinc-600 dark:text-zinc-300">
+                      <div className="flex flex-wrap items-start gap-2 text-zinc-600 dark:text-zinc-300">
                         <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-[#0071E3]" />
-                        <span>{order.address}</span>
+                        <span className="flex-1">{order.address}</span>
+                        {getMapHref(order.address) && (
+                          <a
+                            href={getMapHref(order.address)}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="shrink-0 rounded-lg bg-[#0071E3]/10 px-2 py-0.5 text-xs font-semibold text-[#0071E3] hover:bg-[#0071E3]/15 dark:text-[#71b5ff]"
+                          >
+                            На карте
+                          </a>
+                        )}
                       </div>
                     )}
                     {(order.site_contact_name || order.site_contact_phone) && (
-                      <div className="flex items-center gap-1.5 text-zinc-600 dark:text-zinc-300">
+                      <div className="flex flex-wrap items-center gap-1.5 text-zinc-600 dark:text-zinc-300">
                         <Phone className="h-4 w-4 shrink-0 text-emerald-500" />
-                        <span>
-                          {order.site_contact_name} {order.site_contact_phone}
-                        </span>
+                        {order.site_contact_name && <span>{order.site_contact_name}</span>}
+                        {order.site_contact_phone && (
+                          getTelHref(order.site_contact_phone) ? (
+                            <a
+                              href={getTelHref(order.site_contact_phone)}
+                              className="font-medium text-emerald-700 hover:underline dark:text-emerald-400"
+                            >
+                              {order.site_contact_phone}
+                            </a>
+                          ) : (
+                            <span>{order.site_contact_phone}</span>
+                          )
+                        )}
                       </div>
                     )}
                   </div>
@@ -1927,13 +2228,6 @@ export function OrderDetailModal({
                     {order.description}
                   </p>
                 </div>
-              )}
-
-              <button type="button" onClick={() => onDiscussOrder(order)} className="rounded-xl border border-black/[0.1] px-4 py-2 text-sm font-semibold text-[#0071E3] dark:border-white/[0.12] dark:text-[#71b5ff]">Перейти в чат</button>
-              {canEditOrder && !editOpen && (
-                <button type="button" onClick={() => setEditOpen(true)} className="inline-flex items-center gap-2 rounded-xl border border-black/[0.1] px-4 py-2 text-sm font-semibold text-[#0071E3] dark:border-white/[0.12] dark:text-[#71b5ff]">
-                  <Pencil className="h-4 w-4" /> Редактировать
-                </button>
               )}
               {canEditOrder && editOpen && (
                 <div className="rounded-2xl border border-black/[0.06] bg-[#F5F5F7]/70 p-4 dark:border-white/[0.08] dark:bg-[#0B0C10]">
@@ -2118,11 +2412,11 @@ export function OrderDetailModal({
                       </div>
                       {editPlannedMaterials.map((planned, index) => (
                         <div key={index} className="flex flex-wrap gap-2">
-                          <select aria-label="Материал" value={planned.materialId} onChange={event => setEditPlannedMaterials(previous => previous.map((item, i) => i === index ? { ...item, materialId: event.target.value } : item))} className="min-w-0 flex-1 rounded-xl border border-zinc-300 bg-transparent p-2 text-xs">
+                          <select aria-label="Материал" value={planned.materialId} onChange={event => setEditPlannedMaterials(previous => previous.map((item, i) => i === index ? { ...item, materialId: event.target.value } : item))} className="min-w-0 flex-1 rounded-xl border border-black/[0.08] bg-white p-2 text-xs dark:border-white/[0.1] dark:bg-[#15171C]">
                             {!materials.some(material => material.id === planned.materialId) && <option value={planned.materialId}>Материал недоступен</option>}
                             {materials.map(material => <option key={material.id} value={material.id} disabled={material.id !== planned.materialId && editPlannedMaterials.some(item => item.materialId === material.id)}>{material.name} ({material.unit})</option>)}
                           </select>
-                          <input aria-label="Количество материала" type="number" min="0.001" step="0.001" value={planned.qty} onChange={event => setEditPlannedMaterials(previous => previous.map((item, i) => i === index ? { ...item, qty: event.target.value } : item))} className="w-24 rounded-xl border border-zinc-300 bg-transparent p-2 text-xs" />
+                          <input aria-label="Количество материала" type="number" min="0.001" step="0.001" value={planned.qty} onChange={event => setEditPlannedMaterials(previous => previous.map((item, i) => i === index ? { ...item, qty: event.target.value } : item))} className="w-24 rounded-xl border border-black/[0.08] bg-white p-2 text-xs tabular-nums dark:border-white/[0.1] dark:bg-[#15171C]" />
                           <button type="button" onClick={() => setEditPlannedMaterials(previous => previous.filter((_, i) => i !== index))} className="text-xs text-red-600">Убрать</button>
                         </div>
                       ))}
@@ -2134,11 +2428,11 @@ export function OrderDetailModal({
                       </div>
                       {editPlannedTools.map((planned,index)=>(
                         <div key={index} className="flex flex-wrap gap-2">
-                          <select aria-label="Инструмент" value={planned.toolId} onChange={event=>setEditPlannedTools(previous=>previous.map((item,i)=>i===index?{...item,toolId:event.target.value}:item))} className="min-w-0 flex-1 rounded-xl border border-zinc-300 bg-transparent p-2 text-xs">
+                          <select aria-label="Инструмент" value={planned.toolId} onChange={event=>setEditPlannedTools(previous=>previous.map((item,i)=>i===index?{...item,toolId:event.target.value}:item))} className="min-w-0 flex-1 rounded-xl border border-black/[0.08] bg-white p-2 text-xs dark:border-white/[0.1] dark:bg-[#15171C]">
                             {!tools.some(tool=>tool.id===planned.toolId) && <option value={planned.toolId}>Инструмент недоступен</option>}
                             {tools.map(tool=><option key={tool.id} value={tool.id}>{tool.name}</option>)}
                           </select>
-                          <input aria-label="Количество" type="number" min="1" step="1" value={planned.qty} onChange={event=>setEditPlannedTools(previous=>previous.map((item,i)=>i===index?{...item,qty:event.target.value}:item))} className="w-20 rounded-xl border border-zinc-300 bg-transparent p-2 text-xs" />
+                          <input aria-label="Количество" type="number" min="1" step="1" value={planned.qty} onChange={event=>setEditPlannedTools(previous=>previous.map((item,i)=>i===index?{...item,qty:event.target.value}:item))} className="w-20 rounded-xl border border-black/[0.08] bg-white p-2 text-xs tabular-nums dark:border-white/[0.1] dark:bg-[#15171C]" />
                           <button type="button" onClick={()=>setEditPlannedTools(previous=>previous.filter((_,i)=>i!==index))} className="text-xs text-red-600">Убрать</button>
                         </div>
                       ))}
@@ -2314,20 +2608,33 @@ export function OrderDetailModal({
                         </div>
 
                         {isAssignedHere && (
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setReportingVisitId(isReporting ? null : v.id)
-                            }
-                            className="inline-flex items-center gap-1.5 rounded-xl bg-[#0071E3] px-3 py-2 text-xs font-semibold text-white transition hover:bg-[#0077ED] dark:bg-[#2997FF] dark:text-[#0B0C10]"
-                          >
-                            <CheckCircle2 className="h-3.5 w-3.5" />
-                            <span>
-                              {v.status === 'completed'
-                                ? 'Добавить доп. отчёт'
-                                : 'Завершить и сдать отчёт'}
-                            </span>
-                          </button>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-xl border border-black/[0.1] bg-white px-3 py-2 text-xs font-semibold text-zinc-700 hover:bg-black/[0.03] dark:border-white/[0.1] dark:bg-[#15171C] dark:text-zinc-200">
+                              <Upload className="h-3.5 w-3.5" />
+                              <span>Фото / видео</span>
+                              <input
+                                type="file"
+                                accept="image/*,video/*"
+                                multiple
+                                className="hidden"
+                                onChange={(e) => void handleFileUpload(e, 'photo', v.id)}
+                              />
+                            </label>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setReportingVisitId(isReporting ? null : v.id)
+                              }
+                              className="inline-flex items-center gap-1.5 rounded-xl bg-[#0071E3] px-3 py-2 text-xs font-semibold text-white transition hover:bg-[#0077ED] dark:bg-[#2997FF] dark:text-[#0B0C10]"
+                            >
+                              <CheckCircle2 className="h-3.5 w-3.5" />
+                              <span>
+                                {v.status === 'completed'
+                                  ? 'Добавить доп. отчёт'
+                                  : 'Завершить и сдать отчёт'}
+                              </span>
+                            </button>
+                          </div>
                         )}
                       </div>
 
@@ -2392,7 +2699,16 @@ export function OrderDetailModal({
                         </div>
                       )}
 
-                      {isAssignedHere && <VisitWorkTime orderId={order.id} visitId={v.id} defaultDate={v.scheduled_at.slice(0, 10)} isAdmin={isAdmin} />}
+                      {isAssignedHere && (
+                        <VisitWorkTime
+                          orderId={order.id}
+                          visitId={v.id}
+                          defaultDate={v.scheduled_at.slice(0, 10)}
+                          isAdmin={isAdmin}
+                          reports={v.reports}
+                          currentUserId={user.id}
+                        />
+                      )}
 
                       {/* Visit Report Form */}
                       {isReporting && (
@@ -2614,25 +2930,43 @@ export function OrderDetailModal({
                               key={att.id}
                               className="group relative overflow-hidden rounded-xl border border-black/[0.08] dark:border-white/[0.1]"
                             >
-                              <a
-                                href={`/api/orders/attachments/${att.id}`}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="block"
-                              >
-                                {att.mime_type.startsWith('image/') ? (
+                              {att.mime_type.startsWith('image/') ? (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setPreviewImage({
+                                      url: `/api/orders/attachments/${att.id}`,
+                                      title: att.original_name,
+                                    })
+                                  }
+                                  className="block cursor-zoom-in"
+                                >
                                   <img
                                     src={`/api/orders/attachments/${att.id}`}
                                     alt={att.original_name}
                                     referrerPolicy="no-referrer"
                                     className="h-16 w-16 object-cover"
                                   />
-                                ) : (
+                                </button>
+                              ) : att.mime_type.startsWith('video/') ? (
+                                <video
+                                  controls
+                                  preload="metadata"
+                                  src={`/api/orders/attachments/${att.id}`}
+                                  className="h-16 w-28 bg-black object-contain"
+                                />
+                              ) : (
+                                <a
+                                  href={`/api/orders/attachments/${att.id}`}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="block"
+                                >
                                   <span className="flex h-16 items-center px-3 text-xs">
                                     {att.original_name}
                                   </span>
-                                )}
-                              </a>
+                                </a>
+                              )}
                               {canEditOrder && (
                                 <button
                                   type="button"
@@ -2720,19 +3054,60 @@ export function OrderDetailModal({
                   <div className="mb-2 text-xs font-semibold text-zinc-500">
                     Рекомендовано и зарезервировано для заказа
                   </div>
-                  <div className="space-y-1.5 text-sm">
+                  <div className="space-y-2 text-sm">
                     {order.plannedResources.map((pr) => (
-                      <div key={pr.id} className="flex flex-wrap items-center justify-between gap-2">
-                        <span>
-                          {pr.item_type === 'material'
-                            ? pr.material_name
-                            : `${pr.tool_emoji || '🔧'} ${pr.tool_name}`}
-                        </span>
-                        <span className="font-semibold tabular-nums">
-                          {formatQty(pr.planned_qty_milli)} {pr.material_unit || 'шт'}
-                        </span>
-                        {(pr.shortage_milli||0)>0 && <span className="text-xs text-red-600">Нехватка: {formatQty(pr.shortage_milli)} {pr.material_unit || 'шт'}</span>}
-                        {canTakeWarehouse && <button type="button" className="text-xs font-semibold text-blue-600" onClick={()=>{setWhMode(pr.item_type);setWhOpType('issue');if(pr.material_id) setWhMatId(pr.material_id);if(pr.tool_id){setWhToolId(pr.tool_id);setWhToolInstanceId('');}setWhQty(String((pr.reserved_remaining_milli || pr.planned_qty_milli)/1000));}}>Отметить, что взяли</button>}
+                      <div key={pr.id} className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-white/70 px-3 py-2 dark:bg-[#15171C]/70">
+                        <div className="min-w-0 flex-1">
+                          <span className="font-medium">
+                            {pr.item_type === 'material'
+                              ? pr.material_name
+                              : `${pr.tool_emoji || '🔧'} ${pr.tool_name}`}
+                          </span>
+                          <span className="ml-2 font-semibold tabular-nums">
+                            {formatQty(pr.planned_qty_milli)} {pr.material_unit || 'шт'}
+                          </span>
+                          {(pr.shortage_milli || 0) > 0 && (
+                            <span className="ml-2 text-xs font-medium text-red-600">
+                              Нехватка: {formatQty(pr.shortage_milli)} {pr.material_unit || 'шт'}
+                            </span>
+                          )}
+                        </div>
+                        {canTakeWarehouse && (
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={() => void handleQuickResourceOp(pr, 'issue')}
+                              className="rounded-lg bg-[#0071E3] px-2.5 py-1 text-xs font-semibold text-white hover:bg-[#0077ED] disabled:opacity-50 dark:bg-[#2997FF] dark:text-[#0B0C10]"
+                            >
+                              Взял
+                            </button>
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={() => void handleQuickResourceOp(pr, 'return')}
+                              className="rounded-lg bg-emerald-600/12 px-2.5 py-1 text-xs font-semibold text-emerald-700 hover:bg-emerald-600/20 disabled:opacity-50 dark:text-emerald-300"
+                            >
+                              Вернул
+                            </button>
+                            <button
+                              type="button"
+                              className="rounded-lg border border-black/[0.08] px-2.5 py-1 text-xs font-semibold text-zinc-600 hover:bg-black/[0.04] dark:border-white/[0.1] dark:text-zinc-300"
+                              onClick={() => {
+                                setWhMode(pr.item_type);
+                                setWhOpType('issue');
+                                if (pr.material_id) setWhMatId(pr.material_id);
+                                if (pr.tool_id) {
+                                  setWhToolId(pr.tool_id);
+                                  setWhToolInstanceId('');
+                                }
+                                setWhQty(String((pr.reserved_remaining_milli || pr.planned_qty_milli) / 1000));
+                              }}
+                            >
+                              В форму
+                            </button>
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -2859,14 +3234,39 @@ export function OrderDetailModal({
                     />
                   </div>
 
-                  <button
-                    type="submit"
-                    disabled={busy}
-                    className="mt-3 inline-flex items-center gap-1.5 rounded-xl bg-[#0071E3] px-4 py-2 text-xs font-semibold text-white dark:bg-[#2997FF] dark:text-[#0B0C10]"
-                  >
-                    <Wrench className="h-3.5 w-3.5" />
-                    <span>Выполнить операцию</span>
-                  </button>
+                  {whConfirmReserved ? (
+                    <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs">
+                      <span className="font-medium text-amber-800 dark:text-amber-200">
+                        Часть материала или инструмента может быть зарезервирована для других заказов. Продолжить?
+                      </span>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => void handleWarehouseAction(undefined, true)}
+                          className="rounded-lg bg-amber-600 px-3 py-1.5 font-semibold text-white hover:bg-amber-700"
+                        >
+                          Подтвердить
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setWhConfirmReserved(false)}
+                          className="rounded-lg border border-black/[0.1] px-2.5 py-1.5 font-semibold dark:border-white/[0.1]"
+                        >
+                          Отмена
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button
+                      type="submit"
+                      disabled={busy}
+                      className="mt-3 inline-flex items-center gap-1.5 rounded-xl bg-[#0071E3] px-4 py-2 text-xs font-semibold text-white dark:bg-[#2997FF] dark:text-[#0B0C10]"
+                    >
+                      <Wrench className="h-3.5 w-3.5" />
+                      <span>Выполнить операцию</span>
+                    </button>
+                  )}
                 </form>
               )}
 
@@ -2922,7 +3322,7 @@ export function OrderDetailModal({
               <div className="flex flex-wrap gap-2">
                 <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl bg-[#0071E3] px-4 py-2.5 text-xs font-semibold text-white dark:bg-[#2997FF] dark:text-[#0B0C10]">
                   <ImageIcon className="h-4 w-4" />
-                  <span>Загрузить фото</span>
+                  <span>Фото / видео</span>
                   <input
                     type="file"
                     accept="image/*,video/*"
@@ -2944,36 +3344,6 @@ export function OrderDetailModal({
                 </label>
               </div>
 
-              {uploadItems.length > 0 && (
-                <div className="space-y-1.5">
-                  {uploadItems.map((item, idx) => (
-                    <div key={`${item.name}-${idx}`} className="text-xs">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="truncate">{item.name}</span>
-                        <span className={item.status === 'error' ? 'text-red-600' : item.status === 'done' ? 'text-emerald-600' : 'text-zinc-500'}>
-                          {item.status === 'done' ? 'Готово' : item.status === 'error' ? 'Ошибка' : `${item.percent}%`}
-                        </span>
-                      </div>
-                      {item.status === 'uploading' && (
-                        <div className="mt-0.5 h-1 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-700">
-                          <div className="h-full bg-[#0071E3] transition-all" style={{ width: `${item.percent}%` }} />
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                  {failedUploads.length > 0 && (
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() => void retryFailedUploads()}
-                      className="rounded-xl border border-red-300 px-3 py-1.5 text-xs font-semibold text-red-600 disabled:opacity-50"
-                    >
-                      Повторить неудачные ({failedUploads.length})
-                    </button>
-                  )}
-                </div>
-              )}
-
               {order.attachments.length === 0 ? (
                 <div className="rounded-2xl border border-dashed border-black/[0.1] p-8 text-center text-sm text-zinc-400 dark:border-white/[0.1]">
                   Прикреплённых фотографий и макетов пока нет
@@ -2990,32 +3360,38 @@ export function OrderDetailModal({
                           <video controls preload="metadata" src={`/api/orders/attachments/${att.id}`} className="h-32 w-full bg-black object-contain" />
                           <div className="truncate p-2.5 text-xs font-medium">{att.original_name}</div>
                         </div>
-                      ) : <a
-                        href={`/api/orders/attachments/${att.id}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="block"
-                      >
-                        {att.mime_type.startsWith('image/') ? (
-                          <button
-                            type="button"
-                            onClick={() => setPhotoViewer(`/api/orders/attachments/${att.id}`)}
-                            className="block w-full"
-                          >
-                            <img
-                              src={`/api/orders/attachments/${att.id}`}
-                              alt={att.original_name}
-                              referrerPolicy="no-referrer"
-                              className="h-32 w-full object-cover"
-                            />
-                          </button>
-                        ) : (
+                      ) : att.mime_type.startsWith('image/') ? (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setPreviewImage({
+                              url: `/api/orders/attachments/${att.id}`,
+                              title: att.original_name,
+                            })
+                          }
+                          className="block w-full cursor-zoom-in text-left"
+                        >
+                          <img
+                            src={`/api/orders/attachments/${att.id}`}
+                            alt={att.original_name}
+                            referrerPolicy="no-referrer"
+                            className="h-32 w-full object-cover"
+                          />
+                          <div className="truncate p-2.5 text-xs font-medium">{att.original_name}</div>
+                        </button>
+                      ) : (
+                        <a
+                          href={`/api/orders/attachments/${att.id}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="block"
+                        >
                           <div className="flex h-32 items-center justify-center text-zinc-400">
                             <FileText className="h-10 w-10" />
                           </div>
-                        )}
-                        <div className="truncate p-2.5 text-xs font-medium">{att.original_name}</div>
-                      </a>}
+                          <div className="truncate p-2.5 text-xs font-medium">{att.original_name}</div>
+                        </a>
+                      )}
                       {canEditOrder && (
                         <button
                           type="button"
@@ -3035,36 +3411,30 @@ export function OrderDetailModal({
           )}
         </div>
       </div>
-      {photoViewer && (
+
+      {previewImage && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-4"
-          onClick={() => setPhotoViewer(null)}
-          role="dialog"
-          aria-modal="true"
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/85 p-4"
+          onClick={() => setPreviewImage(null)}
         >
-          <img
-            src={photoViewer}
-            alt="Просмотр фото"
-            className="max-h-[85vh] max-w-full rounded-lg object-contain"
+          <div
+            className="relative flex max-w-4xl flex-col items-center gap-3"
             onClick={(e) => e.stopPropagation()}
-          />
-          <button
-            type="button"
-            onClick={() => setPhotoViewer(null)}
-            className="absolute right-4 top-4 flex h-9 w-9 items-center justify-center rounded-full bg-white/90 text-black"
           >
-            <X className="h-5 w-5" />
-          </button>
-        </div>
-      )}
-      {confirmDialog && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true">
-          <div className="w-full max-w-sm rounded-2xl bg-white p-5 dark:bg-[#15171C]">
-            <p className="text-sm">{confirmDialog.text}</p>
-            <div className="mt-4 flex justify-end gap-2">
-              <button type="button" onClick={() => setConfirmDialog(null)} className="rounded-xl border border-zinc-400 px-3 py-1.5 text-sm">Отмена</button>
-              <button type="button" onClick={confirmDialog.run} className="rounded-xl bg-red-600 px-3 py-1.5 text-sm font-semibold text-white">Подтвердить</button>
-            </div>
+            <button
+              type="button"
+              aria-label="Закрыть просмотр"
+              onClick={() => setPreviewImage(null)}
+              className="self-end rounded-xl bg-white/15 p-2 text-white hover:bg-white/25"
+            >
+              <X className="h-5 w-5" />
+            </button>
+            <img
+              src={previewImage.url}
+              alt={previewImage.title}
+              className="max-h-[85vh] max-w-full rounded-xl object-contain"
+            />
+            <div className="text-center text-xs text-white/80">{previewImage.title}</div>
           </div>
         </div>
       )}
@@ -3072,7 +3442,21 @@ export function OrderDetailModal({
   );
 }
 
-function VisitWorkTime({orderId, visitId, defaultDate, isAdmin}: {orderId:string; visitId:string; defaultDate:string; isAdmin:boolean}) {
+function VisitWorkTime({
+  orderId,
+  visitId,
+  defaultDate,
+  isAdmin,
+  reports,
+  currentUserId,
+}: {
+  orderId: string;
+  visitId: string;
+  defaultDate: string;
+  isAdmin: boolean;
+  reports?: Array<{ user_id: string; is_primary?: number; start_time?: string | null; end_time?: string | null }>;
+  currentUserId?: string;
+}) {
   const [items, setItems] = useState<Array<{user_id:string;full_name:string;work_date:string;start_time:string;end_time:string}>>([]);
   const [date, setDate] = useState(defaultDate);
   const [start, setStart] = useState('');
@@ -3082,6 +3466,12 @@ function VisitWorkTime({orderId, visitId, defaultDate, isAdmin}: {orderId:string
   const base = `/api/orders/${encodeURIComponent(orderId)}/visits/${encodeURIComponent(visitId)}/work-times`;
   const load = async () => { const result = await apiRequest<{items:typeof items}>(base, {useCache:false}); setItems(result.items); };
   useEffect(() => { void load().catch(() => setError('Не удалось загрузить время работы.')); }, [orderId, visitId]);
+
+  const reportMatch =
+    reports?.find((r) => r.user_id === currentUserId && r.start_time && r.end_time) ||
+    reports?.find((r) => r.is_primary === 1 && r.start_time && r.end_time) ||
+    reports?.find((r) => r.start_time && r.end_time);
+
   const save = async (e: React.FormEvent) => {
     e.preventDefault(); setBusy(true); setError('');
     try {
@@ -3091,11 +3481,37 @@ function VisitWorkTime({orderId, visitId, defaultDate, isAdmin}: {orderId:string
     finally { setBusy(false); }
   };
   return <div className="mt-3 rounded-xl border border-black/10 p-3 dark:border-white/10">
-    <h4 className="text-xs font-semibold">Моё время работы</h4>
+    <div className="flex flex-wrap items-center justify-between gap-2">
+      <h4 className="text-xs font-semibold">Моё время работы</h4>
+      <div className="flex flex-wrap items-center gap-1.5">
+        {reportMatch?.start_time && reportMatch?.end_time && (
+          <button
+            type="button"
+            onClick={() => {
+              setStart(reportMatch.start_time || '');
+              setEnd(reportMatch.end_time || '');
+            }}
+            className="rounded-lg bg-[#0071E3]/10 px-2.5 py-1 text-[11px] font-semibold text-[#0071E3] hover:bg-[#0071E3]/15 dark:text-[#71b5ff]"
+          >
+            По времени отчёта ({reportMatch.start_time}–{reportMatch.end_time})
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={() => {
+            setStart('09:00');
+            setEnd('18:00');
+          }}
+          className="rounded-lg bg-black/[0.05] px-2.5 py-1 text-[11px] font-semibold text-zinc-600 hover:bg-black/[0.1] dark:bg-white/[0.08] dark:text-zinc-300"
+        >
+          09:00–18:00
+        </button>
+      </div>
+    </div>
     <form onSubmit={save} className="mt-2 flex flex-wrap items-end gap-2">
-      <label className="text-xs">Дата<input required type="date" value={date} onChange={e => setDate(e.target.value)} className="block rounded-lg border p-2 dark:bg-[#0B0C10]" /></label>
-      <label className="text-xs">Начало<input required type="time" value={start} onChange={e => setStart(e.target.value)} className="block rounded-lg border p-2 dark:bg-[#0B0C10]" /></label>
-      <label className="text-xs">Окончание<input required type="time" value={end} onChange={e => setEnd(e.target.value)} className="block rounded-lg border p-2 dark:bg-[#0B0C10]" /></label>
+      <label className="text-xs">Дата<input required type="date" value={date} onChange={e => setDate(e.target.value)} className="mt-0.5 block rounded-lg border border-black/[0.1] bg-white p-2 text-xs dark:border-white/[0.1] dark:bg-[#0B0C10]" /></label>
+      <label className="text-xs">Начало<input required type="time" value={start} onChange={e => setStart(e.target.value)} className="mt-0.5 block rounded-lg border border-black/[0.1] bg-white p-2 text-xs dark:border-white/[0.1] dark:bg-[#0B0C10]" /></label>
+      <label className="text-xs">Окончание<input required type="time" value={end} onChange={e => setEnd(e.target.value)} className="mt-0.5 block rounded-lg border border-black/[0.1] bg-white p-2 text-xs dark:border-white/[0.1] dark:bg-[#0B0C10]" /></label>
       <button disabled={busy} className="rounded-lg bg-[#0071E3] px-3 py-2 text-xs text-white disabled:opacity-50">Сохранить</button>
     </form>
     <p className="mt-1 text-[11px] text-zinc-500">Если окончание раньше начала, работа завершилась на следующий день. Повторное сохранение за дату обновит запись.</p>

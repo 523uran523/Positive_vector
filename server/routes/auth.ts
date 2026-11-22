@@ -109,7 +109,7 @@ export function createAuthRouter(db: DatabaseSync): express.Router {
       req.get('user-agent') || '',
       req.ip || ''
     );
-    res.cookie(SESSION_COOKIE_NAME, session.rawToken, getCookieOptions());
+    res.cookie(SESSION_COOKIE_NAME, session.rawToken, getCookieOptions(req));
 
     const user = loadUserWithPermissions(db, userId);
     res.status(201).json({
@@ -181,7 +181,7 @@ export function createAuthRouter(db: DatabaseSync): express.Router {
       req.get('user-agent') || '',
       req.ip || ''
     );
-    res.cookie(SESSION_COOKIE_NAME, session.rawToken, getCookieOptions());
+    res.cookie(SESSION_COOKIE_NAME, session.rawToken, getCookieOptions(req));
 
     const user = loadUserWithPermissions(db, userRow.id);
     res.json({ user: user && user.dismissedAt ? publicSessionUser(user) : user, csrfToken: session.csrfToken });
@@ -189,9 +189,11 @@ export function createAuthRouter(db: DatabaseSync): express.Router {
 
   router.post('/logout', (req: AuthedRequest, res) => {
     if (req.sessionId) {
+      db.prepare('DELETE FROM push_subscriptions WHERE session_id = ?').run(req.sessionId);
       db.prepare('DELETE FROM sessions WHERE id = ?').run(req.sessionId);
     }
-    res.clearCookie(SESSION_COOKIE_NAME, { path: '/' });
+    const { maxAge: _maxAge, ...clearOpts } = getCookieOptions(req);
+    res.clearCookie(SESSION_COOKIE_NAME, clearOpts);
     res.json({ ok: true });
   });
 
@@ -286,6 +288,7 @@ export function createAuthRouter(db: DatabaseSync): express.Router {
 
     // A password change revokes every other session of this user.
     if (newPassword && newPassword.trim() && req.sessionId) {
+      db.prepare('DELETE FROM push_subscriptions WHERE user_id = ? AND (session_id IS NULL OR session_id != ?)').run(userId, req.sessionId);
       db.prepare('DELETE FROM sessions WHERE user_id = ? AND id != ?').run(userId, req.sessionId);
     }
 

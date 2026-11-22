@@ -8,10 +8,26 @@ import { VitePWA } from 'vite-plugin-pwa';
 const projectRoot=path.dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig(() => {
+  const disableHmr = process.env.DISABLE_HMR === 'true' || Boolean(process.env.K_SERVICE);
   return {
     plugins: [
       react(),
       tailwindcss(),
+      ...(disableHmr
+        ? [
+            {
+              name: 'disable-vite-hmr-websocket',
+              enforce: 'post' as const,
+              transform(code: string, id: string) {
+                if (!id.replace(/\\/g, '/').endsWith('/vite/dist/client/client.mjs')) return null;
+                return code.replace(
+                  'const createWebSocketModuleRunnerTransport = (options) => {',
+                  'const createWebSocketModuleRunnerTransport = () => ({ async connect() {}, disconnect() {}, send() {} });\nconst _unusedCreateWebSocketModuleRunnerTransport = (options) => {'
+                );
+              },
+            },
+          ]
+        : []),
       VitePWA({
         registerType: 'autoUpdate',
         includeAssets: ['icon.svg', 'apple-touch-icon.png', 'pwa-192x192.png', 'pwa-512x512.png', 'pwa-maskable-512x512.png'],
@@ -85,7 +101,7 @@ export default defineConfig(() => {
           ],
         },
         devOptions: {
-          enabled: true,
+          enabled: !disableHmr,
           type: 'module',
         },
       }),
@@ -109,8 +125,9 @@ export default defineConfig(() => {
       },
     },
     server: {
-      hmr: process.env.DISABLE_HMR !== 'true',
-      watch: process.env.DISABLE_HMR === 'true' ? null : {},
+      ws: disableHmr ? (false as const) : undefined,
+      hmr: !disableHmr,
+      watch: disableHmr ? null : {},
     },
   };
 });

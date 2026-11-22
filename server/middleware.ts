@@ -103,8 +103,27 @@ export function requirePerm(perm: PermissionKey): express.RequestHandler {
   };
 }
 
-export function getCookieOptions(): express.CookieOptions {
-  const secure = process.env.COOKIE_SECURE === 'true';
+export function getCookieOptions(req?: express.Request): express.CookieOptions {
+  const isHttps = Boolean(
+    req && (req.secure || req.get('x-forwarded-proto') === 'https')
+  );
+  const inCrossSitePreview = Boolean(
+    process.env.K_SERVICE ||
+      (isHttps && req?.get('sec-fetch-site') === 'cross-site')
+  );
+  const secure = process.env.COOKIE_SECURE === 'true' || inCrossSitePreview;
+
+  if (inCrossSitePreview) {
+    return {
+      httpOnly: true,
+      sameSite: 'none',
+      secure: true,
+      partitioned: true,
+      path: '/',
+      maxAge: Number(process.env.SESSION_TTL_HOURS || 168) * 3600_000,
+    } as express.CookieOptions;
+  }
+
   return {
     httpOnly: true,
     sameSite: 'lax',

@@ -19,10 +19,10 @@ import type {
   WarehouseOp,
   WorkshopShift,
 } from './types/crm';
-import { CalendarView } from './views/CalendarView';
+import { WorkView, type WorkSubTab } from './views/WorkView';
 import { ClientsView } from './views/ClientsView';
 import { EmployeeSalaryView } from './views/EmployeeSalaryView';
-import { EmployeesView } from './views/EmployeesView';
+import { EmployeesView, type EmployeesTab } from './views/EmployeesView';
 import { FinanceView } from './views/FinanceView';
 import { CreateOrderModal, OrderDetailModal } from './views/OrderModals';
 import { SettingsView } from './views/SettingsView';
@@ -36,12 +36,13 @@ function CRMWorkspace() {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [activeTab, setActiveTab] = useState<NavTab>(() => {
     const params = new URLSearchParams(window.location.search);
-    if (params.has('yandex_connection')) return 'settings';
+    if (params.has('yandex_connection') || params.has('settings')) return 'settings';
     if (params.has('chat')) return 'chat';
-    if (params.has('order')) return 'calendar';
-    if (params.has('task')) return 'calendar';
-    return 'calendar';
+    return 'work';
   });
+  const [workTab, setWorkTab] = useState<WorkSubTab>('calendar');
+  const [employeesInitialTab, setEmployeesInitialTab] = useState<EmployeesTab>('active');
+  const [uiError, setUiError] = useState('');
 
   // Shared CRM data
   const [settings, setSettings] = useState<AppSettings>({});
@@ -65,25 +66,10 @@ function CRMWorkspace() {
     return () => clearInterval(timer);
   }, [user?.id, user?.dismissedAt, refreshChatUnread]);
 
-  // Deep links from push notifications: ?order=… opens order card, ?task=… opens quick task.
-  const deepLinkHandled = React.useRef(false);
-  useEffect(() => {
-    if (!user || user.dismissedAt || deepLinkHandled.current) return;
-    const params = new URLSearchParams(window.location.search);
-    const orderId = params.get('order');
-    const taskId = params.get('task');
-    if (!orderId && !taskId) return;
-    deepLinkHandled.current = true;
-    if (orderId) {
-      void handleOpenOrderById(orderId);
-    }
-    if (taskId) {
-      setOpenQuickTaskId(taskId);
-    }
-  }, [user?.id, user?.dismissedAt]);
-
   // Modals
   const [createOrderDate, setCreateOrderDate] = useState<string | undefined>(undefined);
+  const [createOrderCompanyId, setCreateOrderCompanyId] = useState<string | undefined>(undefined);
+  const [createOrderContactId, setCreateOrderContactId] = useState<string | undefined>(undefined);
   const [createOrderOpen, setCreateOrderOpen] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [chatOrder, setChatOrder] = useState<{ id: string; number: string } | null>(null);
@@ -92,7 +78,9 @@ function CRMWorkspace() {
     setOrders([]);setCompanies([]);setContacts([]);setMaterials([]);setTools([]);
     setWarehouseOps([]);setShifts([]);setActiveShift(null);setNotifications([]);
     setUnreadCount(0);setSettings({});setDirectory([]);setSelectedOrder(null);
-    setCreateOrderOpen(false);setOpenQuickTaskId(null);setActiveTab('calendar');
+    setCreateOrderOpen(false);setCreateOrderCompanyId(undefined);setCreateOrderContactId(undefined);
+    setOpenQuickTaskId(null);setActiveTab('work');setWorkTab('calendar');
+    setEmployeesInitialTab('active');setUiError('');
   }, []);
 
   const checkSession = useCallback(async () => {
@@ -204,6 +192,68 @@ function CRMWorkspace() {
     return () => window.removeEventListener('pv:offline-synced', onSynced);
   }, [user, loadWorkspaceData]);
 
+  const consumeDeepLink = useCallback(
+    (search: string, currentUser: AuthUser) => {
+      const params = new URLSearchParams(search);
+      const orderId = params.get('order');
+      const taskId = params.get('task');
+      const chatId = params.get('chat');
+      const salaryFlag = params.get('salary');
+      const settingsFlag = params.get('settings');
+
+      if (chatId) {
+        setActiveTab('chat');
+      } else if (settingsFlag) {
+        setActiveTab('settings');
+      } else if (salaryFlag) {
+        if (currentUser.role === 'admin') {
+          setEmployeesInitialTab('salaries');
+          setActiveTab('employees');
+        } else {
+          setActiveTab('salary');
+        }
+      } else if (taskId) {
+        setActiveTab('work');
+        setWorkTab('tasks');
+        setOpenQuickTaskId(taskId);
+      } else if (orderId) {
+        setActiveTab('work');
+        void apiRequest<{ order: Order }>(`/api/orders/${orderId}`, { useCache: false })
+          .then((res) => setSelectedOrder(res.order))
+          .catch(() => {});
+      }
+
+      if (orderId || taskId || salaryFlag || settingsFlag) {
+        params.delete('order');
+        params.delete('task');
+        params.delete('salary');
+        params.delete('settings');
+        const nextQs = params.toString();
+        window.history.replaceState({}, '', `${window.location.pathname}${nextQs ? `?${nextQs}` : ''}`);
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
+    if (!user || user.dismissedAt) return;
+    consumeDeepLink(window.location.search, user);
+    if (!('serviceWorker' in navigator)) return;
+    const onSwMessage = (event: MessageEvent) => {
+      if (event.data?.type === 'pv:navigate' && typeof event.data.url === 'string') {
+        try {
+          const parsed = new URL(event.data.url, window.location.origin);
+          window.history.replaceState({}, '', `${parsed.pathname}${parsed.search}`);
+          consumeDeepLink(parsed.search, user);
+        } catch {
+          // Ignore malformed navigation URL.
+        }
+      }
+    };
+    navigator.serviceWorker.addEventListener('message', onSwMessage);
+    return () => navigator.serviceWorker.removeEventListener('message', onSwMessage);
+  }, [user, consumeDeepLink]);
+
   // Periodic notifications refresh every 30s while authenticated
   useEffect(() => {
     if (!user || user.dismissedAt) return;
@@ -239,10 +289,11 @@ function CRMWorkspace() {
 
   const handleOpenChatOrder = async (orderId: string) => {
     try {
-      const res = await apiRequest<{ order: Order }>(`/api/orders/${orderId}`, {useCache:false});
+      setUiError('');
+      const res = await apiRequest<{ order: Order }>(`/api/orders/${orderId}`, { useCache: false });
       setSelectedOrder(res.order);
-    } catch (err) {
-      console.error('Не удалось открыть заказ:', err);
+    } catch {
+      setUiError('Не удалось открыть заказ. Проверьте подключение и доступ к заказу.');
     }
   };
 
@@ -291,7 +342,8 @@ function CRMWorkspace() {
           clearWorkspace();
           setNeedsSetup(false);
           setUser(authUser);
-          setActiveTab('calendar');
+          setActiveTab('work');
+          setWorkTab('calendar');
           });
         }}
       />
@@ -313,63 +365,64 @@ function CRMWorkspace() {
       user={user}
       companyName={settings.company_name || 'Позитив Вектор'}
       activeTab={activeTab}
-      onSelectTab={setActiveTab}
+      onSelectTab={(nextTab) => {
+        if (nextTab === 'employees' && activeTab !== 'employees') {
+          setEmployeesInitialTab('active');
+        }
+        setUiError('');
+        setActiveTab(nextTab);
+      }}
       notifications={notifications}
       unreadCount={unreadCount}
       chatUnread={chatUnread}
       onMarkNotificationRead={(id) => void handleMarkNotifRead(id)}
       onMarkAllNotificationsRead={() => void handleMarkAllRead()}
       onOpenOrderLink={(id) => void handleOpenOrderById(id)}
-      onOpenTaskLink={(id) => { setActiveTab('calendar'); setOpenQuickTaskId(id); }}
+      onOpenTaskLink={(id) => {
+        setActiveTab('work');
+        setWorkTab('tasks');
+        setOpenQuickTaskId(id);
+      }}
+      onOpenSalaryLink={() => {
+        if (isAdmin) {
+          setEmployeesInitialTab('salaries');
+          setActiveTab('employees');
+        } else {
+          setActiveTab('salary');
+        }
+      }}
+      onOpenChatLink={(roomId) => {
+        const params = new URLSearchParams(window.location.search);
+        params.set('chat', roomId);
+        window.history.replaceState({}, '', `${window.location.pathname}?${params.toString()}`);
+        setActiveTab('chat');
+      }}
+      onOpenSettingsLink={() => setActiveTab('settings')}
       onLogout={() => void handleLogout()}
     >
-      {/* Optional quick shortcuts for Employees with granted Client/Warehouse permissions */}
-      {!isAdmin && (empCanClients || empCanWarehouse) && (
-        <div className="mb-4 flex flex-wrap gap-2">
+      {uiError && (
+        <div
+          role="alert"
+          className="mb-4 flex items-center justify-between gap-3 rounded-2xl border border-red-500/25 bg-red-500/10 px-4 py-3 text-sm text-red-600 dark:text-red-400"
+        >
+          <span>{uiError}</span>
           <button
             type="button"
-            onClick={() => setActiveTab('calendar')}
-            className={`rounded-xl px-3 py-1.5 text-xs font-semibold ${
-              activeTab === 'calendar'
-                ? 'bg-[#0071E3] text-white'
-                : 'border border-black/[0.08] bg-white dark:border-white/[0.1] dark:bg-[#15171C]'
-            }`}
+            onClick={() => setUiError('')}
+            className="text-xs font-semibold underline"
           >
-            Календарь и заказы
+            Скрыть
           </button>
-          {empCanClients && (
-            <button
-              type="button"
-              onClick={() => setActiveTab('clients')}
-              className={`rounded-xl px-3 py-1.5 text-xs font-semibold ${
-                activeTab === 'clients'
-                  ? 'bg-[#0071E3] text-white'
-                  : 'border border-black/[0.08] bg-white dark:border-white/[0.1] dark:bg-[#15171C]'
-              }`}
-            >
-              Клиенты
-            </button>
-          )}
-          {empCanWarehouse && (
-            <button
-              type="button"
-              onClick={() => setActiveTab('warehouse')}
-              className={`rounded-xl px-3 py-1.5 text-xs font-semibold ${
-                activeTab === 'warehouse'
-                  ? 'bg-[#0071E3] text-white'
-                  : 'border border-black/[0.08] bg-white dark:border-white/[0.1] dark:bg-[#15171C]'
-              }`}
-            >
-              Склад и инструменты
-            </button>
-          )}
         </div>
       )}
 
-      {activeTab === 'calendar' && (
-        <CalendarView
+      {activeTab === 'work' && (
+        <WorkView
           user={user}
+          workTab={workTab}
+          onSelectWorkTab={setWorkTab}
           orders={orders}
+          companies={companies}
           shifts={shifts}
           activeShift={activeShift}
           materials={materials}
@@ -378,6 +431,8 @@ function CRMWorkspace() {
           onConsumeOpenTask={() => setOpenQuickTaskId(null)}
           onOpenCreateOrder={(d) => {
             setCreateOrderDate(d);
+            setCreateOrderCompanyId(undefined);
+            setCreateOrderContactId(undefined);
             setCreateOrderOpen(true);
           }}
           onOpenOrder={setSelectedOrder}
@@ -386,7 +441,15 @@ function CRMWorkspace() {
         />
       )}
 
-      {activeTab === 'chat' && <ChatView user={user} onRead={refreshChatUnread} attachedOrder={chatOrder} onClearOrder={() => setChatOrder(null)} onOpenOrder={(id) => void handleOpenChatOrder(id)} />}
+      {activeTab === 'chat' && (
+        <ChatView
+          user={user}
+          onRead={refreshChatUnread}
+          attachedOrder={chatOrder}
+          onClearOrder={() => setChatOrder(null)}
+          onOpenOrder={(id) => void handleOpenChatOrder(id)}
+        />
+      )}
 
       {activeTab === 'clients' && (isAdmin || empCanClients) && (
         <ClientsView
@@ -395,6 +458,12 @@ function CRMWorkspace() {
           contacts={contacts}
           onRefresh={() => void loadWorkspaceData(user)}
           onOpenOrderById={(id) => void handleOpenOrderById(id)}
+          onCreateOrderForClient={(companyId, contactId) => {
+            setCreateOrderDate(undefined);
+            setCreateOrderCompanyId(companyId || undefined);
+            setCreateOrderContactId(contactId || undefined);
+            setCreateOrderOpen(true);
+          }}
         />
       )}
 
@@ -408,13 +477,12 @@ function CRMWorkspace() {
           units={settings.units || ['шт', 'м', 'м²', 'л', 'кг', 'рулон', 'уп']}
           categories={settings.material_categories || ['Прочее']}
           onRefresh={() => void loadWorkspaceData(user)}
+          onOpenOrderById={(id) => void handleOpenOrderById(id)}
         />
       )}
 
       {activeTab === 'finance' && isAdmin && (
         <FinanceView
-          user={user}
-          directory={directory}
           orders={orders}
           expenseCategories={
             settings.expense_categories || [
@@ -425,16 +493,32 @@ function CRMWorkspace() {
             ]
           }
           onOpenOrderById={(id) => void handleOpenOrderById(id)}
+          onOpenSalaries={() => {
+            setEmployeesInitialTab('salaries');
+            setActiveTab('employees');
+          }}
         />
       )}
 
-      {activeTab === 'documents' && isAdmin && user.documentsAccess && <DocumentsView />}
-
-      {activeTab === 'employees' && isAdmin && (
-        <EmployeesView onOpenOrderById={(id) => void handleOpenOrderById(id)} currentUserId={user.id} onCurrentUserUpdated={setUser} />
+      {activeTab === 'documents' && isAdmin && user.documentsAccess && (
+        <DocumentsView
+          orders={orders}
+          onOpenOrderById={(id) => void handleOpenOrderById(id)}
+        />
       )}
 
-      {activeTab === 'salary' && !isAdmin && <EmployeeSalaryView />}
+      {activeTab === 'employees' && isAdmin && (
+        <EmployeesView
+          onOpenOrderById={(id) => void handleOpenOrderById(id)}
+          currentUserId={user.id}
+          onCurrentUserUpdated={setUser}
+          initialTab={employeesInitialTab}
+        />
+      )}
+
+      {activeTab === 'salary' && !isAdmin && (
+        <EmployeeSalaryView onOpenOrderById={(id) => void handleOpenOrderById(id)} />
+      )}
 
       {activeTab === 'settings' && (
         <SettingsView
@@ -443,13 +527,18 @@ function CRMWorkspace() {
           onUserUpdated={setUser}
           onSettingsUpdated={() => void loadWorkspaceData(user)}
           onLogout={() => void handleLogout()}
-          onManageEmployees={() => setActiveTab('employees')}
+          onManageEmployees={() => {
+            setEmployeesInitialTab('active');
+            setActiveTab('employees');
+          }}
         />
       )}
 
       <CreateOrderModal
         open={createOrderOpen}
         defaultDate={createOrderDate}
+        defaultCompanyId={createOrderCompanyId}
+        defaultContactId={createOrderContactId}
         user={user}
         directory={directory}
         companies={companies}
@@ -457,7 +546,11 @@ function CRMWorkspace() {
         materials={materials}
         tools={tools}
         availableTags={settings.order_tags || []}
-        onClose={() => setCreateOrderOpen(false)}
+        onClose={() => {
+          setCreateOrderOpen(false);
+          setCreateOrderCompanyId(undefined);
+          setCreateOrderContactId(undefined);
+        }}
         onCreated={(ord) => {
           setOrders((prev) => [ord, ...prev]);
           setSelectedOrder(ord);

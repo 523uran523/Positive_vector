@@ -1,20 +1,48 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Check,
   Copy,
   KeyRound,
   Plus,
+  Search,
   ShieldAlert,
   ShieldCheck,
   SlidersHorizontal,
+  UserMinus,
+  Users,
   Wallet,
   X,
 } from 'lucide-react';
+import { SectionHeader } from '../components/SectionHeader';
 import { apiRequest, formatDateTimeRu, formatRub } from '../lib/api';
 import type { AuthUser, PermissionKey } from '../types/crm';
 
+interface SalaryAccrualRecord {
+  id: string;
+  user_id: string;
+  source_type: 'visit' | 'shift' | 'manual';
+  source_id: string | null;
+  amount_kopecks: number;
+  description: string;
+  created_at: string;
+  order_id: string | null;
+  order_number: string | null;
+  visit_title: string | null;
+}
+
+interface SalaryPayoutRecord {
+  id: string;
+  user_id: string;
+  amount_kopecks: number;
+  paid_at: string;
+  comment: string;
+  created_at: string;
+}
+
 interface SalaryEmployeeSummary {
   activity: Array<{ month: string; visits: number; shifts: number }>;
+  accruals: SalaryAccrualRecord[];
+  payouts: SalaryPayoutRecord[];
   id: string;
   full_name: string;
   login: string;
@@ -73,13 +101,21 @@ interface VisitAssignmentRow {
   order_title: string;
 }
 
+export type EmployeesTab = 'active' | 'dismissed' | 'salaries';
+
 interface EmployeesViewProps {
   onOpenOrderById: (orderId: string) => void;
   currentUserId: string;
   onCurrentUserUpdated: (user: AuthUser) => void;
+  initialTab?: EmployeesTab;
 }
 
-export function EmployeesView({ onOpenOrderById, currentUserId, onCurrentUserUpdated }: EmployeesViewProps) {
+export function EmployeesView({
+  onOpenOrderById,
+  currentUserId,
+  onCurrentUserUpdated,
+  initialTab = 'active',
+}: EmployeesViewProps) {
   const [users, setUsers] = useState<AuthUser[]>([]);
   const [permissionLabels, setPermissionLabels] = useState<Record<PermissionKey, string>>(
     {} as Record<PermissionKey, string>
@@ -87,11 +123,15 @@ export function EmployeesView({ onOpenOrderById, currentUserId, onCurrentUserUpd
   const [salaries, setSalaries] = useState<SalaryEmployeeSummary[]>([]);
   const [visitAssignments, setVisitAssignments] = useState<VisitAssignmentRow[]>([]);
   const [busy, setBusy] = useState(false);
-  const [showDismissed, setShowDismissed] = useState(false);
-  const [salaryOnly, setSalaryOnly] = useState(false);
+  const [tab, setTab] = useState<EmployeesTab>(initialTab);
+  const [search, setSearch] = useState('');
+  const [confirmEmploymentUserId, setConfirmEmploymentUserId] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [employmentNotice, setEmploymentNotice] = useState('');
-  const [confirmEmployment, setConfirmEmployment] = useState<{ user: AuthUser; restoring: boolean } | null>(null);
+
+  useEffect(() => {
+    setTab(initialTab);
+  }, [initialTab]);
 
   // Modals
   const [modal, setModal] = useState<'create' | 'edit' | 'payout' | 'adjust' | null>(null);
@@ -128,11 +168,18 @@ export function EmployeesView({ onOpenOrderById, currentUserId, onCurrentUserUpd
   const [ledgerUser, setLedgerUser] = useState<AuthUser | null>(null);
   const [ledger, setLedger] = useState<LedgerEntry[]>([]);
   const [ledgerBusy, setLedgerBusy] = useState(false);
+  const [ledgerMonthFilter, setLedgerMonthFilter] = useState('');
+  const [ledgerTypeFilter, setLedgerTypeFilter] = useState<'all' | 'visit' | 'shift' | 'bonus' | 'deduction' | 'payout'>('all');
   const [months, setMonths] = useState<MonthlyRow[]>([]);
+  const [salaryMonthFilter, setSalaryMonthFilter] = useState('');
+  const [salaryUserFilter, setSalaryUserFilter] = useState('');
+  const [salaryOpFilter, setSalaryOpFilter] = useState<'all' | 'visit' | 'shift' | 'bonus' | 'deduction' | 'payout'>('all');
 
   const openLedger = async (user: AuthUser) => {
     setLedgerUser(user);
     setLedger([]);
+    setLedgerMonthFilter('');
+    setLedgerTypeFilter('all');
     setLedgerBusy(true);
     try {
       const result = await apiRequest<{ entries: LedgerEntry[] }>(
@@ -289,18 +336,26 @@ export function EmployeesView({ onOpenOrderById, currentUserId, onCurrentUserUpd
 
   const handleEmployment = async (u: AuthUser) => {
     const restoring = Boolean(u.dismissedAt);
-    if (!confirmEmployment || confirmEmployment.user.id !== u.id) {
-      setConfirmEmployment({ user: u, restoring });
-      return;
-    }
-    setConfirmEmployment(null);
-    setBusy(true); setError(''); setEmploymentNotice('');
+    setBusy(true);
+    setError('');
+    setEmploymentNotice('');
     try {
-      const result = await apiRequest<{activeShift?:boolean}>(`/api/users/${u.id}/${restoring ? 'restore' : 'dismiss'}`, { method:'POST',body:{},skipOfflineQueue:true });
+      const result = await apiRequest<{ activeShift?: boolean }>(
+        `/api/users/${u.id}/${restoring ? 'restore' : 'dismiss'}`,
+        { method: 'POST', body: {}, skipOfflineQueue: true }
+      );
+      setConfirmEmploymentUserId(null);
       await loadAll();
-      if (result.activeShift) setEmploymentNotice(`У ${u.fullName} осталась незавершённая смена. Она не закрыта автоматически и требует отдельной сверки.`);
-    } catch (err) { setError(err instanceof Error ? err.message : 'Ошибка изменения статуса сотрудника'); }
-    finally { setBusy(false); }
+      if (result.activeShift) {
+        setEmploymentNotice(
+          `У ${u.fullName} осталась незавершённая смена. Она не закрыта автоматически и требует отдельной сверки.`
+        );
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Ошибка изменения статуса сотрудника');
+    } finally {
+      setBusy(false);
+    }
   };
 
   const handleResetPassword = async (u: AuthUser) => {
@@ -388,344 +443,769 @@ export function EmployeesView({ onOpenOrderById, currentUserId, onCurrentUserUpd
   };
 
   const pendingVisits = visitAssignments.filter((v) => v.wage_kopecks === null);
+  const activeUsers = useMemo(() => users.filter((u) => !u.dismissedAt), [users]);
+  const dismissedUsers = useMemo(() => users.filter((u) => Boolean(u.dismissedAt)), [users]);
+
+  const filteredUsers = useMemo(() => {
+    const source = tab === 'dismissed' ? dismissedUsers : activeUsers;
+    const q = search.trim().toLowerCase();
+    if (!q) return source;
+    return source.filter((u) =>
+      `${u.fullName} ${u.login} ${u.position || ''} ${u.phone || ''}`.toLowerCase().includes(q)
+    );
+  }, [tab, activeUsers, dismissedUsers, search]);
+
+  const filteredSalaries = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return salaries.filter((s) => {
+      if (salaryUserFilter && s.id !== salaryUserFilter) return false;
+      if (!q) return true;
+      return `${s.full_name} ${s.login} ${s.position || ''}`.toLowerCase().includes(q);
+    });
+  }, [salaries, salaryUserFilter, search]);
+
+  const salaryMonthsList = useMemo(() => {
+    const set = new Set<string>();
+    for (const m of months) set.add(m.month);
+    for (const s of salaries) {
+      for (const a of s.accruals || []) set.add(a.created_at.slice(0, 7));
+      for (const p of s.payouts || []) set.add(p.paid_at.slice(0, 7));
+    }
+    return [...set].filter(Boolean).sort((a, b) => b.localeCompare(a));
+  }, [months, salaries]);
+
+  const filteredMonthlyRows = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return months
+      .filter((m) => !salaryMonthFilter || m.month === salaryMonthFilter)
+      .map((m) => {
+        const emps = m.employees.filter((e) => {
+          if (salaryUserFilter && e.userId !== salaryUserFilter) return false;
+          if (q && !e.fullName.toLowerCase().includes(q)) return false;
+          return true;
+        });
+        return { ...m, employees: emps };
+      })
+      .filter((m) => m.employees.length > 0);
+  }, [months, salaryMonthFilter, salaryUserFilter, search]);
+
+  const combinedSalaryLedger = useMemo(() => {
+    type CombinedRow = {
+      id: string;
+      userId: string;
+      userName: string;
+      occurredAt: string;
+      month: string;
+      category: 'visit' | 'shift' | 'bonus' | 'deduction' | 'payout';
+      description: string;
+      orderId: string | null;
+      orderNumber: string | null;
+      amountKopecks: number;
+    };
+    const rows: CombinedRow[] = [];
+    for (const s of salaries) {
+      for (const a of s.accruals || []) {
+        const category =
+          a.source_type === 'visit'
+            ? 'visit'
+            : a.source_type === 'shift'
+              ? 'shift'
+              : a.amount_kopecks < 0
+                ? 'deduction'
+                : 'bonus';
+        rows.push({
+          id: `acc:${a.id}`,
+          userId: s.id,
+          userName: s.full_name,
+          occurredAt: a.created_at,
+          month: a.created_at.slice(0, 7),
+          category,
+          description: a.description || (category === 'deduction' ? 'Удержание' : 'Начисление'),
+          orderId: a.order_id,
+          orderNumber: a.order_number,
+          amountKopecks: a.amount_kopecks,
+        });
+      }
+      for (const p of s.payouts || []) {
+        rows.push({
+          id: `pay:${p.id}`,
+          userId: s.id,
+          userName: s.full_name,
+          occurredAt: p.paid_at,
+          month: p.paid_at.slice(0, 7),
+          category: 'payout',
+          description: p.comment || 'Выплата зарплаты',
+          orderId: null,
+          orderNumber: null,
+          amountKopecks: p.amount_kopecks,
+        });
+      }
+    }
+    const q = search.trim().toLowerCase();
+    return rows
+      .filter((r) => {
+        if (salaryMonthFilter && r.month !== salaryMonthFilter) return false;
+        if (salaryUserFilter && r.userId !== salaryUserFilter) return false;
+        if (salaryOpFilter !== 'all' && r.category !== salaryOpFilter) return false;
+        if (q && !`${r.userName} ${r.description} ${r.orderNumber || ''}`.toLowerCase().includes(q)) return false;
+        return true;
+      })
+      .sort((a, b) => b.occurredAt.localeCompare(a.occurredAt));
+  }, [salaries, salaryMonthFilter, salaryUserFilter, salaryOpFilter, search]);
 
   return (
     <div className="space-y-5">
+      <SectionHeader<EmployeesTab>
+        title="Сотрудники"
+        description="Учётные записи, права доступа, ставки смен, начисления и статистика"
+        actions={
+          <button
+            type="button"
+            onClick={openCreate}
+            className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl bg-[#0071E3] px-4 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-[#0077ED] dark:bg-[#2997FF] dark:text-[#0B0C10]"
+          >
+            <Plus className="h-4 w-4" />
+            <span>Добавить сотрудника</span>
+          </button>
+        }
+        tabs={[
+          { id: 'active', label: 'Сотрудники', count: activeUsers.length, icon: Users },
+          { id: 'dismissed', label: 'Уволенные', count: dismissedUsers.length, icon: UserMinus },
+          {
+            id: 'salaries',
+            label: 'Зарплаты',
+            count: pendingVisits.length > 0 ? pendingVisits.length : undefined,
+            icon: Wallet,
+          },
+        ]}
+        activeTab={tab}
+        onSelectTab={setTab}
+        filters={
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400" />
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Поиск сотрудника по ФИО, логину или должности..."
+              className="w-full rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 py-2 pl-8 pr-3 text-xs outline-none focus:border-[#0071E3] focus:bg-white dark:border-white/[0.1] dark:bg-[#0B0C10] dark:focus:bg-[#0B0C10]"
+            />
+          </div>
+        }
+      />
+
       {error && (
         <div className="rounded-2xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-600 dark:text-red-400">
           {error}
         </div>
       )}
-      {employmentNotice && <div role="status" className="rounded-xl border border-amber-500/25 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-300">{employmentNotice}</div>}
-      {/* Top Action Bar */}
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-black/[0.06] bg-white p-4 shadow-[0_1px_3px_rgba(0,0,0,0.04)] dark:border-white/[0.08] dark:bg-[#15171C]">
-        <div>
-          <h2 className="font-display text-base font-bold">Команда и расчёт зарплат</h2>
-          <p className="text-xs text-zinc-500">
-            Права доступа, ставки смен в цеху, начисления за выезды и выплаты
-          </p>
+      {employmentNotice && (
+        <div role="status" className="rounded-xl border border-amber-500/25 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-300">
+          {employmentNotice}
         </div>
-        <button
-          type="button"
-          onClick={openCreate}
-          className="inline-flex items-center gap-1.5 rounded-xl bg-[#0071E3] px-4 py-2.5 text-xs font-semibold text-white dark:bg-[#2997FF] dark:text-[#0B0C10]"
-        >
-          <Plus className="h-4 w-4" />
-          <span>Добавить сотрудника</span>
-        </button>
-      </div>
+      )}
 
-      {/* Pending visit wages queue */}
-      {pendingVisits.length > 0 && (
-        <div className="rounded-2xl border border-amber-500/25 bg-amber-500/[0.06] p-4">
-          <div className="mb-2.5 text-xs font-bold text-amber-800 dark:text-amber-300">
-            Выезды, ожидающие назначения оплаты ({pendingVisits.length})
-          </div>
-          <div className="space-y-2">
-            {pendingVisits.map((v) => {
-              const key = `${v.visit_id}:${v.user_id}`;
-              return (
-                <div
-                  key={v.assignee_id}
-                  className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-white p-3 text-xs shadow-2xs dark:bg-[#15171C]"
-                >
-                  <div>
-                    <button
-                      type="button"
-                      onClick={() => onOpenOrderById(v.order_id)}
-                      className="font-semibold hover:text-[#0071E3]"
+      {/* Tab 3: Salaries */}
+      {tab === 'salaries' && (
+        <div className="space-y-4">
+          {pendingVisits.length > 0 && (
+            <div className="rounded-2xl border border-amber-500/25 bg-amber-500/[0.06] p-4">
+              <div className="mb-2.5 text-xs font-bold text-amber-800 dark:text-amber-300">
+                Выезды, ожидающие назначения оплаты ({pendingVisits.length})
+              </div>
+              <div className="space-y-2">
+                {pendingVisits.map((v) => {
+                  const key = `${v.visit_id}:${v.user_id}`;
+                  return (
+                    <div
+                      key={v.assignee_id}
+                      className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-white p-3 text-xs shadow-2xs dark:bg-[#15171C]"
                     >
-                      {v.order_number} · {v.visit_title}
-                    </button>
-                    <div className="text-zinc-500">
-                      {v.employee_name} · {formatDateTimeRu(v.scheduled_at)}
+                      <div>
+                        <button
+                          type="button"
+                          onClick={() => onOpenOrderById(v.order_id)}
+                          className="font-semibold hover:text-[#0071E3]"
+                        >
+                          {v.order_number} · {v.visit_title}
+                        </button>
+                        <div className="text-zinc-500">
+                          {v.employee_name} · {formatDateTimeRu(v.scheduled_at)}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="number"
+                          min="0"
+                          placeholder="Сумма ₽"
+                          value={wageDrafts[key] ?? ''}
+                          onChange={(e) =>
+                            setWageDrafts((p) => ({ ...p, [key]: e.target.value }))
+                          }
+                          className="w-24 rounded-lg border border-black/[0.1] px-2.5 py-1.5 text-xs tabular-nums dark:border-white/[0.1] dark:bg-[#0B0C10]"
+                        />
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => void handleAssignVisitWage(v.visit_id, v.user_id, key)}
+                          className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white"
+                        >
+                          Начислить
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Salary Filters: Month, Employee, Operation Type */}
+          <div className="space-y-2.5 rounded-2xl border border-black/[0.06] bg-white p-4 dark:border-white/[0.08] dark:bg-[#15171C]">
+            {(() => {
+              const now = new Date();
+              const thisMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+              const prevDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+              const prevMonth = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, '0')}`;
+              return (
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {[
+                    { id: '', label: 'Все месяцы' },
+                    { id: thisMonth, label: 'Этот месяц' },
+                    { id: prevMonth, label: 'Прошлый месяц' },
+                  ].map((chip) => {
+                    const active = salaryMonthFilter === chip.id;
+                    return (
+                      <button
+                        key={chip.label}
+                        type="button"
+                        onClick={() => setSalaryMonthFilter(chip.id)}
+                        className={`min-h-[30px] rounded-xl px-2.5 py-1 text-[11px] font-semibold transition ${
+                          active
+                            ? 'bg-[#0071E3] text-white dark:bg-[#2997FF] dark:text-[#0B0C10]'
+                            : 'bg-[#F5F5F7] text-zinc-600 hover:bg-black/[0.06] dark:bg-[#0B0C10] dark:text-zinc-300 dark:hover:bg-white/[0.08]'
+                        }`}
+                      >
+                        {chip.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              );
+            })()}
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+              <select
+                aria-label="Фильтр по месяцу"
+                value={salaryMonthFilter}
+                onChange={(e) => setSalaryMonthFilter(e.target.value)}
+                className="min-w-0 w-full rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 px-3 py-2 text-xs dark:border-white/[0.1] dark:bg-[#0B0C10]"
+              >
+                <option value="">Все месяцы</option>
+                {salaryMonthsList.map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+              <select
+                aria-label="Фильтр по сотруднику"
+                value={salaryUserFilter}
+                onChange={(e) => setSalaryUserFilter(e.target.value)}
+                className="min-w-0 w-full rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 px-3 py-2 text-xs dark:border-white/[0.1] dark:bg-[#0B0C10]"
+              >
+                <option value="">Все сотрудники</option>
+                {salaries.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.full_name}
+                  </option>
+                ))}
+              </select>
+              <select
+                aria-label="Тип операции"
+                value={salaryOpFilter}
+                onChange={(e) => setSalaryOpFilter(e.target.value as any)}
+                className="min-w-0 w-full rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 px-3 py-2 text-xs dark:border-white/[0.1] dark:bg-[#0B0C10]"
+              >
+                <option value="all">Все операции</option>
+                <option value="visit">Выезды и монтажи</option>
+                <option value="shift">Смены в цеху</option>
+                <option value="bonus">Премии</option>
+                <option value="deduction">Удержания / списания</option>
+                <option value="payout">Выплаты</option>
+              </select>
+            </div>
+          </div>
+
+          {filteredSalaries.length > 0 && (
+            <div className="overflow-x-auto rounded-2xl border border-black/[0.06] bg-white p-4 dark:border-white/[0.08] dark:bg-[#15171C]">
+              <h3 className="mb-3 font-display text-base font-bold">Сводка по сотрудникам</h3>
+              <table className="w-full min-w-[900px] text-left text-xs">
+                <thead>
+                  <tr className="border-b border-black/[0.06] text-zinc-400 dark:border-white/[0.08]">
+                    <th className="py-2 pr-3 font-semibold">Сотрудник</th>
+                    <th className="px-3 py-2 font-semibold">Выезды</th>
+                    <th className="px-3 py-2 font-semibold">Смены</th>
+                    <th className="px-3 py-2 font-semibold">Премии / удержания</th>
+                    <th className="px-3 py-2 font-semibold">Начислено</th>
+                    <th className="px-3 py-2 font-semibold">Выплачено</th>
+                    <th className="px-3 py-2 font-semibold">Долг</th>
+                    <th className="px-3 py-2 text-right font-semibold">История</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredSalaries.map((s) => {
+                    const user = users.find((u) => u.id === s.id);
+                    const dismissed = Boolean(user?.dismissedAt);
+                    return (
+                      <tr
+                        key={s.id}
+                        className={`border-b border-black/[0.04] last:border-0 dark:border-white/[0.05] ${dismissed ? 'opacity-50' : ''}`}
+                      >
+                        <td className="py-2.5 pr-3 font-semibold">
+                          {s.full_name}
+                          {dismissed && <span className="ml-1 text-[10px] font-normal text-zinc-400">· уволен</span>}
+                        </td>
+                        <td className="px-3 py-2.5 tabular-nums">{formatRub(s.visitAccruedKopecks)}</td>
+                        <td className="px-3 py-2.5 tabular-nums">{formatRub(s.shiftAccruedKopecks)}</td>
+                        <td className="px-3 py-2.5 tabular-nums">{formatRub(s.manualAccruedKopecks)}</td>
+                        <td className="px-3 py-2.5 font-semibold tabular-nums">{formatRub(s.totalAccruedKopecks)}</td>
+                        <td className="px-3 py-2.5 text-emerald-600 tabular-nums dark:text-emerald-400">
+                          {formatRub(s.totalPaidKopecks)}
+                        </td>
+                        <td
+                          className={`px-3 py-2.5 font-bold tabular-nums ${
+                            s.remainingKopecks >= 0
+                              ? 'text-[#0071E3] dark:text-[#2997FF]'
+                              : 'text-emerald-600 dark:text-emerald-400'
+                          }`}
+                        >
+                          {formatRub(Math.abs(s.remainingKopecks))}
+                          <span className="ml-1 text-[10px] font-normal text-zinc-400">
+                            {s.remainingKopecks >= 0 ? 'к выплате' : 'переплата'}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2.5 text-right">
+                          <div className="flex justify-end gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setTargetUserId(s.id);
+                                setAmountRub('');
+                                setComment('');
+                                setPayDate(new Date().toISOString().slice(0, 10));
+                                setModal('payout');
+                              }}
+                              className="text-emerald-600 hover:underline dark:text-emerald-400"
+                            >
+                              Выплатить
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setTargetUserId(s.id);
+                                setAmountRub('');
+                                setComment('');
+                                setModal('adjust');
+                              }}
+                              className="text-amber-600 hover:underline dark:text-amber-400"
+                            >
+                              Премия/штраф
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (user) void openLedger(user);
+                              }}
+                              className="text-[#0071E3] hover:underline dark:text-[#2997FF]"
+                            >
+                              Операции
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {filteredMonthlyRows.length > 0 && (
+            <div className="rounded-2xl border border-black/[0.06] bg-white p-4 dark:border-white/[0.08] dark:bg-[#15171C]">
+              <h3 className="mb-3 font-display text-base font-bold">Сводка по месяцам и сотрудникам</h3>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[820px] text-left text-xs">
+                  <thead>
+                    <tr className="border-b border-black/[0.06] text-zinc-400 dark:border-white/[0.08]">
+                      <th className="py-2 pr-3 font-semibold">Месяц</th>
+                      <th className="px-3 py-2 font-semibold">Сотрудник</th>
+                      <th className="px-3 py-2 font-semibold">Выезды</th>
+                      <th className="px-3 py-2 font-semibold">Смены</th>
+                      <th className="px-3 py-2 font-semibold">Премии / удерж.</th>
+                      <th className="px-3 py-2 font-semibold">Начислено</th>
+                      <th className="px-3 py-2 font-semibold">Выплачено</th>
+                      <th className="px-3 py-2 font-semibold">Разница за месяц</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredMonthlyRows.map((month) => (
+                      <React.Fragment key={month.month}>
+                        <tr className="border-b border-black/[0.05] bg-[#F5F5F7]/70 font-semibold dark:border-white/[0.06] dark:bg-[#0B0C10]">
+                          <td className="py-2 pr-3 tabular-nums">{month.month}</td>
+                          <td className="px-3 py-2 text-zinc-500">Итого по месяцу ({month.employees.length} сотр.)</td>
+                          <td className="px-3 py-2 tabular-nums">
+                            {formatRub(month.employees.reduce((sum, e) => sum + e.visitKopecks, 0))}
+                          </td>
+                          <td className="px-3 py-2 tabular-nums">
+                            {formatRub(month.employees.reduce((sum, e) => sum + e.shiftKopecks, 0))}
+                          </td>
+                          <td className="px-3 py-2 tabular-nums">
+                            {formatRub(month.employees.reduce((sum, e) => sum + e.manualKopecks, 0))}
+                          </td>
+                          <td className="px-3 py-2 tabular-nums">{formatRub(month.accruedKopecks)}</td>
+                          <td className="px-3 py-2 text-emerald-600 tabular-nums dark:text-emerald-400">
+                            {formatRub(month.paidKopecks)}
+                          </td>
+                          <td className="px-3 py-2 tabular-nums">{formatRub(month.deltaKopecks)}</td>
+                        </tr>
+                        {month.employees.map((emp) => {
+                          const empAccrued = emp.visitKopecks + emp.shiftKopecks + emp.manualKopecks;
+                          const empDelta = empAccrued - emp.paidKopecks;
+                          return (
+                            <tr
+                              key={`${month.month}:${emp.userId}`}
+                              className="border-b border-black/[0.04] last:border-0 dark:border-white/[0.05]"
+                            >
+                              <td className="py-2 pr-3 text-zinc-400 tabular-nums">{month.month}</td>
+                              <td className="px-3 py-2 font-medium">{emp.fullName}</td>
+                              <td className="px-3 py-2 tabular-nums">{formatRub(emp.visitKopecks)}</td>
+                              <td className="px-3 py-2 tabular-nums">{formatRub(emp.shiftKopecks)}</td>
+                              <td className="px-3 py-2 tabular-nums">{formatRub(emp.manualKopecks)}</td>
+                              <td className="px-3 py-2 font-semibold tabular-nums">{formatRub(empAccrued)}</td>
+                              <td className="px-3 py-2 text-emerald-600 tabular-nums dark:text-emerald-400">
+                                {formatRub(emp.paidKopecks)}
+                              </td>
+                              <td className="px-3 py-2 font-semibold tabular-nums">{formatRub(empDelta)}</td>
+                            </tr>
+                          );
+                        })}
+                      </React.Fragment>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* Cross-employee Detailed Ledger: what was accrued, deducted, and paid */}
+          <div className="rounded-2xl border border-black/[0.06] bg-white p-4 dark:border-white/[0.08] dark:bg-[#15171C]">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <h3 className="font-display text-base font-bold">
+                Детальная таблица начислений, удержаний и выплат ({combinedSalaryLedger.length})
+              </h3>
+              {(salaryMonthFilter || salaryUserFilter || salaryOpFilter !== 'all') && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSalaryMonthFilter('');
+                    setSalaryUserFilter('');
+                    setSalaryOpFilter('all');
+                  }}
+                  className="text-xs font-semibold text-[#0071E3] hover:underline dark:text-[#2997FF]"
+                >
+                  Сбросить фильтры
+                </button>
+              )}
+            </div>
+            {combinedSalaryLedger.length === 0 ? (
+              <div className="py-6 text-center text-xs text-zinc-400">
+                Операций по выбранным фильтрам пока нет
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[780px] text-left text-xs">
+                  <thead>
+                    <tr className="border-b border-black/[0.06] text-zinc-400 dark:border-white/[0.08]">
+                      <th className="py-2 pr-3 font-semibold">Дата</th>
+                      <th className="px-3 py-2 font-semibold">Сотрудник</th>
+                      <th className="px-3 py-2 font-semibold">Тип</th>
+                      <th className="px-3 py-2 font-semibold">За что / комментарий</th>
+                      <th className="px-3 py-2 text-right font-semibold">Сумма</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {combinedSalaryLedger.map((row) => {
+                      const badge =
+                        row.category === 'visit'
+                          ? { label: 'Выезд', cls: 'bg-sky-500/10 text-sky-700 dark:text-sky-300' }
+                          : row.category === 'shift'
+                            ? { label: 'Смена', cls: 'bg-indigo-500/10 text-indigo-700 dark:text-indigo-300' }
+                            : row.category === 'bonus'
+                              ? { label: 'Премия', cls: 'bg-amber-500/10 text-amber-700 dark:text-amber-300' }
+                              : row.category === 'deduction'
+                                ? { label: 'Удержание', cls: 'bg-red-500/10 text-red-600 dark:text-red-400' }
+                                : { label: 'Выплата', cls: 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' };
+                      return (
+                        <tr
+                          key={row.id}
+                          className="border-b border-black/[0.04] last:border-0 dark:border-white/[0.05]"
+                        >
+                          <td className="py-2.5 pr-3 whitespace-nowrap tabular-nums">
+                            {formatDateTimeRu(row.occurredAt)}
+                          </td>
+                          <td className="px-3 py-2.5 font-semibold">{row.userName}</td>
+                          <td className="px-3 py-2.5">
+                            <span className={`inline-block rounded-md px-2 py-0.5 text-[11px] font-semibold ${badge.cls}`}>
+                              {badge.label}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2.5">
+                            {row.description}
+                            {row.orderNumber && row.orderId && (
+                              <button
+                                type="button"
+                                onClick={() => onOpenOrderById(row.orderId!)}
+                                className="ml-1.5 font-mono font-semibold text-[#0071E3] hover:underline dark:text-[#2997FF]"
+                              >
+                                {row.orderNumber}
+                              </button>
+                            )}
+                          </td>
+                          <td
+                            className={`px-3 py-2.5 text-right font-semibold whitespace-nowrap tabular-nums ${
+                              row.category === 'payout'
+                                ? 'text-emerald-600 dark:text-emerald-400'
+                                : row.category === 'deduction'
+                                  ? 'text-red-600 dark:text-red-400'
+                                  : ''
+                            }`}
+                          >
+                            {row.category === 'payout' || row.category === 'deduction' ? '−' : '+'}
+                            {formatRub(Math.abs(row.amountKopecks))}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Tabs 1 & 2: Active & Dismissed Employees */}
+      {(tab === 'active' || tab === 'dismissed') && (
+        filteredUsers.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-black/[0.1] p-10 text-center text-sm text-zinc-400 dark:border-white/[0.1]">
+            {tab === 'dismissed' ? 'Уволенных сотрудников нет' : 'Сотрудники не найдены'}
+          </div>
+        ) : (
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          {filteredUsers.map((u) => {
+            const sal = salaries.find((s) => s.id === u.id);
+            const restoring = Boolean(u.dismissedAt);
+            return (
+              <div
+                key={u.id}
+                className="rounded-2xl border border-black/[0.06] bg-white p-5 shadow-[0_1px_3px_rgba(0,0,0,0.04)] dark:border-white/[0.08] dark:bg-[#15171C]"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h3 className="font-display text-base font-bold">{u.fullName}</h3>
+                      {!u.isActive && (
+                        <span className="text-xs font-semibold text-red-600 dark:text-red-400">
+                          · {u.dismissedAt ? 'Уволен' : 'Заблокирован'}
+                        </span>
+                      )}
+                    </div>
+                    <div className="mt-0.5 text-xs text-zinc-500">
+                      @{u.login} · {u.role === 'admin' ? 'Администратор' : u.position || 'Сотрудник'} ·
+                      Ставка смены {formatRub(u.shiftRateKopecks)}
                     </div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="number"
-                      min="0"
-                      placeholder="Сумма ₽"
-                      value={wageDrafts[key] ?? ''}
-                      onChange={(e) =>
-                        setWageDrafts((p) => ({ ...p, [key]: e.target.value }))
-                      }
-                      className="w-24 rounded-lg border border-black/[0.1] px-2.5 py-1.5 text-xs tabular-nums dark:border-white/[0.1] dark:bg-[#0B0C10]"
-                    />
+                </div>
+
+                {sal && (
+                  <div className="mt-4 rounded-xl bg-[#F5F5F7] p-3.5 dark:bg-[#0B0C10]">
+                    {sal.activity.length > 0 && (
+                      <details className="mb-3 text-xs">
+                        <summary className="cursor-pointer font-semibold">Монтажи и смены по месяцам</summary>
+                        {sal.activity.map((item) => (
+                          <div key={item.month} className="mt-1 flex justify-between gap-2">
+                            <span>{item.month}</span>
+                            <span>Монтажей: {item.visits} · Смен: {item.shifts}</span>
+                          </div>
+                        ))}
+                      </details>
+                    )}
+                    <div className="flex flex-wrap items-end justify-between gap-3">
+                      <div>
+                        <div className="text-xs text-zinc-400">Общий долг</div>
+                        <div
+                          className={`mt-0.5 text-2xl font-bold tabular-nums ${
+                            sal.remainingKopecks >= 0
+                              ? 'text-[#0071E3] dark:text-[#2997FF]'
+                              : 'text-emerald-600 dark:text-emerald-400'
+                          }`}
+                        >
+                          {formatRub(Math.abs(sal.remainingKopecks))}
+                        </div>
+                        <div className="text-[11px] text-zinc-500">
+                          {sal.remainingKopecks >= 0 ? 'К выплате сотруднику' : 'Переплата сотруднику'}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => void openLedger(u)}
+                        className="rounded-xl border border-black/[0.08] px-3 py-1.5 text-xs font-semibold dark:border-white/[0.1]"
+                      >
+                        Все операции
+                      </button>
+                    </div>
+
+                    <div className="mt-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
+                      <div>
+                        <div className="text-zinc-400">Выезды</div>
+                        <div className="font-semibold tabular-nums">{formatRub(sal.visitAccruedKopecks)}</div>
+                      </div>
+                      <div>
+                        <div className="text-zinc-400">Смены</div>
+                        <div className="font-semibold tabular-nums">{formatRub(sal.shiftAccruedKopecks)}</div>
+                      </div>
+                      <div>
+                        <div className="text-zinc-400">Премии / удержания</div>
+                        <div className="font-semibold tabular-nums">{formatRub(sal.manualAccruedKopecks)}</div>
+                      </div>
+                      <div>
+                        <div className="text-zinc-400">Выплачено</div>
+                        <div className="font-semibold text-emerald-600 tabular-nums dark:text-emerald-400">
+                          {formatRub(sal.totalPaidKopecks)}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                <div className="mt-4 flex flex-wrap gap-2">
+                  {!u.dismissedAt && (
+                    <button
+                      type="button"
+                      onClick={() => openEdit(u)}
+                      className="inline-flex items-center gap-1 rounded-xl border border-black/[0.08] px-3 py-1.5 text-xs font-semibold hover:bg-black/[0.03] dark:border-white/[0.1]"
+                    >
+                      <SlidersHorizontal className="h-3.5 w-3.5" />
+                      <span>Права и ставка</span>
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setTargetUserId(u.id);
+                      setAmountRub('');
+                      setComment('');
+                      setPayDate(new Date().toISOString().slice(0, 10));
+                      setModal('payout');
+                    }}
+                    className="inline-flex items-center gap-1 rounded-xl bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-700 dark:text-emerald-300"
+                  >
+                    <Wallet className="h-3.5 w-3.5" />
+                    <span>Выплатить</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setTargetUserId(u.id);
+                      setAmountRub('');
+                      setComment('');
+                      setModal('adjust');
+                    }}
+                    className="rounded-xl bg-black/[0.04] px-3 py-1.5 text-xs font-semibold text-zinc-600 dark:bg-white/[0.06] dark:text-zinc-300"
+                  >
+                    Премия/штраф
+                  </button>
+                  {!u.dismissedAt && (
+                    <button
+                      type="button"
+                      onClick={() => void handleResetPassword(u)}
+                      className="inline-flex items-center gap-1 rounded-xl bg-black/[0.04] px-3 py-1.5 text-xs font-semibold text-zinc-600 dark:bg-white/[0.06] dark:text-zinc-300"
+                    >
+                      <KeyRound className="h-3.5 w-3.5" />
+                      <span>Сброс пароля</span>
+                    </button>
+                  )}
+                  {!u.dismissedAt && (
+                    <button
+                      type="button"
+                      onClick={() => void handleToggleBlock(u)}
+                      className={`inline-flex items-center gap-1 rounded-xl px-3 py-1.5 text-xs font-semibold ${
+                        u.isActive
+                          ? 'bg-red-500/10 text-red-600 dark:text-red-400'
+                          : 'bg-emerald-500/10 text-emerald-600'
+                      }`}
+                    >
+                      {u.isActive ? (
+                        <>
+                          <ShieldAlert className="h-3.5 w-3.5" />
+                          <span>Блокировать</span>
+                        </>
+                      ) : (
+                        <>
+                          <ShieldCheck className="h-3.5 w-3.5" />
+                          <span>Разблокировать</span>
+                        </>
+                      )}
+                    </button>
+                  )}
+                  {confirmEmploymentUserId !== u.id ? (
                     <button
                       type="button"
                       disabled={busy}
-                      onClick={() => void handleAssignVisitWage(v.visit_id, v.user_id, key)}
-                      className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white"
-                    >
-                      Начислить
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      {/* Cross-employee summary table */}
-      {salaries.length > 0 && (
-        <div className="overflow-x-auto rounded-2xl border border-black/[0.06] bg-white p-4 dark:border-white/[0.08] dark:bg-[#15171C]">
-          <h3 className="mb-3 font-display text-base font-bold">Сводка по сотрудникам</h3>
-          <table className="w-full min-w-[900px] text-left text-xs">
-            <thead>
-              <tr className="border-b border-black/[0.06] text-zinc-400 dark:border-white/[0.08]">
-                <th className="py-2 pr-3 font-semibold">Сотрудник</th>
-                <th className="px-3 py-2 font-semibold">Выезды</th>
-                <th className="px-3 py-2 font-semibold">Смены</th>
-                <th className="px-3 py-2 font-semibold">Премии / удержания</th>
-                <th className="px-3 py-2 font-semibold">Начислено</th>
-                <th className="px-3 py-2 font-semibold">Выплачено</th>
-                <th className="px-3 py-2 font-semibold">Долг</th>
-                <th className="px-3 py-2 text-right font-semibold">История</th>
-              </tr>
-            </thead>
-            <tbody>
-              {salaries.map((s) => {
-                const user = users.find((u) => u.id === s.id);
-                const dismissed = Boolean(user?.dismissedAt);
-                return (
-                  <tr
-                    key={s.id}
-                    className={`border-b border-black/[0.04] last:border-0 dark:border-white/[0.05] ${dismissed ? 'opacity-50' : ''}`}
-                  >
-                    <td className="py-2.5 pr-3 font-semibold">
-                      {s.full_name}
-                      {dismissed && <span className="ml-1 text-[10px] font-normal text-zinc-400">· уволен</span>}
-                    </td>
-                    <td className="px-3 py-2.5 tabular-nums">{formatRub(s.visitAccruedKopecks)}</td>
-                    <td className="px-3 py-2.5 tabular-nums">{formatRub(s.shiftAccruedKopecks)}</td>
-                    <td className="px-3 py-2.5 tabular-nums">{formatRub(s.manualAccruedKopecks)}</td>
-                    <td className="px-3 py-2.5 font-semibold tabular-nums">{formatRub(s.totalAccruedKopecks)}</td>
-                    <td className="px-3 py-2.5 text-emerald-600 tabular-nums dark:text-emerald-400">
-                      {formatRub(s.totalPaidKopecks)}
-                    </td>
-                    <td
-                      className={`px-3 py-2.5 font-bold tabular-nums ${
-                        s.remainingKopecks >= 0
-                          ? 'text-[#0071E3] dark:text-[#2997FF]'
-                          : 'text-emerald-600 dark:text-emerald-400'
+                      onClick={() => setConfirmEmploymentUserId(u.id)}
+                      className={`rounded-xl px-3 py-1.5 text-xs font-semibold ${
+                        restoring
+                          ? 'bg-emerald-500/10 text-emerald-600'
+                          : 'bg-red-500/10 text-red-600 dark:text-red-400'
                       }`}
                     >
-                      {formatRub(Math.abs(s.remainingKopecks))}
-                      <span className="ml-1 text-[10px] font-normal text-zinc-400">
-                        {s.remainingKopecks >= 0 ? 'к выплате' : 'переплата'}
-                      </span>
-                    </td>
-                    <td className="px-3 py-2.5 text-right">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (user) void openLedger(user);
-                        }}
-                        className="text-[#0071E3] hover:underline dark:text-[#2997FF]"
-                      >
-                        Операции
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {/* Monthly breakdown */}
-      {months.length > 0 && (
-        <div className="rounded-2xl border border-black/[0.06] bg-white p-4 dark:border-white/[0.08] dark:bg-[#15171C]">
-          <h3 className="mb-3 font-display text-base font-bold">Сводка по месяцам</h3>
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[700px] text-left text-xs">
-              <thead>
-                <tr className="border-b text-zinc-400">
-                  <th className="py-2 pr-3">Месяц</th>
-                  <th className="px-3 py-2">Начислено</th>
-                  <th className="px-3 py-2">Выплачено</th>
-                  <th className="px-3 py-2">Изменение долга</th>
-                </tr>
-              </thead>
-              <tbody>
-                {months.map((month) => (
-                  <tr
-                    key={month.month}
-                    className="border-b border-black/[0.04] last:border-0 dark:border-white/[0.05]"
-                  >
-                    <td className="py-2.5 pr-3 font-semibold">{month.month}</td>
-                    <td className="px-3 py-2.5 tabular-nums">{formatRub(month.accruedKopecks)}</td>
-                    <td className="px-3 py-2.5 text-emerald-600 tabular-nums dark:text-emerald-400">
-                      {formatRub(month.paidKopecks)}
-                    </td>
-                    <td className="px-3 py-2.5 font-semibold tabular-nums">
-                      {formatRub(month.deltaKopecks)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      {/* Employees Cards */}
-      <div className="flex flex-wrap gap-2" aria-label="Списки сотрудников">
-        <button type="button" onClick={() => { setSalaryOnly(false); setShowDismissed(false); }} className={`rounded-xl px-4 py-2 text-sm font-semibold ${!salaryOnly && !showDismissed ? 'bg-[#0071E3] text-white' : 'bg-zinc-200 dark:bg-[#282b32]'}`}>Сотрудники ({users.filter(u => !u.dismissedAt).length})</button>
-        <button type="button" onClick={() => { setSalaryOnly(false); setShowDismissed(true); }} className={`rounded-xl px-4 py-2 text-sm font-semibold ${!salaryOnly && showDismissed ? 'bg-[#0071E3] text-white' : 'bg-zinc-200 dark:bg-[#282b32]'}`}>Уволенные ({users.filter(u => u.dismissedAt).length})</button>
-        <button type="button" onClick={() => setSalaryOnly(true)} className={`rounded-xl px-4 py-2 text-sm font-semibold ${salaryOnly ? 'bg-[#0071E3] text-white' : 'bg-zinc-200 dark:bg-[#282b32]'}`}>Зарплаты</button>
-      </div>
-      {!salaryOnly && <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        {users.filter(u => Boolean(u.dismissedAt) === showDismissed).map((u) => {
-          const sal = salaries.find((s) => s.id === u.id);
-          return (
-            <div
-              key={u.id}
-              className="rounded-2xl border border-black/[0.06] bg-white p-5 shadow-[0_1px_3px_rgba(0,0,0,0.04)] dark:border-white/[0.08] dark:bg-[#15171C]"
-            >
-              <div className="flex items-start justify-between gap-2">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h3 className="font-display text-base font-bold">{u.fullName}</h3>
-                    {!u.isActive && (
-                      <span className="text-xs font-semibold text-red-600 dark:text-red-400">
-                        · {u.dismissedAt ? 'Уволен' : 'Заблокирован'}
-                      </span>
-                    )}
-                  </div>
-                  <div className="mt-0.5 text-xs text-zinc-500">
-                    @{u.login} · {u.role === 'admin' ? 'Администратор' : u.position || 'Сотрудник'} ·
-                    Ставка смены {formatRub(u.shiftRateKopecks)}
-                  </div>
-                </div>
-              </div>
-
-              {sal && (
-                <div className="mt-4 rounded-xl bg-[#F5F5F7] p-3.5 dark:bg-[#0B0C10]">
-                  {sal.activity.length > 0 && <details className="mb-3 text-xs"><summary className="cursor-pointer font-semibold">Монтажи и смены по месяцам</summary>{sal.activity.map(item => <div key={item.month} className="mt-1 flex justify-between gap-2"><span>{item.month}</span><span>Монтажей: {item.visits} · Смен: {item.shifts}</span></div>)}</details>}
-                  <div className="flex flex-wrap items-end justify-between gap-3">
-                    <div>
-                      <div className="text-xs text-zinc-400">Общий долг</div>
-                      <div
-                        className={`mt-0.5 text-2xl font-bold tabular-nums ${
-                          sal.remainingKopecks >= 0
-                            ? 'text-[#0071E3] dark:text-[#2997FF]'
-                            : 'text-emerald-600 dark:text-emerald-400'
-                        }`}
-                      >
-                        {formatRub(Math.abs(sal.remainingKopecks))}
-                      </div>
-                      <div className="text-[11px] text-zinc-500">
-                        {sal.remainingKopecks >= 0 ? 'К выплате сотруднику' : 'Переплата сотруднику'}
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => void openLedger(u)}
-                      className="rounded-xl border border-black/[0.08] px-3 py-1.5 text-xs font-semibold dark:border-white/[0.1]"
-                    >
-                      Все операции
+                      {restoring ? 'Восстановить' : 'Уволить'}
                     </button>
-                  </div>
-
-                  <div className="mt-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
-                    <div>
-                      <div className="text-zinc-400">Выезды</div>
-                      <div className="font-semibold tabular-nums">{formatRub(sal.visitAccruedKopecks)}</div>
-                    </div>
-                    <div>
-                      <div className="text-zinc-400">Смены</div>
-                      <div className="font-semibold tabular-nums">{formatRub(sal.shiftAccruedKopecks)}</div>
-                    </div>
-                    <div>
-                      <div className="text-zinc-400">Премии / удержания</div>
-                      <div className="font-semibold tabular-nums">{formatRub(sal.manualAccruedKopecks)}</div>
-                    </div>
-                    <div>
-                      <div className="text-zinc-400">Выплачено</div>
-                      <div className="font-semibold text-emerald-600 tabular-nums dark:text-emerald-400">
-                        {formatRub(sal.totalPaidKopecks)}
+                  ) : (
+                    <div className="flex w-full items-center justify-between gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs">
+                      <span className="text-amber-900 dark:text-amber-200">
+                        {restoring
+                          ? `Восстановить ${u.fullName}?`
+                          : `Переместить ${u.fullName} в уволенные? Доступ закроется, история сохранится.`}
+                      </span>
+                      <div className="flex shrink-0 gap-1.5">
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => void handleEmployment(u)}
+                          className={`rounded-lg px-2.5 py-1 font-semibold text-white ${
+                            restoring ? 'bg-emerald-600' : 'bg-red-600'
+                          }`}
+                        >
+                          Подтвердить
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmEmploymentUserId(null)}
+                          className="rounded-lg border border-black/[0.1] px-2.5 py-1 text-zinc-600 dark:border-white/[0.12] dark:text-zinc-300"
+                        >
+                          Отмена
+                        </button>
                       </div>
                     </div>
-                  </div>
-                </div>
-              )}
-
-              <div className="mt-4 flex flex-wrap gap-2">
-                {!u.dismissedAt && <button
-                  type="button"
-                  onClick={() => openEdit(u)}
-                  className="inline-flex items-center gap-1 rounded-xl border border-black/[0.08] px-3 py-1.5 text-xs font-semibold hover:bg-black/[0.03] dark:border-white/[0.1]"
-                >
-                  <SlidersHorizontal className="h-3.5 w-3.5" />
-                  <span>Права и ставка</span>
-                </button>}
-                <button
-                  type="button"
-                  onClick={() => {
-                    setTargetUserId(u.id);
-                    setAmountRub('');
-                    setComment('');
-                    setPayDate(new Date().toISOString().slice(0, 10));
-                    setModal('payout');
-                  }}
-                  className="inline-flex items-center gap-1 rounded-xl bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-700 dark:text-emerald-300"
-                >
-                  <Wallet className="h-3.5 w-3.5" />
-                  <span>Выплатить</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setTargetUserId(u.id);
-                    setAmountRub('');
-                    setComment('');
-                    setModal('adjust');
-                  }}
-                  className="rounded-xl bg-black/[0.04] px-3 py-1.5 text-xs font-semibold text-zinc-600 dark:bg-white/[0.06] dark:text-zinc-300"
-                >
-                  Премия/штраф
-                </button>
-                {!u.dismissedAt && <button
-                  type="button"
-                  onClick={() => void handleResetPassword(u)}
-                  className="inline-flex items-center gap-1 rounded-xl bg-black/[0.04] px-3 py-1.5 text-xs font-semibold text-zinc-600 dark:bg-white/[0.06] dark:text-zinc-300"
-                >
-                  <KeyRound className="h-3.5 w-3.5" />
-                  <span>Сброс пароля</span>
-                </button>}
-                {!u.dismissedAt && <button
-                  type="button"
-                  onClick={() => void handleToggleBlock(u)}
-                  className={`inline-flex items-center gap-1 rounded-xl px-3 py-1.5 text-xs font-semibold ${
-                    u.isActive
-                      ? 'bg-red-500/10 text-red-600 dark:text-red-400'
-                      : 'bg-emerald-500/10 text-emerald-600'
-                  }`}
-                >
-                  {u.isActive ? (
-                    <>
-                      <ShieldAlert className="h-3.5 w-3.5" />
-                      <span>Блокировать</span>
-                    </>
-                  ) : (
-                    <>
-                      <ShieldCheck className="h-3.5 w-3.5" />
-                      <span>Разблокировать</span>
-                    </>
                   )}
-                </button>}
-                <button type="button" disabled={busy} onClick={() => void handleEmployment(u)} className={`rounded-xl px-3 py-1.5 text-xs font-semibold ${u.dismissedAt ? 'bg-emerald-500/10 text-emerald-600' : 'bg-red-500/10 text-red-600 dark:text-red-400'}`}>
-                  {confirmEmployment?.user.id === u.id ? 'Нажмите ещё раз' : u.dismissedAt ? 'Восстановить' : 'Уволить'}
-                </button>
+                </div>
               </div>
-            </div>
-          );
-        })}
-      </div>}
+            );
+          })}
+        </div>
+        )
+      )}
 
       {/* Create / Edit Modal with Permission Checkboxes */}
       {(modal === 'create' || modal === 'edit') && (
@@ -924,69 +1404,121 @@ export function EmployeesView({ onOpenOrderById, currentUserId, onCurrentUserUpd
       {/* Ledger Modal: normalized operation history for a single employee */}
       {ledgerUser && (
         <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/45 p-0 sm:items-center sm:p-4">
-          <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-t-3xl bg-white p-5 dark:bg-[#15171C] sm:rounded-3xl">
-            <div className="mb-3 flex items-center justify-between">
+          <div className="max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-t-3xl bg-white p-5 dark:bg-[#15171C] sm:rounded-3xl">
+            <div className="mb-3 flex items-center justify-between gap-2">
               <h3 className="font-display text-lg font-bold">Операции: {ledgerUser.fullName}</h3>
               <button type="button" onClick={() => setLedgerUser(null)} className="text-zinc-400">
                 <X className="h-5 w-5" />
               </button>
             </div>
+            {!ledgerBusy && ledger.length > 0 && (
+              <div className="mb-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <select
+                  aria-label="Месяц операций сотрудника"
+                  value={ledgerMonthFilter}
+                  onChange={(e) => setLedgerMonthFilter(e.target.value)}
+                  className="min-w-0 w-full rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 px-3 py-2 text-xs dark:border-white/[0.1] dark:bg-[#0B0C10]"
+                >
+                  <option value="">Все месяцы</option>
+                  {[...new Set(ledger.map((e) => e.occurred_at.slice(0, 7)).filter(Boolean))]
+                    .sort((a, b) => b.localeCompare(a))
+                    .map((m) => (
+                      <option key={m} value={m}>
+                        {m}
+                      </option>
+                    ))}
+                </select>
+                <select
+                  aria-label="Тип операций сотрудника"
+                  value={ledgerTypeFilter}
+                  onChange={(e) => setLedgerTypeFilter(e.target.value as any)}
+                  className="min-w-0 w-full rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 px-3 py-2 text-xs dark:border-white/[0.1] dark:bg-[#0B0C10]"
+                >
+                  <option value="all">Все типы</option>
+                  <option value="visit">Выезды</option>
+                  <option value="shift">Смены</option>
+                  <option value="bonus">Премии</option>
+                  <option value="deduction">Удержания</option>
+                  <option value="payout">Выплаты</option>
+                </select>
+              </div>
+            )}
             {ledgerBusy ? (
               <p className="text-sm text-zinc-500">Загрузка…</p>
             ) : (
-              <table className="w-full text-left text-xs">
-                <thead>
-                  <tr className="border-b text-zinc-400">
-                    <th className="py-2 pr-3">Дата</th>
-                    <th className="px-3 py-2">Тип</th>
-                    <th className="px-3 py-2">Описание</th>
-                    <th className="px-3 py-2 text-right">Сумма</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {ledger.map((entry) => (
-                    <tr
-                      key={entry.id}
-                      className="border-b border-black/[0.04] last:border-0 dark:border-white/[0.05]"
-                    >
-                      <td className="py-2.5 pr-3 tabular-nums">{formatDateTimeRu(entry.occurred_at)}</td>
-                      <td className="px-3 py-2.5">
-                        {entry.kind === 'payout'
-                          ? 'Выплата'
-                          : entry.source === 'visit'
-                            ? 'Выезд'
-                            : entry.source === 'shift'
-                              ? 'Смена'
-                              : 'Корректировка'}
-                      </td>
-                      <td className="px-3 py-2.5">
-                        {entry.description || '—'}
-                        {entry.order_number && entry.order_id && (
-                          <button
-                            type="button"
-                            onClick={() => onOpenOrderById(entry.order_id!)}
-                            className="ml-1 text-[#0071E3] hover:underline dark:text-[#2997FF]"
-                          >
-                            {entry.order_number}
-                          </button>
-                        )}
-                      </td>
-                      <td
-                        className={`px-3 py-2.5 text-right font-semibold tabular-nums ${
-                          entry.kind === 'payout'
-                            ? 'text-emerald-600'
-                            : entry.amount_kopecks < 0
-                              ? 'text-red-600'
-                              : ''
-                        }`}
-                      >
-                        {entry.kind === 'payout' ? '−' : entry.amount_kopecks < 0 ? '' : '+'}
-                        {formatRub(Math.abs(entry.amount_kopecks))}
-                      </td>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[540px] text-left text-xs">
+                  <thead>
+                    <tr className="border-b border-black/[0.06] text-zinc-400 dark:border-white/[0.08]">
+                      <th className="py-2 pr-3">Дата</th>
+                      <th className="px-3 py-2">Тип</th>
+                      <th className="px-3 py-2">Описание</th>
+                      <th className="px-3 py-2 text-right">Сумма</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {ledger
+                      .filter((entry) => {
+                        if (ledgerMonthFilter && entry.occurred_at.slice(0, 7) !== ledgerMonthFilter) return false;
+                        const cat =
+                          entry.kind === 'payout'
+                            ? 'payout'
+                            : entry.source === 'visit'
+                              ? 'visit'
+                              : entry.source === 'shift'
+                                ? 'shift'
+                                : entry.amount_kopecks < 0
+                                  ? 'deduction'
+                                  : 'bonus';
+                        if (ledgerTypeFilter !== 'all' && cat !== ledgerTypeFilter) return false;
+                        return true;
+                      })
+                      .map((entry) => (
+                        <tr
+                          key={entry.id}
+                          className="border-b border-black/[0.04] last:border-0 dark:border-white/[0.05]"
+                        >
+                          <td className="py-2.5 pr-3 whitespace-nowrap tabular-nums">{formatDateTimeRu(entry.occurred_at)}</td>
+                          <td className="px-3 py-2.5">
+                            {entry.kind === 'payout'
+                              ? 'Выплата'
+                              : entry.source === 'visit'
+                                ? 'Выезд'
+                                : entry.source === 'shift'
+                                  ? 'Смена'
+                                  : entry.amount_kopecks < 0
+                                    ? 'Удержание'
+                                    : 'Премия'}
+                          </td>
+                          <td className="px-3 py-2.5">
+                            {entry.description || '—'}
+                            {entry.order_number && entry.order_id && (
+                              <button
+                                type="button"
+                                onClick={() => onOpenOrderById(entry.order_id!)}
+                                className="ml-1 text-[#0071E3] hover:underline dark:text-[#2997FF]"
+                              >
+                                {entry.order_number}
+                              </button>
+                            )}
+                          </td>
+                          <td
+                            className={`px-3 py-2.5 text-right font-semibold whitespace-nowrap tabular-nums ${
+                              entry.kind === 'payout'
+                                ? 'text-emerald-600'
+                                : entry.amount_kopecks < 0
+                                  ? 'text-red-600'
+                                  : ''
+                            }`}
+                          >
+                            {entry.kind === 'payout' || entry.amount_kopecks < 0 ? '−' : '+'}
+                            {formatRub(Math.abs(entry.amount_kopecks))}
+                          </td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
             )}
             {!ledgerBusy && ledger.length === 0 && (
               <p className="text-sm text-zinc-500">Операций пока нет.</p>

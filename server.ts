@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import fs from 'node:fs';
+import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createApp } from './server/app.ts';
@@ -25,6 +26,13 @@ async function startServer() {
 
   const yandex=createYandexOAuth(db);
   const app = createApp(db,yandex);
+  const httpServer = http.createServer(app);
+  const uploadRequestTimeoutMs = Number(process.env.UPLOAD_REQUEST_TIMEOUT_MS ?? 0);
+  httpServer.requestTimeout =
+    Number.isFinite(uploadRequestTimeoutMs) && uploadRequestTimeoutMs >= 0 ? uploadRequestTimeoutMs : 0;
+  httpServer.headersTimeout = 60_000;
+  httpServer.timeout = 0;
+  httpServer.keepAliveTimeout = 61_000;
   let lastBackupAlert='';
   const stopBackups=startBackupScheduler(process.env.DB_PATH || './data/pozitiv_vektor.sqlite',process.env.UPLOAD_DIR || './data/uploads',process.env.BACKUP_DIR || './data/backups',message=>{
     console.error('[backup]',message);
@@ -45,8 +53,14 @@ async function startServer() {
 
   if (!isProduction) {
     const { createServer: createViteServer } = await import('vite');
+    const disableHmr = process.env.DISABLE_HMR === 'true' || Boolean(process.env.K_SERVICE);
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        ws: disableHmr ? false : { server: httpServer },
+        hmr: !disableHmr,
+        watch: disableHmr ? null : {},
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
@@ -82,16 +96,9 @@ async function startServer() {
 
   const port = resolvePort();
   const host = resolveHost();
-  const server = app.listen(port, host, () => {
+  const server = httpServer.listen(port, host, () => {
     console.log(`[Позитив Вектор] Сервер запущен на http://${host}:${port}`);
   });
-
-  // Большие загрузки фото/видео не должны упираться в дефолтные таймауты Node.
-  // Отключаем таймауты, чтобы загрузка файла не обрывалась на середине.
-  server.requestTimeout = 0;
-  server.headersTimeout = 60_000;
-  server.timeout = 0;
-  server.keepAliveTimeout = 61_000;
 
   server.on('error', (err: NodeJS.ErrnoException) => {
     if (err.code === 'EADDRINUSE') {

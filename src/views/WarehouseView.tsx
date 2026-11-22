@@ -1,5 +1,6 @@
-import React, { useEffect, useState } from 'react';
-import { AlertTriangle, ArrowDownLeft, ArrowUpRight, ChevronDown, Package, Pencil, Plus, Trash2, Wrench, X } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { AlertTriangle, ArrowDownLeft, ArrowUpRight, ChevronDown, History, Package, Pencil, Plus, Search, Trash2, Wrench, X } from 'lucide-react';
+import { SectionHeader } from '../components/SectionHeader';
 import { apiRequest, formatDateTimeRu, formatQty, formatRub, OP_TYPE_LABELS } from '../lib/api';
 import type { AuthUser, MaterialItem, Order, ToolItem, WarehouseOp } from '../types/crm';
 
@@ -48,6 +49,7 @@ interface WarehouseViewProps {
   units: string[];
   categories: string[];
   onRefresh: () => void;
+  onOpenOrderById?: (orderId: string) => void;
 }
 
 export function WarehouseView({
@@ -59,22 +61,49 @@ export function WarehouseView({
   units,
   categories,
   onRefresh,
+  onOpenOrderById,
 }: WarehouseViewProps) {
   const isAdmin = user.role === 'admin';
   const canReceive = isAdmin || user.permissions['warehouse.receive'];
   const canEdit = isAdmin || user.permissions['warehouse.edit'];
   const canTake = isAdmin || user.permissions['warehouse.take'];
 
-  const [tab, setTab] = useState<'materials' | 'tools' | 'history'>('materials');
+  const [tab, setTab] = useState<'materials' | 'tools'>('materials');
+  const [search, setSearch] = useState('');
+  const [historySearch, setHistorySearch] = useState('');
+  const [categoryFilter, setCategoryFilter] = useState('');
+  const [opTypeFilter, setOpTypeFilter] = useState('');
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
+  const [historyModalOpen, setHistoryModalOpen] = useState(false);
+  const addMenuRef = useRef<HTMLDivElement>(null);
   const [modal, setModal] = useState<'newMat' | 'editMat' | 'newTool' | 'editTool' | 'matOp' | 'toolOp' | null>(null);
   const [selectedMat, setSelectedMat] = useState<MaterialItem | null>(null);
   const [selectedTool, setSelectedTool] = useState<ToolItem | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
-  const [confirmOp, setConfirmOp] = useState<{ text: string; run: () => void } | null>(null);
   const [confirmDeleteToolId, setConfirmDeleteToolId] = useState<string | null>(null);
   const [confirmDeleteMat, setConfirmDeleteMat] = useState(false);
+  const [confirmMatReserved, setConfirmMatReserved] = useState(false);
+  const [confirmToolReserved, setConfirmToolReserved] = useState(false);
+
+  useEffect(() => {
+    if (!addMenuOpen) return;
+    const handlePointerDown = (event: MouseEvent) => {
+      if (addMenuRef.current && !addMenuRef.current.contains(event.target as Node)) {
+        setAddMenuOpen(false);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setAddMenuOpen(false);
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [addMenuOpen]);
 
   // New / Edit material state
   const [mName, setMName] = useState('');
@@ -106,6 +135,55 @@ export function WarehouseView({
   const [tInstanceId, setTInstanceId] = useState('');
   const [tOpQty, setTOpQty] = useState('1');
   const [tOpNote, setTOpNote] = useState('');
+  const [tOpOrderId, setTOpOrderId] = useState('');
+
+  const myActiveOrders = useMemo(() => {
+    const active = orders.filter((o) => ['new', 'in_progress'].includes(o.status));
+    const mine = active.filter(
+      (o) =>
+        o.assignees.some((a) => a.id === user.id) ||
+        o.visits.some((v) => v.assignees?.some((a) => a.id === user.id))
+    );
+    return mine.length > 0 ? mine : active;
+  }, [orders, user.id]);
+
+  const myHeldTools = useMemo(() => {
+    const list: Array<{
+      key: string;
+      tool: ToolItem;
+      instanceId?: string;
+      serial?: string;
+      qty: number;
+      orderNumber?: string;
+    }> = [];
+    for (const t of tools) {
+      if (t.tracking_mode === 'individual') {
+        for (const inst of t.instances) {
+          if (inst.status === 'issued' && inst.holder_user_id === user.id) {
+            list.push({
+              key: `inst:${inst.id}`,
+              tool: t,
+              instanceId: inst.id,
+              serial: inst.serial_number,
+              qty: 1,
+              orderNumber: inst.order_number || undefined,
+            });
+          }
+        }
+      } else {
+        for (const h of t.activeHolders) {
+          if (h.userId === user.id && h.qty > 0) {
+            list.push({
+              key: `qty:${t.id}`,
+              tool: t,
+              qty: h.qty,
+            });
+          }
+        }
+      }
+    }
+    return list;
+  }, [tools, user.id]);
 
   const handleCreateMaterial = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -216,33 +294,31 @@ export function WarehouseView({
   const handleMaterialOp = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedMat) return;
-    const estimatedAfter=opType==='adjust' ? Number(opQty)*1000 : selectedMat.quantity_milli-Number(opQty)*1000;
-    const conflict=['issue','consume','adjust'].includes(opType) && (selectedMat.reserved_milli||0)>estimatedAfter;
-    const confirmReserved=conflict || (!navigator.onLine && ['issue','consume','adjust'].includes(opType));
-    if(confirmReserved) {
-      setConfirmOp({ text: 'Материал может быть зарезервирован под другой заказ. Выполнить операцию?', run: () => { setConfirmOp(null); void doMaterialOp(selectedMat, confirmReserved); } });
+    const estimatedAfter = opType === 'adjust' ? Number(opQty) * 1000 : selectedMat.quantity_milli - Number(opQty) * 1000;
+    const conflict = ['issue', 'consume', 'adjust'].includes(opType) && (selectedMat.reserved_milli || 0) > estimatedAfter;
+    const confirmReserved = conflict || (!navigator.onLine && ['issue', 'consume', 'adjust'].includes(opType));
+    if (confirmReserved && !confirmMatReserved) {
+      setConfirmMatReserved(true);
       return;
     }
-    await doMaterialOp(selectedMat, confirmReserved);
-  };
-  const doMaterialOp = async (mat: MaterialItem, reserved: boolean) => {
     setBusy(true);
     setError('');
     setNotice('');
     try {
-      const res = await apiRequest<{ offlineQueued?: boolean }>(`/api/warehouse/materials/${mat.id}/operations`, {
+      const res = await apiRequest<{ offlineQueued?: boolean }>(`/api/warehouse/materials/${selectedMat.id}/operations`, {
         method: 'POST',
         body: {
           opType,
           qtyMilli: Math.round(Number(opQty) * 1000),
           unitCostKopecks: opCostRub ? Math.round(Number(opCostRub) * 100) : undefined,
           note: opNote,
-          orderId: ['issue','return'].includes(opType) ? opOrderId : undefined,
-          confirmReserved: reserved,
+          orderId: ['issue', 'return'].includes(opType) ? opOrderId : undefined,
+          confirmReserved,
         },
-        offlineLabel: `Операция по «${mat.name}»`,
+        offlineLabel: `Операция по «${selectedMat.name}»`,
       });
       setModal(null);
+      setConfirmMatReserved(false);
       setOpNote('');
       if (res.offlineQueued) {
         setNotice('Операция по материалу поставлена в офлайн-очередь.');
@@ -376,31 +452,33 @@ export function WarehouseView({
   const handleToolOp = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedTool) return;
-    const confirmReserved=tOpType==='issue' && ((selectedTool.reserved_milli||0)>(selectedTool.available_qty-Number(tOpQty||1))*1000 || !navigator.onLine);
-    if(confirmReserved) {
-      setConfirmOp({ text: 'Инструмент может быть зарезервирован под другой заказ. Выдать его?', run: () => { setConfirmOp(null); void doToolOp(selectedTool, confirmReserved); } });
+    const confirmReserved =
+      tOpType === 'issue' &&
+      ((selectedTool.reserved_milli || 0) > (selectedTool.available_qty - Number(tOpQty || 1)) * 1000 || !navigator.onLine);
+    if (confirmReserved && !confirmToolReserved) {
+      setConfirmToolReserved(true);
       return;
     }
-    await doToolOp(selectedTool, confirmReserved);
-  };
-  const doToolOp = async (tool: ToolItem, reserved: boolean) => {
     setBusy(true);
     setError('');
     setNotice('');
     try {
-      const res = await apiRequest<{ offlineQueued?: boolean }>(`/api/warehouse/tools/${tool.id}/operations`, {
+      const res = await apiRequest<{ offlineQueued?: boolean }>(`/api/warehouse/tools/${selectedTool.id}/operations`, {
         method: 'POST',
         body: {
           opType: tOpType,
           toolInstanceId: tInstanceId || undefined,
           qty: Number(tOpQty || 1),
+          orderId: tOpOrderId || undefined,
           note: tOpNote,
-          confirmReserved: reserved,
+          confirmReserved,
         },
-        offlineLabel: `Операция с «${tool.name}»`,
+        offlineLabel: `Операция с «${selectedTool.name}»`,
       });
       setModal(null);
+      setConfirmToolReserved(false);
       setTOpNote('');
+      setTOpOrderId('');
       setTInstanceId('');
       if (res.offlineQueued) {
         setNotice('Операция с инструментом поставлена в офлайн-очередь.');
@@ -414,19 +492,181 @@ export function WarehouseView({
     }
   };
 
+  const handleQuickReturnMyTool = async (item: (typeof myHeldTools)[number]) => {
+    setBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      const res = await apiRequest<{ offlineQueued?: boolean }>(
+        `/api/warehouse/tools/${item.tool.id}/operations`,
+        {
+          method: 'POST',
+          body: {
+            opType: 'return',
+            toolInstanceId: item.instanceId || undefined,
+            qty: item.qty,
+            note: 'Быстрый возврат на склад',
+            confirmReserved: false,
+          },
+          offlineLabel: `Возврат инструмента «${item.tool.name}»`,
+        }
+      );
+      if (res.offlineQueued) {
+        setNotice('Возврат инструмента поставлен в офлайн-очередь.');
+      } else {
+        onRefresh();
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Ошибка возврата инструмента');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const materialCategories = useMemo(
+    () => Array.from(new Set([...categories, ...materials.map((m) => m.category).filter(Boolean)])),
+    [categories, materials]
+  );
+
+  const filteredMaterials = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return materials.filter((m) => {
+      if (categoryFilter && m.category !== categoryFilter) return false;
+      if (q && !`${m.name} ${m.category} ${m.unit}`.toLowerCase().includes(q)) return false;
+      return true;
+    });
+  }, [materials, search, categoryFilter]);
+
+  const filteredTools = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return tools;
+    return tools.filter((t) => {
+      const serials = t.instances.map((i) => `${i.serial_number} ${i.holder_name || ''}`).join(' ');
+      const holders = t.activeHolders.map((h) => h.holderName).join(' ');
+      return `${t.name} ${t.notes || ''} ${serials} ${holders}`.toLowerCase().includes(q);
+    });
+  }, [tools, search]);
+
+  const filteredOperations = useMemo(() => {
+    const q = historySearch.trim().toLowerCase();
+    return operations.filter((op) => {
+      if (opTypeFilter && op.op_type !== opTypeFilter) return false;
+      if (!q) return true;
+      return `${op.material_name || ''} ${op.tool_name || ''} ${op.tool_serial || ''} ${op.order_number || ''} ${op.employee_name || ''} ${op.note || ''}`
+        .toLowerCase()
+        .includes(q);
+    });
+  }, [operations, historySearch, opTypeFilter]);
+
   return (
     <div className="space-y-4">
-      {confirmOp && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true">
-          <div className="w-full max-w-sm rounded-2xl bg-white p-5 dark:bg-[#15171C]">
-            <p className="text-sm">{confirmOp.text}</p>
-            <div className="mt-4 flex justify-end gap-2">
-              <button type="button" onClick={() => setConfirmOp(null)} className="rounded-xl border border-zinc-400 px-3 py-1.5 text-sm">Отмена</button>
-              <button type="button" onClick={confirmOp.run} className="rounded-xl bg-red-600 px-3 py-1.5 text-sm font-semibold text-white">Подтвердить</button>
-            </div>
+      <SectionHeader<'materials' | 'tools'>
+        title="Склад"
+        description="Остатки материалов, инструменты на руках и журнал операций"
+        actions={
+          <div className="flex flex-wrap items-center gap-2">
+            {(canReceive || canEdit) && (
+              <div ref={addMenuRef} className="relative">
+                <button
+                  type="button"
+                  aria-haspopup="menu"
+                  aria-expanded={addMenuOpen}
+                  onClick={() => setAddMenuOpen((open) => !open)}
+                  className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl bg-[#0071E3] px-3.5 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-[#0077ED] dark:bg-[#2997FF] dark:text-[#0B0C10]"
+                >
+                  <Plus className="h-4 w-4" />
+                  <span>Добавить</span>
+                  <ChevronDown className={`h-3.5 w-3.5 transition-transform ${addMenuOpen ? 'rotate-180' : ''}`} />
+                </button>
+                {addMenuOpen && (
+                  <div
+                    role="menu"
+                    className="absolute left-0 z-30 mt-1.5 w-44 rounded-xl border border-black/[0.08] bg-white p-1.5 shadow-xl dark:border-white/[0.12] dark:bg-[#1C1F26]"
+                  >
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setAddMenuOpen(false);
+                        setError('');
+                        setModal('newMat');
+                      }}
+                      className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs font-semibold hover:bg-black/[0.05] dark:hover:bg-white/[0.08]"
+                    >
+                      <Package className="h-3.5 w-3.5 text-[#0071E3] dark:text-[#2997FF]" />
+                      <span>Материал</span>
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setAddMenuOpen(false);
+                        setError('');
+                        setModal('newTool');
+                      }}
+                      className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs font-semibold hover:bg-black/[0.05] dark:hover:bg-white/[0.08]"
+                    >
+                      <Wrench className="h-3.5 w-3.5 text-[#0071E3] dark:text-[#2997FF]" />
+                      <span>Инструмент</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+            <button
+              type="button"
+              onClick={() => setHistoryModalOpen(true)}
+              className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-black/[0.08] bg-white px-3.5 py-2 text-xs font-semibold hover:bg-zinc-50 dark:border-white/[0.1] dark:bg-[#0B0C10]"
+            >
+              <History className="h-4 w-4" />
+              <span>Журнал</span>
+              <span className="rounded-md bg-black/[0.06] px-1.5 py-0.5 text-[11px] tabular-nums dark:bg-white/[0.08]">
+                {operations.length}
+              </span>
+            </button>
           </div>
-        </div>
-      )}
+        }
+        tabs={[
+          { id: 'materials', label: 'Материалы', count: materials.length, icon: Package },
+          { id: 'tools', label: 'Инструменты', count: tools.length, icon: Wrench },
+        ]}
+        activeTab={tab}
+        onSelectTab={setTab}
+        filters={
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400" />
+              <input
+                type="text"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder={
+                  tab === 'materials'
+                    ? 'Поиск материала по названию или категории...'
+                    : 'Поиск инструмента, инвентарного № или сотрудника...'
+                }
+                className="w-full rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 py-2 pl-8 pr-3 text-xs outline-none focus:border-[#0071E3] focus:bg-white dark:border-white/[0.1] dark:bg-[#0B0C10] dark:focus:bg-[#0B0C10]"
+              />
+            </div>
+            {tab === 'materials' && (
+              <select
+                aria-label="Категория материала"
+                value={categoryFilter}
+                onChange={(e) => setCategoryFilter(e.target.value)}
+                className="rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 px-3 py-2 text-xs dark:border-white/[0.1] dark:bg-[#0B0C10]"
+              >
+                <option value="">Все категории</option>
+                {materialCategories.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+        }
+      />
+
       {error && !modal && (
         <div className="rounded-2xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-600 dark:text-red-400">
           {error}
@@ -437,72 +677,58 @@ export function WarehouseView({
           {notice}
         </div>
       )}
-      <div className="flex flex-col justify-between gap-3 rounded-2xl border border-black/[0.06] bg-white p-4 shadow-[0_1px_3px_rgba(0,0,0,0.04)] sm:flex-row sm:items-center dark:border-white/[0.08] dark:bg-[#15171C]">
-        <div className="flex flex-wrap rounded-xl bg-[#F5F5F7] p-1 dark:bg-[#0B0C10]">
-          <button
-            type="button"
-            onClick={() => setTab('materials')}
-            className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold ${
-              tab === 'materials'
-                ? 'bg-white shadow-xs dark:bg-[#15171C]'
-                : 'text-zinc-500'
-            }`}
-          >
-            <Package className="h-3.5 w-3.5" />
-            <span>Материалы ({materials.length})</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setTab('tools')}
-            className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold ${
-              tab === 'tools' ? 'bg-white shadow-xs dark:bg-[#15171C]' : 'text-zinc-500'
-            }`}
-          >
-            <Wrench className="h-3.5 w-3.5" />
-            <span>Инструменты ({tools.length})</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setTab('history')}
-            className={`rounded-lg px-3 py-1.5 text-xs font-semibold ${
-              tab === 'history' ? 'bg-white shadow-xs dark:bg-[#15171C]' : 'text-zinc-500'
-            }`}
-          >
-            Журнал операций ({operations.length})
-          </button>
-        </div>
 
-        {(canReceive || canEdit) && (
-          <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={() => {
-                setError('');
-                setModal('newMat');
-              }}
-              className="inline-flex items-center gap-1.5 rounded-xl bg-[#0071E3] px-3.5 py-2 text-xs font-semibold text-white dark:bg-[#2997FF] dark:text-[#0B0C10]"
-            >
-              <Plus className="h-3.5 w-3.5" />
-              <span>Материал</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setError('');
-                setModal('newTool');
-              }}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-black/[0.08] bg-white px-3.5 py-2 text-xs font-semibold hover:bg-zinc-50 dark:border-white/[0.1] dark:bg-[#0B0C10]"
-            >
-              <Plus className="h-3.5 w-3.5" />
-              <span>Инструмент</span>
-            </button>
+      {myHeldTools.length > 0 && (
+        <div className="rounded-2xl border border-[#0071E3]/25 bg-[#0071E3]/[0.05] p-4 dark:border-[#2997FF]/25 dark:bg-[#2997FF]/[0.07]">
+          <div className="mb-2.5 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 text-xs font-bold text-[#0071E3] dark:text-[#2997FF]">
+              <Wrench className="h-3.5 w-3.5" />
+              <span>У меня на руках ({myHeldTools.length})</span>
+            </div>
+            <span className="text-[11px] text-zinc-500 dark:text-zinc-400">
+              Быстрый возврат на склад
+            </span>
           </div>
-        )}
-      </div>
+          <div className="flex flex-wrap gap-2">
+            {myHeldTools.map((item) => (
+              <div
+                key={item.key}
+                className="flex items-center gap-2.5 rounded-xl border border-black/[0.06] bg-white px-3 py-2 text-xs shadow-2xs dark:border-white/[0.08] dark:bg-[#15171C]"
+              >
+                <span>{item.tool.icon_emoji}</span>
+                <div>
+                  <div className="font-semibold">
+                    {item.tool.name}
+                    {item.serial ? ` #${item.serial}` : ` × ${item.qty} шт`}
+                  </div>
+                  {item.orderNumber && (
+                    <div className="font-mono text-[10px] text-zinc-400">{item.orderNumber}</div>
+                  )}
+                </div>
+                {canTake && (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void handleQuickReturnMyTool(item)}
+                    className="rounded-lg bg-emerald-600 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+                  >
+                    Вернуть
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {tab === 'materials' && (
+        filteredMaterials.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-black/[0.1] p-10 text-center text-sm text-zinc-400 dark:border-white/[0.1]">
+            Материалы не найдены
+          </div>
+        ) : (
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
-          {materials.map((m) => {
+          {filteredMaterials.map((m) => {
             const isNegative = m.quantity_milli < 0;
             const isLow = m.min_threshold_milli > 0 && m.quantity_milli <= m.min_threshold_milli;
             return (
@@ -576,6 +802,7 @@ export function WarehouseView({
                           setOpType('receipt');
                           setOpQty('10');
                           setOpCostRub(String(Math.round(m.purchase_price_kopecks / 100)));
+                          setConfirmMatReserved(false);
                           setError('');
                           setModal('matOp');
                         }}
@@ -593,6 +820,8 @@ export function WarehouseView({
                           setOpType('consume');
                           setOpQty('1');
                           setOpCostRub('');
+                          setOpOrderId(myActiveOrders[0]?.id || '');
+                          setConfirmMatReserved(false);
                           setError('');
                           setModal('matOp');
                         }}
@@ -608,11 +837,17 @@ export function WarehouseView({
             );
           })}
         </div>
+        )
       )}
 
       {tab === 'tools' && (
+        filteredTools.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-black/[0.1] p-10 text-center text-sm text-zinc-400 dark:border-white/[0.1]">
+            Инструменты не найдены
+          </div>
+        ) : (
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
-          {tools.map((t) => (
+          {filteredTools.map((t) => (
             <div
               key={t.id}
               className="flex flex-col justify-between rounded-2xl border border-black/[0.06] bg-white p-4 shadow-[0_1px_3px_rgba(0,0,0,0.04)] dark:border-white/[0.08] dark:bg-[#15171C]"
@@ -724,6 +959,8 @@ export function WarehouseView({
                       setTOpType('issue');
                       setTInstanceId('');
                       setTOpQty('1');
+                      setTOpOrderId(myActiveOrders[0]?.id || '');
+                      setConfirmToolReserved(false);
                       setError('');
                       setModal('toolOp');
                     }}
@@ -738,6 +975,8 @@ export function WarehouseView({
                       setTOpType('return');
                       setTInstanceId('');
                       setTOpQty('1');
+                      setTOpOrderId('');
+                      setConfirmToolReserved(false);
                       setError('');
                       setModal('toolOp');
                     }}
@@ -750,44 +989,116 @@ export function WarehouseView({
             </div>
           ))}
         </div>
+        )
       )}
 
-      {tab === 'history' && (
-        <div className="rounded-2xl border border-black/[0.06] bg-white p-4 shadow-[0_1px_3px_rgba(0,0,0,0.04)] dark:border-white/[0.08] dark:bg-[#15171C]">
-          <div className="space-y-2">
-            {operations.map((op) => (
-              <div
-                key={op.id}
-                className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-black/[0.05] px-3.5 py-2.5 text-xs dark:border-white/[0.06]"
-              >
-                <div>
-                  <span className="font-semibold">
-                    {op.material_name || op.tool_name}
-                    {op.tool_serial ? ` #${op.tool_serial}` : ''}
-                  </span>
-                  <span className="mx-1.5 text-zinc-300">·</span>
-                  <span className="text-zinc-500">{OP_TYPE_LABELS[op.op_type] || op.op_type}</span>
-                  {op.order_number && (
-                    <>
-                      <span className="mx-1.5 text-zinc-300">·</span>
-                      <span className="font-mono text-[#0071E3]">{op.order_number}</span>
-                    </>
-                  )}
-                  {op.employee_name && (
-                    <>
-                      <span className="mx-1.5 text-zinc-300">·</span>
-                      <span className="text-zinc-500">{op.employee_name}</span>
-                    </>
-                  )}
-                </div>
-                <div className="flex items-center gap-3 tabular-nums">
-                  <span className="font-bold">
-                    {formatQty(op.qty_milli)} {op.material_unit || 'шт'}
-                  </span>
-                  <span className="text-zinc-400">{formatDateTimeRu(op.created_at)}</span>
-                </div>
+      {historyModalOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-end justify-center bg-black/45 p-0 backdrop-blur-xs sm:items-center sm:p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setHistoryModalOpen(false);
+          }}
+        >
+          <div className="flex max-h-[85vh] w-full max-w-2xl flex-col rounded-t-3xl border border-black/[0.08] bg-white shadow-2xl sm:rounded-3xl dark:border-white/[0.1] dark:bg-[#15171C]">
+            <div className="flex items-center justify-between border-b border-black/[0.06] px-5 py-4 dark:border-white/[0.08]">
+              <div>
+                <h3 className="text-base font-bold">Журнал операций</h3>
+                <p className="text-xs text-zinc-500">Движение материалов и инструментов</p>
               </div>
-            ))}
+              <button
+                type="button"
+                aria-label="Закрыть журнал"
+                onClick={() => setHistoryModalOpen(false)}
+                className="rounded-xl p-1.5 text-zinc-400 hover:bg-black/5 hover:text-zinc-700 dark:hover:bg-white/10 dark:hover:text-zinc-200"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="flex flex-col gap-2 border-b border-black/[0.06] px-5 py-3 sm:flex-row sm:items-center dark:border-white/[0.08]">
+              <div className="relative flex-1">
+                <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400" />
+                <input
+                  type="text"
+                  value={historySearch}
+                  onChange={(e) => setHistorySearch(e.target.value)}
+                  placeholder="Поиск по материалу, инструменту, заказу или сотруднику..."
+                  className="w-full rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 py-2 pl-8 pr-3 text-xs outline-none focus:border-[#0071E3] focus:bg-white dark:border-white/[0.1] dark:bg-[#0B0C10]"
+                />
+              </div>
+              <select
+                aria-label="Тип операции"
+                value={opTypeFilter}
+                onChange={(e) => setOpTypeFilter(e.target.value)}
+                className="rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 px-3 py-2 text-xs dark:border-white/[0.1] dark:bg-[#0B0C10]"
+              >
+                <option value="">Все операции</option>
+                {Object.entries(OP_TYPE_LABELS).map(([k, label]) => (
+                  <option key={k} value={k}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="flex-1 overflow-y-auto p-5">
+              {filteredOperations.length === 0 ? (
+                <div className="py-10 text-center text-sm text-zinc-400">Операции не найдены</div>
+              ) : (
+                <div className="space-y-2">
+                  {filteredOperations.map((op) => (
+                    <div
+                      key={op.id}
+                      className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-black/[0.05] px-3.5 py-2.5 text-xs dark:border-white/[0.06]"
+                    >
+                      <div>
+                        <span className="font-semibold">
+                          {op.material_name || op.tool_name}
+                          {op.tool_serial ? ` #${op.tool_serial}` : ''}
+                        </span>
+                        <span className="mx-1.5 text-zinc-300">·</span>
+                        <span className="text-zinc-500">{OP_TYPE_LABELS[op.op_type] || op.op_type}</span>
+                        {op.order_number && (
+                          <>
+                            <span className="mx-1.5 text-zinc-300">·</span>
+                            {op.order_id && onOpenOrderById ? (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setHistoryModalOpen(false);
+                                  onOpenOrderById(op.order_id!);
+                                }}
+                                className="font-mono font-semibold text-[#0071E3] hover:underline dark:text-[#2997FF]"
+                              >
+                                {op.order_number}
+                              </button>
+                            ) : (
+                              <span className="font-mono text-[#0071E3]">{op.order_number}</span>
+                            )}
+                          </>
+                        )}
+                        {op.employee_name && (
+                          <>
+                            <span className="mx-1.5 text-zinc-300">·</span>
+                            <span className="text-zinc-500">{op.employee_name}</span>
+                          </>
+                        )}
+                        {op.note && (
+                          <>
+                            <span className="mx-1.5 text-zinc-300">·</span>
+                            <span className="text-zinc-400">{op.note}</span>
+                          </>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-3 tabular-nums">
+                        <span className="font-bold">
+                          {formatQty(op.qty_milli)} {op.material_unit || 'шт'}
+                        </span>
+                        <span className="text-zinc-400">{formatDateTimeRu(op.created_at)}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -1015,7 +1326,10 @@ export function WarehouseView({
             <div className="space-y-3">
               <select
                 value={opType}
-                onChange={(e) => setOpType(e.target.value as any)}
+                onChange={(e) => {
+                  setOpType(e.target.value as any);
+                  setConfirmMatReserved(false);
+                }}
                 className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3.5 py-2.5 text-sm dark:border-white/[0.12] dark:bg-[#0B0C10]"
               >
                 {canReceive && <option value="receipt">Приход на склад</option>}
@@ -1030,7 +1344,10 @@ export function WarehouseView({
                 step="0.1"
                 required
                 value={opQty}
-                onChange={(e) => setOpQty(e.target.value)}
+                onChange={(e) => {
+                  setOpQty(e.target.value);
+                  setConfirmMatReserved(false);
+                }}
                 placeholder={`Количество (${selectedMat.unit})`}
                 className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3.5 py-2.5 text-sm tabular-nums dark:border-white/[0.12] dark:bg-[#0B0C10]"
               />
@@ -1051,12 +1368,21 @@ export function WarehouseView({
                 className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3.5 py-2.5 text-sm dark:border-white/[0.12] dark:bg-[#0B0C10]"
               />
             </div>
+            {confirmMatReserved && (
+              <div className="mt-3 rounded-xl border border-amber-500/35 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-200">
+                Материал может быть зарезервирован под другой заказ. Нажмите кнопку ниже ещё раз для подтверждения.
+              </div>
+            )}
             <button
               type="submit"
               disabled={busy}
-              className="mt-4 w-full rounded-2xl bg-[#0071E3] py-3 text-sm font-semibold text-white dark:bg-[#2997FF] dark:text-[#0B0C10]"
+              className={`mt-4 w-full rounded-2xl py-3 text-sm font-semibold text-white ${
+                confirmMatReserved
+                  ? 'bg-amber-600 hover:bg-amber-700'
+                  : 'bg-[#0071E3] dark:bg-[#2997FF] dark:text-[#0B0C10]'
+              }`}
             >
-              Выполнить
+              {confirmMatReserved ? 'Подтвердить списание из резерва' : 'Выполнить'}
             </button>
           </form>
         </div>
@@ -1224,7 +1550,10 @@ export function WarehouseView({
             <div className="space-y-3">
               <select
                 value={tOpType}
-                onChange={(e) => setTOpType(e.target.value as any)}
+                onChange={(e) => {
+                  setTOpType(e.target.value as any);
+                  setConfirmToolReserved(false);
+                }}
                 className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3.5 py-2.5 text-sm dark:border-white/[0.12] dark:bg-[#0B0C10]"
               >
                 <option value="issue">Взять инструмент</option>
@@ -1253,10 +1582,26 @@ export function WarehouseView({
                   type="number"
                   min="1"
                   value={tOpQty}
-                  onChange={(e) => setTOpQty(e.target.value)}
+                  onChange={(e) => {
+                    setTOpQty(e.target.value);
+                    setConfirmToolReserved(false);
+                  }}
                   className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3.5 py-2.5 text-sm tabular-nums dark:border-white/[0.12] dark:bg-[#0B0C10]"
                 />
               )}
+              <select
+                aria-label="Заказ для операции с инструментом"
+                value={tOpOrderId}
+                onChange={(e) => setTOpOrderId(e.target.value)}
+                className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3.5 py-2.5 text-sm dark:border-white/[0.12] dark:bg-[#0B0C10]"
+              >
+                <option value="">Без привязки к заказу</option>
+                {orders.map((ord) => (
+                  <option key={ord.id} value={ord.id}>
+                    {ord.order_number} · {ord.title}
+                  </option>
+                ))}
+              </select>
               <input
                 type="text"
                 value={tOpNote}
@@ -1265,12 +1610,21 @@ export function WarehouseView({
                 className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3.5 py-2.5 text-sm dark:border-white/[0.12] dark:bg-[#0B0C10]"
               />
             </div>
+            {confirmToolReserved && (
+              <div className="mt-3 rounded-xl border border-amber-500/35 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-200">
+                Инструмент может быть зарезервирован под другой заказ. Нажмите кнопку ниже ещё раз, чтобы выдать.
+              </div>
+            )}
             <button
               type="submit"
               disabled={busy}
-              className="mt-4 w-full rounded-2xl bg-[#0071E3] py-3 text-sm font-semibold text-white dark:bg-[#2997FF] dark:text-[#0B0C10]"
+              className={`mt-4 w-full rounded-2xl py-3 text-sm font-semibold text-white ${
+                confirmToolReserved
+                  ? 'bg-amber-600 hover:bg-amber-700'
+                  : 'bg-[#0071E3] dark:bg-[#2997FF] dark:text-[#0B0C10]'
+              }`}
             >
-              Подтвердить
+              {confirmToolReserved ? 'Выдать несмотря на резерв' : 'Подтвердить'}
             </button>
           </form>
         </div>

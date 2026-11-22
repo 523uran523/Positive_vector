@@ -5,13 +5,15 @@ import {
   Clock,
   ExternalLink,
   Pencil,
+  RotateCcw,
   Search,
   Trash2,
   Wrench,
   X,
 } from 'lucide-react';
+import { DatePresets } from '../components/DatePresets';
 import { apiRequest, formatDateTimeRu, formatRub } from '../lib/api';
-import type { AuthUser, DirectoryUser } from '../types/crm';
+import type { AuthUser, DirectoryUser, Order } from '../types/crm';
 
 interface VisitReportFeedItem {
   id: string;
@@ -49,10 +51,11 @@ interface ShiftReportFeedItem {
 interface ReportsViewProps {
   user: AuthUser;
   directory: DirectoryUser[];
+  orders?: Order[];
   onOpenOrderById: (orderId: string) => void;
 }
 
-export function ReportsView({ user, directory, onOpenOrderById }: ReportsViewProps) {
+export function ReportsView({ user, directory, orders = [], onOpenOrderById }: ReportsViewProps) {
   const isAdmin = user.role === 'admin';
   const [subTab, setSubTab] = useState<'visits' | 'shifts'>('visits');
   const [canViewOthers, setCanViewOthers] = useState(
@@ -61,6 +64,9 @@ export function ReportsView({ user, directory, onOpenOrderById }: ReportsViewPro
   const [visitReports, setVisitReports] = useState<VisitReportFeedItem[]>([]);
   const [shiftReports, setShiftReports] = useState<ShiftReportFeedItem[]>([]);
   const [selectedUserId, setSelectedUserId] = useState('');
+  const [selectedOrderId, setSelectedOrderId] = useState('');
+  const [fromDate, setFromDate] = useState('');
+  const [toDate, setToDate] = useState('');
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -81,6 +87,9 @@ export function ReportsView({ user, directory, onOpenOrderById }: ReportsViewPro
     try {
       const qs = new URLSearchParams();
       if (selectedUserId) qs.set('userId', selectedUserId);
+      if (selectedOrderId) qs.set('orderId', selectedOrderId);
+      if (fromDate) qs.set('from', fromDate);
+      if (toDate) qs.set('to', toDate);
       if (search.trim()) qs.set('q', search.trim());
       const res = await apiRequest<{
         canViewOthers: boolean;
@@ -95,7 +104,7 @@ export function ReportsView({ user, directory, onOpenOrderById }: ReportsViewPro
     } finally {
       setLoading(false);
     }
-  }, [selectedUserId, search]);
+  }, [selectedUserId, selectedOrderId, fromDate, toDate, search]);
 
   useEffect(() => {
     void loadReports();
@@ -168,6 +177,8 @@ export function ReportsView({ user, directory, onOpenOrderById }: ReportsViewPro
     }
   };
 
+  const hasFilters = Boolean(selectedUserId || selectedOrderId || fromDate || toDate || search.trim());
+
   return (
     <div className="space-y-4">
       {error && (
@@ -181,15 +192,17 @@ export function ReportsView({ user, directory, onOpenOrderById }: ReportsViewPro
         </div>
       )}
 
-      {/* Toolbar */}
-      <div className="flex flex-col justify-between gap-3 rounded-2xl border border-black/[0.06] bg-white p-4 shadow-[0_1px_3px_rgba(0,0,0,0.04)] lg:flex-row lg:items-center dark:border-white/[0.08] dark:bg-[#15171C]">
-        <div className="flex flex-wrap items-center gap-3">
+      {/* Toolbar: Work type + Filters */}
+      <div className="space-y-3 rounded-2xl border border-black/[0.06] bg-white p-4 shadow-[0_1px_3px_rgba(0,0,0,0.04)] dark:border-white/[0.08] dark:bg-[#15171C]">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex rounded-xl bg-[#F5F5F7] p-1 dark:bg-[#0B0C10]">
             <button
               type="button"
               onClick={() => setSubTab('visits')}
-              className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold ${
-                subTab === 'visits' ? 'bg-white shadow-xs dark:bg-[#15171C]' : 'text-zinc-500'
+              className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
+                subTab === 'visits'
+                  ? 'bg-[#0071E3] text-white shadow-xs dark:bg-[#2997FF] dark:text-[#0B0C10]'
+                  : 'text-zinc-600 dark:text-zinc-300'
               }`}
             >
               <ClipboardCheck className="h-3.5 w-3.5" />
@@ -198,27 +211,42 @@ export function ReportsView({ user, directory, onOpenOrderById }: ReportsViewPro
             <button
               type="button"
               onClick={() => setSubTab('shifts')}
-              className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold ${
-                subTab === 'shifts' ? 'bg-white shadow-xs dark:bg-[#15171C]' : 'text-zinc-500'
+              className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
+                subTab === 'shifts'
+                  ? 'bg-[#0071E3] text-white shadow-xs dark:bg-[#2997FF] dark:text-[#0B0C10]'
+                  : 'text-zinc-600 dark:text-zinc-300'
               }`}
             >
               <Wrench className="h-3.5 w-3.5" />
               <span>Смены в цеху ({shiftReports.length})</span>
             </button>
           </div>
+
           <span className="text-xs text-zinc-500 dark:text-zinc-400">
             {canViewOthers
               ? 'Доступ ко всем отчётам сотрудников'
-              : 'Показаны только ваши личные отчёты'}
+              : 'Показаны только ваши отчёты'}
           </span>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-6">
+          <div className="relative sm:col-span-2">
+            <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400" />
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Поиск по заказу, работам..."
+              className="w-full rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 py-2 pl-8 pr-3 text-xs outline-none focus:border-[#0071E3] focus:bg-white dark:border-white/[0.1] dark:bg-[#0B0C10] dark:focus:bg-[#0B0C10]"
+            />
+          </div>
+
           {canViewOthers && directory.length > 0 && (
             <select
+              aria-label="Фильтр по сотруднику"
               value={selectedUserId}
               onChange={(e) => setSelectedUserId(e.target.value)}
-              className="rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 px-3 py-2 text-xs dark:border-white/[0.1] dark:bg-[#0B0C10]"
+              className="min-w-0 w-full rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 px-3 py-2 text-xs dark:border-white/[0.1] dark:bg-[#0B0C10]"
             >
               <option value="">Все сотрудники</option>
               {directory.map((emp) => (
@@ -228,17 +256,65 @@ export function ReportsView({ user, directory, onOpenOrderById }: ReportsViewPro
               ))}
             </select>
           )}
-          <div className="relative min-w-[200px] flex-1 sm:w-64">
-            <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400" />
+
+          {orders.length > 0 && subTab === 'visits' && (
+            <select
+              aria-label="Фильтр по заказу"
+              value={selectedOrderId}
+              onChange={(e) => setSelectedOrderId(e.target.value)}
+              className="min-w-0 w-full rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 px-3 py-2 text-xs dark:border-white/[0.1] dark:bg-[#0B0C10]"
+            >
+              <option value="">Все заказы</option>
+              {orders.map((ord) => (
+                <option key={ord.id} value={ord.id}>
+                  {ord.order_number} · {ord.title}
+                </option>
+              ))}
+            </select>
+          )}
+
+          <input
+            type="date"
+            aria-label="Дата с"
+            value={fromDate}
+            onChange={(e) => setFromDate(e.target.value)}
+            className="min-w-0 w-full rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 px-3 py-2 text-xs tabular-nums dark:border-white/[0.1] dark:bg-[#0B0C10]"
+          />
+          <div className="flex items-center gap-2">
             <input
-              type="text"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Поиск по заказу, работам..."
-              className="w-full rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 py-2 pl-8 pr-3 text-xs outline-none focus:border-[#0071E3] focus:bg-white dark:focus:bg-[#0B0C10] dark:border-white/[0.1] dark:bg-[#0B0C10]"
+              type="date"
+              aria-label="Дата по"
+              value={toDate}
+              onChange={(e) => setToDate(e.target.value)}
+              className="min-w-0 flex-1 rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 px-3 py-2 text-xs tabular-nums dark:border-white/[0.1] dark:bg-[#0B0C10]"
             />
+            {hasFilters && (
+              <button
+                type="button"
+                title="Сбросить фильтры"
+                onClick={() => {
+                  setSelectedUserId('');
+                  setSelectedOrderId('');
+                  setFromDate('');
+                  setToDate('');
+                  setSearch('');
+                }}
+                className="inline-flex h-9 shrink-0 items-center justify-center rounded-xl border border-black/[0.08] px-2.5 text-xs font-semibold text-zinc-600 hover:bg-black/[0.04] dark:border-white/[0.1] dark:text-zinc-300"
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+              </button>
+            )}
           </div>
         </div>
+
+        <DatePresets
+          from={fromDate}
+          to={toDate}
+          onChange={(f, t) => {
+            setFromDate(f);
+            setToDate(t);
+          }}
+        />
       </div>
 
       {loading ? (
@@ -336,7 +412,10 @@ export function ReportsView({ user, directory, onOpenOrderById }: ReportsViewPro
                   </div>
 
                   {isEditing ? (
-                    <form onSubmit={(e) => void handleSaveEdit(e, rep)} className="mt-3 space-y-2.5 border-t border-black/[0.06] pt-3 dark:border-white/[0.08]">
+                    <form
+                      onSubmit={(e) => void handleSaveEdit(e, rep)}
+                      className="mt-3 space-y-2.5 border-t border-black/[0.06] pt-3 dark:border-white/[0.08]"
+                    >
                       <div className="grid grid-cols-2 gap-2 sm:max-w-xs">
                         <input
                           type="time"
@@ -387,9 +466,7 @@ export function ReportsView({ user, directory, onOpenOrderById }: ReportsViewPro
                   ) : (
                     <div className="mt-2.5 text-sm">
                       <p className="whitespace-pre-wrap text-zinc-700 dark:text-zinc-200">{rep.work_done}</p>
-                      {rep.notes && (
-                        <p className="mt-1 text-xs text-zinc-400">{rep.notes}</p>
-                      )}
+                      {rep.notes && <p className="mt-1 text-xs text-zinc-400">{rep.notes}</p>}
                     </div>
                   )}
                 </div>

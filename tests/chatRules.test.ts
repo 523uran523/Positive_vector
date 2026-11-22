@@ -183,7 +183,7 @@ test('chat history boundary, edit windows and deletion permissions are enforced 
   } finally { db.close(); }
 });
 
-test('push subscription is scoped to session and removed on logout', async () => {
+test('push subscription is scoped to session, preserved across expired sessions, and removed on logout', async () => {
   const db = openDatabase(':memory:'); runMigrations(db);
   const keys = webpush.generateVAPIDKeys();
   const previousPublic = process.env.WEB_PUSH_PUBLIC_KEY, previousPrivate = process.env.WEB_PUSH_PRIVATE_KEY;
@@ -197,8 +197,10 @@ test('push subscription is scoped to session and removed on logout', async () =>
     const setup = await call('POST', '/api/auth/setup', { login: 'admin', password: 'long-password-123', fullName: 'Admin' });
     cookie = setup.res.headers.get('set-cookie')!.split(';')[0]; csrf = setup.data.csrfToken;
     const subscription = { endpoint: 'https://fcm.googleapis.com/test', keys: { p256dh: 'example', auth: 'example' } };
+    assert.equal((await call('GET', '/api/push/key')).data.publicKey, keys.publicKey);
     assert.equal((await call('POST', '/api/chat/push-subscription', { ...subscription, endpoint: 'https://127.0.0.1/test' })).status, 400);
     assert.equal((await call('POST', '/api/chat/push-subscription', subscription)).status, 200);
+    assert.equal((await call('POST', '/api/push/subscription', subscription)).status, 200);
     assert.equal(db.prepare('SELECT COUNT(*) AS n FROM push_subscriptions').get()?.n, 1);
     assert.equal((await call('POST', '/api/auth/logout', {})).status, 200);
     assert.equal(db.prepare('SELECT COUNT(*) AS n FROM push_subscriptions').get()?.n, 0);
@@ -254,3 +256,93 @@ test('chat file access follows history and avatar replacement stays inside test 
     assert.equal((await inject(app, 'GET', `/api/chat/files/${file.file_id}`, undefined, { Cookie: cookie })).status, 404);
   } finally { db.close(); process.env.UPLOAD_DIR = previous; fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('chat messages support multiple attachments with replay protection, access control, and deletion', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pv-chat-multi-test-'));
+  const previous = process.env.UPLOAD_DIR; process.env.UPLOAD_DIR = dir;
+  const db = openDatabase(':memory:'); runMigrations(db); const app = createApp(db);
+  let cookie = '', csrf = '';
+  async function call(method: string, url: string, body?: unknown) {
+    const res = await inject(app, method, url, body === undefined ? undefined : JSON.stringify(body), { 'Content-Type': 'application/json', Cookie: cookie, 'X-CSRF-Token': csrf });
+    return { res, status: res.status, data: await res.json() };
+  }
+  async function uploadMany(files: Array<{ name: string; type: string; data: Buffer }>, clientId?: string, bodyText = '') {
+    const boundary = 'chat-multi-boundary';
+    const parts: Buffer[] = [];
+    if (clientId) parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="clientMessageId"\r\n\r\n${clientId}\r\n`));
+    if (bodyText) parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="body"\r\n\r\n${bodyText}\r\n`));
+    for (const f of files) {
+      parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="files"; filename="${f.name}"\r\nContent-Type: ${f.type}\r\n\r\n`));
+      parts.push(f.data);
+      parts.push(Buffer.from('\r\n'));
+    }
+    parts.push(Buffer.from(`--${boundary}--\r\n`));
+    const res = await inject(app, 'POST', '/api/chat/messages', Buffer.concat(parts), {
+      'Content-Type': `multipart/form-data; boundary=${boundary}`,
+      Cookie: cookie,
+      'X-CSRF-Token': csrf,
+    });
+    return { status: res.status, data: await res.json() };
+  }
+
+  try {
+    const setup = await call('POST', '/api/auth/setup', { login: 'admin', password: 'long-password-123', fullName: 'Admin' });
+    cookie = setup.res.headers.get('set-cookie')!.split(';')[0]; csrf = setup.data.csrfToken;
+    const png = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415408d763f8cfc0f01f00050001ff89993d1d0000000049454e44ae426082', 'hex');
+    const txt = Buffer.from('Спецификация монтажа');
+    const retryId = crypto.randomUUID();
+    const sent = await uploadMany(
+      [
+        { name: 'photo.png', type: 'image/png', data: png },
+        { name: 'spec.txt', type: 'text/plain', data: txt },
+      ],
+      retryId,
+      'Два файла сразу'
+    );
+    assert.equal(sent.status, 201);
+    assert.equal(sent.data.fileIds.length, 2);
+
+    const replay = await uploadMany(
+      [
+        { name: 'photo.png', type: 'image/png', data: png },
+        { name: 'spec.txt', type: 'text/plain', data: txt },
+      ],
+      retryId,
+      'Два файла сразу'
+    );
+    assert.equal(replay.status, 200);
+    assert.equal(replay.data.replayed, true);
+
+    const mismatch = await uploadMany(
+      [{ name: 'photo.png', type: 'image/png', data: png }],
+      retryId,
+      'Два файла сразу'
+    );
+    assert.equal(mismatch.status, 409);
+
+    const list = await call('GET', '/api/chat/messages');
+    assert.equal(list.status, 200);
+    assert.equal(list.data.messages.length, 1);
+    const msg = list.data.messages[0];
+    assert.equal(msg.attachments.length, 2);
+    assert.equal(msg.attachments[0].original_name, 'photo.png');
+    assert.equal(msg.attachments[1].original_name, 'spec.txt');
+
+    for (const att of msg.attachments) {
+      const dl = await inject(app, 'GET', `/api/chat/files/${att.id}`, undefined, { Cookie: cookie });
+      assert.equal(dl.status, 200);
+    }
+
+    const del = await call('DELETE', `/api/chat/messages/${msg.id}`);
+    assert.equal(del.status, 200);
+    for (const att of msg.attachments) {
+      const dl = await inject(app, 'GET', `/api/chat/files/${att.id}`, undefined, { Cookie: cookie });
+      assert.equal(dl.status, 404);
+    }
+  } finally {
+    db.close();
+    process.env.UPLOAD_DIR = previous;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+

@@ -37,6 +37,9 @@ export interface QuickTask {
   title: string;
   description: string;
   due_date: string;
+  order_id?: string | null;
+  order_number?: string | null;
+  order_title?: string | null;
   status: 'open' | 'completed' | 'cancelled';
   created_by: string;
   completed_by: string | null;

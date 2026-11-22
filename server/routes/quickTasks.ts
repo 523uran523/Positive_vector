@@ -20,9 +20,27 @@ export function createQuickTasksRouter(db: DatabaseSync): express.Router {
       .get(taskId,user.role,user.id,user.id) as Record<string, unknown> | undefined;
   }
   function enrich(task: Record<string, unknown>) {
-    return { ...task, status:task.cancelled_at ? 'cancelled' : task.status, assignees: db.prepare(`SELECT u.id,u.full_name FROM quick_task_assignees a JOIN users u ON u.id=a.user_id
-      WHERE a.task_id=? ORDER BY u.full_name`).all(String(task.id)),
-      completed_by_name: task.completed_by ? (db.prepare('SELECT full_name FROM users WHERE id=?').get(String(task.completed_by)) as {full_name:string} | undefined)?.full_name || null : null };
+    const linkedOrder = task.order_id
+      ? (db.prepare('SELECT order_number, title FROM orders WHERE id=?').get(String(task.order_id)) as
+          | { order_number: string; title: string }
+          | undefined)
+      : undefined;
+    return {
+      ...task,
+      status: task.cancelled_at ? 'cancelled' : task.status,
+      order_id: task.order_id || null,
+      order_number: linkedOrder?.order_number || null,
+      order_title: linkedOrder?.title || null,
+      assignees: db
+        .prepare(
+          `SELECT u.id,u.full_name FROM quick_task_assignees a JOIN users u ON u.id=a.user_id
+      WHERE a.task_id=? ORDER BY u.full_name`
+        )
+        .all(String(task.id)),
+      completed_by_name: task.completed_by
+        ? (db.prepare('SELECT full_name FROM users WHERE id=?').get(String(task.completed_by)) as { full_name: string } | undefined)?.full_name || null
+        : null,
+    };
   }
   router.get('/', (req: AuthedRequest,res) => {
     const user=req.authUser!;
@@ -40,31 +58,54 @@ export function createQuickTasksRouter(db: DatabaseSync): express.Router {
     const user=req.authUser!, body=req.body || {};
     const title=typeof body.title==='string' ? body.title.trim() : '';
     const description=typeof body.description==='string' ? body.description.trim() : '';
+    const rawOrderId = typeof body.orderId === 'string' ? body.orderId.trim() : '';
+    const orderId = rawOrderId || null;
     const assignees=Array.isArray(body.assigneeIds) ? [...new Set(body.assigneeIds)] : [];
     if(!title || title.length>200 || description.length>4000 || !validDate(body.dueDate) || !assignees.length ||
       assignees.some(id=>typeof id!=='string' || !db.prepare('SELECT 1 FROM users WHERE id=? AND is_active=1').get(id))) {
       res.status(400).json({error:'Укажите название, корректный срок и хотя бы одного действующего исполнителя.'});return;
     }
+    if (orderId && !db.prepare('SELECT 1 FROM orders WHERE id=?').get(orderId)) {
+      res.status(400).json({ error: 'Указанный заказ не найден.' });
+      return;
+    }
     const id=crypto.randomUUID(), now=new Date().toISOString();
     withTransaction(db,()=>{
-      db.prepare('INSERT INTO quick_tasks(id,title,description,due_date,created_by,created_at,updated_at) VALUES (?,?,?,?,?,?,?)')
-        .run(id,title,description,body.dueDate,user.id,now,now);
+      db.prepare('INSERT INTO quick_tasks(id,title,description,due_date,order_id,created_by,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)')
+        .run(id,title,description,body.dueDate,orderId,user.id,now,now);
       const insert=db.prepare('INSERT INTO quick_task_assignees(task_id,user_id) VALUES (?,?)');
       for(const assignee of assignees as string[]) {
         insert.run(id,assignee);
         if(assignee!==user.id) notifyUser(db,assignee,'quick_task_assigned','Новая быстрая задача',title,'quick_task',id);
       }
-      writeAuditLog(db,user.id,'quick_task',id,'quick_task_created',{});
+      writeAuditLog(db,user.id,'quick_task',id,'quick_task_created',{orderId});
     });
     res.status(201).json({task:enrich(visible(id,user)!)});
   });
   router.patch('/:id', (req: AuthedRequest,res) => {
     const user=req.authUser!, id=String(req.params.id), task=visible(id,user);
     if(!task){res.status(404).json({error:'Задача не найдена.'});return;}
-    if(!validDate(req.body?.dueDate)){res.status(400).json({error:'Укажите корректный срок.'});return;}
+    const hasDueDate = req.body?.dueDate !== undefined;
+    const hasOrderId = req.body?.orderId !== undefined;
+    if (!hasDueDate && !hasOrderId) {
+      res.status(400).json({ error: 'Укажите корректный срок.' });
+      return;
+    }
+    const nextDueDate = hasDueDate ? req.body.dueDate : task.due_date;
+    if (hasDueDate && !validDate(nextDueDate)) {
+      res.status(400).json({ error: 'Укажите корректный срок.' });
+      return;
+    }
+    const nextOrderId = hasOrderId
+      ? (typeof req.body.orderId === 'string' && req.body.orderId.trim() ? req.body.orderId.trim() : null)
+      : (task.order_id || null);
+    if (nextOrderId && !db.prepare('SELECT 1 FROM orders WHERE id=?').get(nextOrderId)) {
+      res.status(400).json({ error: 'Указанный заказ не найден.' });
+      return;
+    }
     withTransaction(db,()=>{
-      db.prepare('UPDATE quick_tasks SET due_date=?,updated_at=? WHERE id=?').run(req.body.dueDate,new Date().toISOString(),id);
-      writeAuditLog(db,user.id,'quick_task',id,'quick_task_rescheduled',{from:task.due_date,to:req.body.dueDate});
+      db.prepare('UPDATE quick_tasks SET due_date=?,order_id=?,updated_at=? WHERE id=?').run(nextDueDate,nextOrderId,new Date().toISOString(),id);
+      writeAuditLog(db,user.id,'quick_task',id,'quick_task_rescheduled',{from:task.due_date,to:nextDueDate,orderId:nextOrderId});
     });
     res.json({task:enrich(visible(id,user)!)});
   });

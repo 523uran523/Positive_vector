@@ -45,7 +45,7 @@ export function createSalariesRouter(db: DatabaseSync): express.Router {
 
     const pendingVisits = db
       .prepare(
-        `SELECT va.id as assignee_id, va.visit_id, ov.title as visit_title, ov.scheduled_at, ov.status as visit_status, o.order_number, o.title as order_title
+        `SELECT va.id as assignee_id, va.visit_id, ov.title as visit_title, ov.scheduled_at, ov.status as visit_status, o.id as order_id, o.order_number, o.title as order_title
          FROM visit_assignees va
          JOIN order_visits ov ON ov.id = va.visit_id
          JOIN orders o ON o.id = ov.order_id

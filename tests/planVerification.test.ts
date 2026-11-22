@@ -491,13 +491,13 @@ test('UI redesign enforces zero browser alert/confirm/prompt, no duplicate + but
   }
 
   const workView = fs.readFileSync(path.resolve('src/views/WorkView.tsx'), 'utf8');
-  for (const tab of ['Календарь', 'Заказы', 'Быстрые задачи', 'Смены', 'Отчёты']) {
+  for (const tab of ['Календарь', 'Заказы', 'Быстрые задачи', 'Смены и отчёты', 'Смены в цеху', 'Отчёты']) {
     assert.ok(workView.includes(tab), `WorkView missing tab ${tab}`);
   }
   assert.ok(workView.includes('Незапланированные заказы и черновики'));
 
   const financeView = fs.readFileSync(path.resolve('src/views/FinanceView.tsx'), 'utf8');
-  for (const tab of ['Обзор', 'Платежи клиентов', 'Расходы', 'Экономика заказов']) {
+  for (const tab of ['Обзор', 'Движение денег', 'Поступления', 'Расходы', 'Экономика заказов']) {
     assert.ok(financeView.includes(tab), `FinanceView missing tab ${tab}`);
   }
 
@@ -505,11 +505,14 @@ test('UI redesign enforces zero browser alert/confirm/prompt, no duplicate + but
   for (const tab of ['Сотрудники', 'Уволенные', 'Зарплаты']) {
     assert.ok(empView.includes(tab), `EmployeesView missing tab ${tab}`);
   }
+  assert.ok(empView.includes('Сводка по месяцам и сотрудникам'));
+  assert.ok(empView.includes('Детальная таблица начислений, удержаний и выплат'));
 
   const settingsView = fs.readFileSync(path.resolve('src/views/SettingsView.tsx'), 'utf8');
-  for (const tab of ['Мой аккаунт и пароль', 'Настройки компании']) {
-    assert.ok(settingsView.includes(tab), `SettingsView missing section ${tab}`);
+  for (const tab of ['Мой профиль', 'Компания']) {
+    assert.ok(settingsView.includes(tab), `SettingsView missing tab ${tab}`);
   }
+  assert.ok(settingsView.includes(': undefined'));
 
   const clientsView = fs.readFileSync(path.resolve('src/views/ClientsView.tsx'), 'utf8');
   assert.equal(clientsView.includes('ИНН'), false, 'ClientsView should not show ИНН field');
@@ -522,8 +525,20 @@ test('UI redesign enforces zero browser alert/confirm/prompt, no duplicate + but
   assert.ok(warehouseView.includes('Журнал операций'));
 
   const documentsView = fs.readFileSync(path.resolve('src/views/DocumentsView.tsx'), 'utf8');
-  assert.ok(documentsView.includes('Выберите файл'));
+  assert.ok(documentsView.includes('Загрузить файл'));
   assert.equal(documentsView.includes('disabled={!file'), false, 'Documents upload button must stay active');
+
+  const orderModals = fs.readFileSync(path.resolve('src/views/OrderModals.tsx'), 'utf8');
+  assert.ok(financeView.includes('commitInlineEdit'));
+  assert.ok(orderModals.includes('accept="image/*,video/*"'));
+  assert.ok(orderModals.includes('Фото / видео'));
+  assert.ok(workView.includes('Убрать материал'));
+
+  const viteCfg = fs.readFileSync(path.resolve('vite.config.ts'), 'utf8');
+  assert.ok(viteCfg.includes("registerType: 'autoUpdate'"));
+
+  const securityTs = fs.readFileSync(path.resolve('server/security.ts'), 'utf8');
+  assert.ok(securityTs.includes("linkEntityType === 'chat_room'"));
 });
 
 test('GET /api/reports filters visitReports and shiftReports by from, to, and orderId', async () => {
@@ -580,3 +595,82 @@ test('GET /api/reports filters visitReports and shiftReports by from, to, and or
     db.close();
   }
 });
+
+test('Quick tasks and documents support optional orderId linking and inline preview download', async () => {
+  const db = openDatabase(':memory:');
+  runMigrations(db);
+  const uploadRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pv-docs-test-'));
+  const prevUploadDir = process.env.UPLOAD_DIR;
+  process.env.UPLOAD_DIR = uploadRoot;
+  const app = createApp(db);
+
+  let cookie = '';
+  let csrf = '';
+  async function call(method: string, url: string, body?: unknown) {
+    const res = await inject(
+      app,
+      method,
+      url,
+      body === undefined ? undefined : JSON.stringify(body),
+      { 'Content-Type': 'application/json', Cookie: cookie, 'X-CSRF-Token': csrf }
+    );
+    return { res, status: res.status, data: res.status === 204 ? null : await res.json() };
+  }
+
+  try {
+    const setup = await call('POST', '/api/auth/setup', {
+      login: 'admin',
+      password: 'long-password-123',
+      fullName: 'Admin',
+    });
+    cookie = setup.res.headers.get('set-cookie')!.split(';')[0];
+    csrf = setup.data.csrfToken;
+
+    const now = '2026-07-01T09:00:00.000Z';
+    const userRow = db.prepare("SELECT id FROM users WHERE login = 'admin'").get() as { id: string };
+    db.prepare("INSERT INTO orders(id,order_number,title,created_at,updated_at) VALUES('ord-link-1','ORD-101','Стенд',?,?)").run(now, now);
+
+    const createdTask = await call('POST', '/api/quick-tasks', {
+      title: 'Купить крепёж',
+      dueDate: '2026-07-02',
+      assigneeIds: [userRow.id],
+      orderId: 'ord-link-1',
+    });
+    assert.equal(createdTask.status, 201);
+    assert.equal(createdTask.data.task.order_id, 'ord-link-1');
+    assert.equal(createdTask.data.task.order_number, 'ORD-101');
+    assert.equal(createdTask.data.task.order_title, 'Стенд');
+
+    const badTask = await call('POST', '/api/quick-tasks', {
+      title: 'Плохой заказ',
+      dueDate: '2026-07-02',
+      assigneeIds: [userRow.id],
+      orderId: 'missing-order',
+    });
+    assert.equal(badTask.status, 400);
+
+    const docsDir = path.join(uploadRoot, 'documents');
+    fs.mkdirSync(docsDir, { recursive: true });
+    const storedName = '11111111-1111-4111-8111-111111111111';
+    fs.writeFileSync(path.join(docsDir, storedName), 'hello preview', 'utf8');
+    db.prepare(
+      'INSERT INTO documents(id, original_name, stored_name, size_bytes, uploaded_by, created_at, category, order_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+    ).run('doc-1', 'spec.txt', storedName, 13, userRow.id, now, 'acts', 'ord-link-1');
+
+    const docsList = await call('GET', '/api/documents?category=acts&orderId=ord-link-1');
+    assert.equal(docsList.status, 200);
+    assert.equal(docsList.data.documents.length, 1);
+    assert.equal(docsList.data.documents[0].order_number, 'ORD-101');
+
+    const dlInline = await inject(app, 'GET', '/api/documents/doc-1/download?inline=1', undefined, { Cookie: cookie });
+    assert.equal(dlInline.status, 200);
+    assert.ok((dlInline.headers.get('content-disposition') || '').startsWith('inline;'));
+    assert.ok((dlInline.headers.get('content-type') || '').includes('text/plain'));
+  } finally {
+    db.close();
+    if (prevUploadDir === undefined) delete process.env.UPLOAD_DIR;
+    else process.env.UPLOAD_DIR = prevUploadDir;
+    fs.rmSync(uploadRoot, { recursive: true, force: true });
+  }
+});
+

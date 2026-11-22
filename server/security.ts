@@ -159,6 +159,32 @@ export function writeAuditLog(
   );
 }
 
+export function buildNotificationUrl(
+  type: string,
+  linkEntityType?: string,
+  linkEntityId?: string
+): { url: string; tag: string } {
+  if (linkEntityType === 'order' && linkEntityId) {
+    return { url: `/?order=${encodeURIComponent(linkEntityId)}`, tag: `order:${linkEntityId}` };
+  }
+  if (linkEntityType === 'quick_task' && linkEntityId) {
+    return { url: `/?task=${encodeURIComponent(linkEntityId)}`, tag: `task:${linkEntityId}` };
+  }
+  if (linkEntityType === 'chat_room' && linkEntityId) {
+    return { url: `/?chat=${encodeURIComponent(linkEntityId)}`, tag: `chat:${linkEntityId}` };
+  }
+  if (linkEntityType === 'salary') {
+    return {
+      url: '/?salary=1',
+      tag: linkEntityId ? `salary:${linkEntityId}` : `notif:${type}`,
+    };
+  }
+  if (type === 'backup_error') {
+    return { url: '/?settings=1', tag: 'backup_error' };
+  }
+  return { url: '/', tag: `notif:${type}` };
+}
+
 export function notifyUser(
   db: DatabaseSync,
   userId: string,
@@ -182,13 +208,8 @@ export function notifyUser(
     new Date().toISOString()
   );
 
-  let url = '/';
-  let tag = type;
-  if (linkEntityType === 'order' && linkEntityId) { url = `/?order=${encodeURIComponent(linkEntityId)}`; tag = `order:${linkEntityId}`; }
-  else if (linkEntityType === 'quick_task' && linkEntityId) { url = `/?task=${encodeURIComponent(linkEntityId)}`; tag = `task:${linkEntityId}`; }
-  else if (linkEntityType === 'chat_room' && linkEntityId) { url = `/?chat=${encodeURIComponent(linkEntityId)}`; tag = `chat:${linkEntityId}`; }
-  else if (linkEntityType === 'salary') { url = '/?salary=1'; tag = 'salary:1'; }
-  notifyPush(db, userId, { title, body, url, tag });
+  const { url, tag } = buildNotificationUrl(type, linkEntityType, linkEntityId);
+  notifyPush(db, userId, { title, body, tag, url });
 }
 
 export function notifyAdmins(

@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
-import { Building2, Pencil, Phone, Plus, Search, Trash2, User, X } from 'lucide-react';
+import { Building2, MapPin, Pencil, Phone, Plus, Search, Trash2, User, X } from 'lucide-react';
+import { SectionHeader } from '../components/SectionHeader';
 import { apiRequest, formatDateRu, formatRub } from '../lib/api';
+import { getMapHref, getTelHref } from '../lib/links';
 import type { AuthUser, Company, Contact } from '../types/crm';
 
 interface ClientsViewProps {
@@ -9,6 +11,7 @@ interface ClientsViewProps {
   contacts: Contact[];
   onRefresh: () => void;
   onOpenOrderById: (orderId: string) => void;
+  onCreateOrderForClient?: (companyId: string, contactId?: string) => void;
 }
 
 export function ClientsView({
@@ -17,9 +20,11 @@ export function ClientsView({
   contacts,
   onRefresh,
   onOpenOrderById,
+  onCreateOrderForClient,
 }: ClientsViewProps) {
   const isAdmin = user.role === 'admin';
   const canCreate = isAdmin || user.permissions['clients.create'] || user.permissions['orders.create'];
+  const canCreateOrder = isAdmin || user.permissions['orders.create'];
   const canEdit = isAdmin || user.permissions['clients.edit'];
 
   const [mode, setMode] = useState<'companies' | 'contacts'>('companies');
@@ -34,11 +39,9 @@ export function ClientsView({
 
   // Company form
   const [compName, setCompName] = useState('');
-  const [compInn, setCompInn] = useState('');
   const [compPhone, setCompPhone] = useState('');
   const [compEmail, setCompEmail] = useState('');
   const [compAddr, setCompAddr] = useState('');
-  const [compReq, setCompReq] = useState('');
   const [compNotes, setCompNotes] = useState('');
 
   // Contact form
@@ -55,7 +58,8 @@ export function ClientsView({
       !q ||
       c.name.toLowerCase().includes(q) ||
       c.phone.toLowerCase().includes(q) ||
-      c.inn.toLowerCase().includes(q)
+      c.email.toLowerCase().includes(q) ||
+      c.address.toLowerCase().includes(q)
   );
   const filteredContacts = contacts.filter(
     (ct) =>
@@ -68,11 +72,9 @@ export function ClientsView({
   const openCreateCompany = () => {
     setEditingCompanyId(null);
     setCompName('');
-    setCompInn('');
     setCompPhone('');
     setCompEmail('');
     setCompAddr('');
-    setCompReq('');
     setCompNotes('');
     setError('');
     setModal('company');
@@ -81,20 +83,18 @@ export function ClientsView({
   const openEditCompany = (comp: Company) => {
     setEditingCompanyId(comp.id);
     setCompName(comp.name);
-    setCompInn(comp.inn || '');
     setCompPhone(comp.phone || '');
     setCompEmail(comp.email || '');
     setCompAddr(comp.address || '');
-    setCompReq(comp.requisites || '');
     setCompNotes(comp.notes || '');
     setError('');
     setModal('company');
   };
 
-  const openCreateContact = () => {
+  const openCreateContact = (presetCompanyId = '') => {
     setEditingContactId(null);
     setCtName('');
-    setCtCompanyId('');
+    setCtCompanyId(presetCompanyId);
     setCtPhone('');
     setCtEmail('');
     setCtPosition('');
@@ -123,11 +123,9 @@ export function ClientsView({
     try {
       const payload = {
         name: compName,
-        inn: compInn,
         phone: compPhone,
         email: compEmail,
         address: compAddr,
-        requisites: compReq,
         notes: compNotes,
       };
       const res = editingCompanyId
@@ -250,60 +248,41 @@ export function ClientsView({
           {notice}
         </div>
       )}
-      {/* Toolbar */}
-      <div className="flex flex-col justify-between gap-3 rounded-2xl border border-black/[0.06] bg-white p-4 shadow-[0_1px_3px_rgba(0,0,0,0.04)] sm:flex-row sm:items-center dark:border-white/[0.08] dark:bg-[#15171C]">
-        <div className="flex items-center gap-2">
-          <div className="flex rounded-xl bg-[#F5F5F7] p-1 dark:bg-[#0B0C10]">
-            <button
-              type="button"
-              onClick={() => setMode('companies')}
-              className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
-                mode === 'companies'
-                  ? 'bg-white text-[#1D1D1F] shadow-xs dark:bg-[#15171C] dark:text-white'
-                  : 'text-zinc-500'
-              }`}
-            >
-              <Building2 className="h-3.5 w-3.5" />
-              <span>Компании ({companies.length})</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setMode('contacts')}
-              className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
-                mode === 'contacts'
-                  ? 'bg-white text-[#1D1D1F] shadow-xs dark:bg-[#15171C] dark:text-white'
-                  : 'text-zinc-500'
-              }`}
-            >
-              <User className="h-3.5 w-3.5" />
-              <span>Контакты ({contacts.length})</span>
-            </button>
-          </div>
-        </div>
 
-        <div className="flex flex-1 items-center gap-2 sm:max-w-md">
-          <div className="relative flex-1">
+      <SectionHeader<'companies' | 'contacts'>
+        title="Клиенты"
+        description="Компании, контактные лица и связанные заказы"
+        actions={
+          canCreate ? (
+            <button
+              type="button"
+              onClick={() => (mode === 'companies' ? openCreateCompany() : openCreateContact())}
+              className="inline-flex min-h-[40px] shrink-0 items-center gap-1.5 rounded-xl bg-[#0071E3] px-4 py-2 text-xs font-semibold text-white dark:bg-[#2997FF] dark:text-[#0B0C10]"
+            >
+              <Plus className="h-4 w-4" />
+              <span>{mode === 'companies' ? 'Добавить компанию' : 'Добавить контакт'}</span>
+            </button>
+          ) : undefined
+        }
+        tabs={[
+          { id: 'companies', label: 'Компании', count: companies.length, icon: Building2 },
+          { id: 'contacts', label: 'Контакты', count: contacts.length, icon: User },
+        ]}
+        activeTab={mode}
+        onSelectTab={setMode}
+        filters={
+          <div className="relative max-w-md">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400" />
             <input
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Поиск по названию, телефону..."
-              className="w-full rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 py-2 pl-9 pr-3 text-sm outline-none focus:border-[#0071E3] focus:bg-white dark:focus:bg-[#0B0C10] dark:border-white/[0.1] dark:bg-[#0B0C10]"
+              placeholder="Поиск по названию, телефону, адресу..."
+              className="w-full rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 py-2 pl-9 pr-3 text-sm outline-none focus:border-[#0071E3] focus:bg-white dark:border-white/[0.1] dark:bg-[#0B0C10] dark:focus:bg-[#0B0C10]"
             />
           </div>
-          {canCreate && (
-            <button
-              type="button"
-              onClick={() => (mode === 'companies' ? openCreateCompany() : openCreateContact())}
-              className="inline-flex min-h-[40px] shrink-0 items-center gap-1.5 rounded-xl bg-[#0071E3] px-3.5 py-2 text-xs font-semibold text-white dark:bg-[#2997FF] dark:text-[#0B0C10]"
-            >
-              <Plus className="h-4 w-4" />
-              <span>{mode === 'companies' ? 'Компания' : 'Контакт'}</span>
-            </button>
-          )}
-        </div>
-      </div>
+        }
+      />
 
       {/* Lists */}
       {mode === 'companies' ? (
@@ -313,7 +292,17 @@ export function ClientsView({
               Компании не найдены
             </div>
           ) : (
-            filteredCompanies.map((comp) => (
+            filteredCompanies.map((comp) => {
+              const linkedContactsMap = new Map<string, Contact>();
+              for (const c of comp.contacts || []) linkedContactsMap.set(c.id, c);
+              for (const c of contacts) {
+                if (c.company_id === comp.id) linkedContactsMap.set(c.id, c);
+              }
+              const linkedContacts = Array.from(linkedContactsMap.values());
+              const compTelHref = getTelHref(comp.phone);
+              const compMapHref = getMapHref(comp.address);
+
+              return (
               <div
                 key={comp.id}
                 className="rounded-2xl border border-black/[0.06] bg-white p-5 shadow-[0_1px_3px_rgba(0,0,0,0.04)] dark:border-white/[0.08] dark:bg-[#15171C]"
@@ -321,12 +310,22 @@ export function ClientsView({
                 <div className="flex items-start justify-between gap-2">
                   <div>
                     <h3 className="font-display text-base font-bold">{comp.name}</h3>
-                    <div className="mt-1 flex flex-wrap items-center gap-x-2 text-xs text-zinc-500">
+                    <div className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-zinc-500">
                       {comp.phone && (
-                        <span className="inline-flex items-center gap-1">
-                          <Phone className="h-3 w-3" />
-                          {comp.phone}
-                        </span>
+                        compTelHref ? (
+                          <a
+                            href={compTelHref}
+                            className="inline-flex items-center gap-1 font-medium text-emerald-700 hover:underline dark:text-emerald-400"
+                          >
+                            <Phone className="h-3 w-3" />
+                            <span>{comp.phone}</span>
+                          </a>
+                        ) : (
+                          <span className="inline-flex items-center gap-1">
+                            <Phone className="h-3 w-3" />
+                            <span>{comp.phone}</span>
+                          </span>
+                        )
                       )}
                       {comp.email && <span>{comp.email}</span>}
                     </div>
@@ -384,22 +383,95 @@ export function ClientsView({
                 </div>
 
                 {comp.address && (
-                  <div className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">{comp.address}</div>
+                  <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400">
+                    <span className="inline-flex items-center gap-1">
+                      <MapPin className="h-3.5 w-3.5 shrink-0 text-[#0071E3]" />
+                      <span>{comp.address}</span>
+                    </span>
+                    {compMapHref && (
+                      <a
+                        href={compMapHref}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="font-semibold text-[#0071E3] hover:underline dark:text-[#2997FF]"
+                      >
+                        На карте
+                      </a>
+                    )}
+                  </div>
                 )}
                 {comp.notes && (
                   <div className="mt-1 text-xs text-zinc-500 italic dark:text-zinc-400">{comp.notes}</div>
                 )}
 
-                {comp.contacts && comp.contacts.length > 0 && (
+                {(canCreate || (canCreateOrder && onCreateOrderForClient)) && (
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                    {canCreate && (
+                      <button
+                        type="button"
+                        onClick={() => openCreateContact(comp.id)}
+                        className="inline-flex items-center gap-1 rounded-xl border border-black/[0.08] px-2.5 py-1.5 text-xs font-semibold text-zinc-700 hover:border-[#0071E3] hover:text-[#0071E3] dark:border-white/[0.1] dark:text-zinc-200"
+                      >
+                        <Plus className="h-3.5 w-3.5" />
+                        <span>Контакт</span>
+                      </button>
+                    )}
+                    {canCreateOrder && onCreateOrderForClient && (
+                      <button
+                        type="button"
+                        onClick={() => onCreateOrderForClient(comp.id, linkedContacts[0]?.id)}
+                        className="inline-flex items-center gap-1 rounded-xl bg-[#0071E3]/10 px-2.5 py-1.5 text-xs font-semibold text-[#0071E3] hover:bg-[#0071E3]/15 dark:text-[#2997FF]"
+                      >
+                        <Plus className="h-3.5 w-3.5" />
+                        <span>Новый заказ</span>
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {linkedContacts.length > 0 && (
                   <div className="mt-3 border-t border-black/[0.05] pt-2.5 dark:border-white/[0.06]">
-                    <div className="mb-1 text-[11px] font-semibold text-zinc-400">Контакты</div>
-                    <div className="space-y-1 text-xs">
-                      {comp.contacts.map((ct) => (
-                        <div key={ct.id} className="flex items-center justify-between">
-                          <span className="font-medium">{ct.full_name}</span>
-                          <span className="text-zinc-500">{ct.phone}</span>
-                        </div>
-                      ))}
+                    <div className="mb-1 text-[11px] font-semibold text-zinc-400">
+                      Контакты ({linkedContacts.length})
+                    </div>
+                    <div className="space-y-1.5 text-xs">
+                      {linkedContacts.map((ct) => {
+                        const ctTelHref = getTelHref(ct.phone);
+                        return (
+                          <div key={ct.id} className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="min-w-0">
+                              <span className="font-medium">{ct.full_name}</span>
+                              {ct.position && (
+                                <span className="ml-1.5 text-[11px] text-zinc-400">({ct.position})</span>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-2">
+                              {ct.phone && (
+                                ctTelHref ? (
+                                  <a
+                                    href={ctTelHref}
+                                    className="font-medium text-emerald-700 hover:underline dark:text-emerald-400"
+                                  >
+                                    {ct.phone}
+                                  </a>
+                                ) : (
+                                  <span className="text-zinc-500">{ct.phone}</span>
+                                )
+                              )}
+                              {canEdit && (
+                                <button
+                                  type="button"
+                                  onClick={() => openEditContact(ct)}
+                                  title="Редактировать контакт"
+                                  className="text-zinc-400 hover:text-[#0071E3]"
+                                >
+                                  <Pencil className="h-3 w-3" />
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
                 )}
@@ -432,7 +504,8 @@ export function ClientsView({
                   </div>
                 )}
               </div>
-            ))
+              );
+            })
           )}
         </div>
       ) : (
@@ -508,10 +581,32 @@ export function ClientsView({
                   </div>
                 </div>
                 <div className="mt-2 space-y-0.5 text-xs text-zinc-600 dark:text-zinc-300">
-                  {ct.phone && <div>{ct.phone}</div>}
+                  {ct.phone && (
+                    getTelHref(ct.phone) ? (
+                      <a
+                        href={getTelHref(ct.phone)}
+                        className="inline-flex items-center gap-1 font-medium text-emerald-700 hover:underline dark:text-emerald-400"
+                      >
+                        <Phone className="h-3 w-3" />
+                        <span>{ct.phone}</span>
+                      </a>
+                    ) : (
+                      <div>{ct.phone}</div>
+                    )
+                  )}
                   {ct.email && <div className="text-zinc-400">{ct.email}</div>}
                   {ct.notes && <div className="text-zinc-400 italic">{ct.notes}</div>}
                 </div>
+                {canCreateOrder && onCreateOrderForClient && (
+                  <button
+                    type="button"
+                    onClick={() => onCreateOrderForClient(ct.company_id || '', ct.id)}
+                    className="mt-2 inline-flex items-center gap-1 rounded-xl bg-[#0071E3]/10 px-2.5 py-1 text-[11px] font-semibold text-[#0071E3] hover:bg-[#0071E3]/15 dark:text-[#2997FF]"
+                  >
+                    <Plus className="h-3 w-3" />
+                    <span>Новый заказ</span>
+                  </button>
+                )}
                 {ct.orders && ct.orders.length > 0 && (
                   <div className="mt-3 border-t border-black/[0.05] pt-2 dark:border-white/[0.06]">
                     <div className="mb-1 text-[11px] font-semibold text-zinc-400">
@@ -570,7 +665,7 @@ export function ClientsView({
                 placeholder="Название компании *"
                 className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3.5 py-2.5 text-sm dark:border-white/[0.12] dark:bg-[#0B0C10]"
               />
-              <div className="grid grid-cols-2 gap-2.5">
+              <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
                 <input
                   type="tel"
                   value={compPhone}

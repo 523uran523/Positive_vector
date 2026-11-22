@@ -1,7 +1,7 @@
 CREATE TABLE IF NOT EXISTS push_subscriptions (
   endpoint TEXT PRIMARY KEY,
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  session_id TEXT REFERENCES sessions(id) ON DELETE CASCADE,
+  session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
   subscription_json TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );

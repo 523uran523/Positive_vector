@@ -81,8 +81,6 @@ export const PRIORITY_LABELS: Record<string, string> = {
   urgent: 'Срочный',
 };
 
-
-
 export const PAYMENT_TYPE_LABELS: Record<string, string> = {
   advance: 'Аванс',
   partial: 'Доплата',

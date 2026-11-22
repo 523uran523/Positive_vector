@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { Download, LogOut, Moon, Save, Sun } from 'lucide-react';
+import { Bell, Building2, Download, LogOut, Moon, Save, Sun, User } from 'lucide-react';
 import { PWAInstallButton } from '../components/PWAInstallButton';
+import { SectionHeader } from '../components/SectionHeader';
 import { useTheme } from '../components/ThemeContext';
 import { apiRequest, formatDateTimeRu } from '../lib/api';
 import { enablePushNotifications } from '../lib/push';
@@ -25,6 +26,12 @@ export function SettingsView({
 }: SettingsViewProps) {
   const isAdmin = user.role === 'admin';
   const { theme, setTheme } = useTheme();
+  const [tab, setTab] = useState<'profile' | 'company'>(() =>
+    user.role === 'admin' && new URLSearchParams(window.location.search).has('yandex_connection')
+      ? 'company'
+      : 'profile'
+  );
+  const [confirmDisconnectYandex, setConfirmDisconnectYandex] = useState(false);
 
   // Profile self-service
   const [login, setLogin] = useState(user.login);
@@ -36,9 +43,6 @@ export function SettingsView({
   const [profileErr, setProfileErr] = useState('');
   const [busy, setBusy] = useState(false);
   const [avatarVersion, setAvatarVersion] = useState(0);
-  const [pushMsg, setPushMsg] = useState('');
-  const [pushBusy, setPushBusy] = useState(false);
-  const [confirmDisconnect, setConfirmDisconnect] = useState(false);
 
   // Admin global settings
   const [companyName, setCompanyName] = useState(settings.company_name || 'Позитив Вектор');
@@ -55,8 +59,23 @@ export function SettingsView({
   const [emailHost, setEmailHost] = useState(settings.email_notifications?.smtpHost || '');
   const [emailFrom, setEmailFrom] = useState(settings.email_notifications?.fromAddress || '');
   const [settingsMsg, setSettingsMsg] = useState('');
+  const [pushMsg, setPushMsg] = useState('');
+  const [pushBusy, setPushBusy] = useState(false);
   const [yandexStatus,setYandexStatus] = useState<{configured:boolean;connected:boolean}|null>(null);
   const [yandexMessage,setYandexMessage] = useState(()=>new URLSearchParams(window.location.search).get('yandex_connection')==='connected'?'Яндекс Диск подключён.':new URLSearchParams(window.location.search).has('yandex_connection')?'Не удалось подключить Яндекс Диск. Попробуйте ещё раз.':'');
+
+  const handleEnablePush = async () => {
+    setPushBusy(true);
+    setPushMsg('');
+    try {
+      await enablePushNotifications();
+      setPushMsg('Push-уведомления на этом устройстве включены.');
+    } catch (err) {
+      setPushMsg(err instanceof Error ? err.message : 'Не удалось включить push-уведомления.');
+    } finally {
+      setPushBusy(false);
+    }
+  };
 
   const loadYandex=async()=>{
     try {setYandexStatus(await apiRequest('/api/integrations/yandex/status',{useCache:false}));}
@@ -72,13 +91,23 @@ export function SettingsView({
       window.location.assign(url.href);
     } catch(err){setYandexMessage(err instanceof Error?err.message:'Не удалось начать подключение.');setBusy(false);}
   };
-  const disconnectYandex=async()=>{
-    if(!confirmDisconnect){setConfirmDisconnect(true);return;}
-    setConfirmDisconnect(false);
-    setBusy(true);setYandexMessage('');
-    try {await apiRequest('/api/integrations/yandex/disconnect',{method:'POST',body:{},skipOfflineQueue:true});await loadYandex();setYandexMessage('Диск отключён. Сохранённые копии не удалены.');}
-    catch(err){setYandexMessage(err instanceof Error?err.message:'Не удалось отключить Диск.');}
-    finally {setBusy(false);}
+  const disconnectYandex = async () => {
+    setBusy(true);
+    setYandexMessage('');
+    try {
+      await apiRequest('/api/integrations/yandex/disconnect', {
+        method: 'POST',
+        body: {},
+        skipOfflineQueue: true,
+      });
+      setConfirmDisconnectYandex(false);
+      await loadYandex();
+      setYandexMessage('Диск отключён. Сохранённые копии не удалены.');
+    } catch (err) {
+      setYandexMessage(err instanceof Error ? err.message : 'Не удалось отключить Диск.');
+    } finally {
+      setBusy(false);
+    }
   };
 
   // Export filter & audit logs
@@ -171,88 +200,86 @@ export function SettingsView({
 
   const qs = expFrom || expTo ? `?from=${expFrom}&to=${expTo}` : '';
 
-  const handleEnablePush = async () => {
-    setPushBusy(true);
-    setPushMsg('');
-    try {
-      await enablePushNotifications();
-      setPushMsg('Push-уведомления включены.');
-    } catch (err) {
-      setPushMsg(err instanceof Error ? err.message : 'Не удалось включить push-уведомления.');
-    } finally {
-      setPushBusy(false);
-    }
-  };
-
   return (
     <div className="space-y-5">
-      {isAdmin ? null : null}
-      {isAdmin && <div className="space-y-3 rounded-2xl border border-black/[0.06] bg-white p-5 dark:border-white/[0.08] dark:bg-[#15171C]">
-        <h3 className="font-display text-base font-bold">Резервные копии на Яндекс Диск</h3>
-        <p className="text-sm text-zinc-500">После подключения копия базы и файлов будет сохраняться раз в неделю в отдельной папке приложения и храниться месяц. Пароль вводится только на странице Яндекса.</p>
-        {yandexStatus && <p className="text-sm">{yandexStatus.connected?'Диск подключён.':yandexStatus.configured?'Диск не подключён.':'Для подключения сначала нужно настроить приложение Яндекса на сервере.'}</p>}
-        {yandexMessage && <p role="status" className="text-sm text-blue-600 dark:text-blue-300">{yandexMessage}</p>}
-        {yandexStatus?.connected ? <button type="button" disabled={busy} onClick={()=>void disconnectYandex()} className="rounded-xl border border-zinc-400 px-4 py-2 text-sm">{confirmDisconnect ? 'Нажмите ещё раз для отключения' : 'Отключить Диск'}</button> : <button type="button" disabled={busy || !yandexStatus?.configured} onClick={()=>void connectYandex()} className="rounded-xl bg-[#0071E3] px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">Подключить Яндекс Диск</button>}
-      </div>}
-      {isAdmin && <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-black/[0.06] bg-white p-5 dark:border-white/[0.08] dark:bg-[#15171C]">
-        <div><h3 className="font-display text-base font-bold">Учётные записи сотрудников</h3><p className="text-xs text-zinc-500">Добавление администраторов, увольнение и восстановление сотрудников</p></div>
-        <button type="button" onClick={onManageEmployees} className="rounded-xl border border-black/[0.1] px-4 py-2 text-sm font-semibold dark:border-white/[0.12]">Управлять сотрудниками</button>
-      </div>}
-      {/* Appearance & PWA */}
-      <div className="rounded-2xl border border-black/[0.06] bg-white p-5 dark:border-white/[0.08] dark:bg-[#15171C]">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h3 className="font-display text-base font-bold">Внешний вид и приложение</h3>
-            <p className="text-xs text-zinc-500">Переключение светлой/тёмной темы и установка PWA</p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setTheme('light')}
-              className={`inline-flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-semibold ${
-                theme === 'light'
-                  ? 'bg-[#0071E3] text-white'
-                  : 'border border-black/[0.08] dark:border-white/[0.1]'
-              }`}
-            >
-              <Sun className="h-3.5 w-3.5" />
-              <span>Светлая</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setTheme('dark')}
-              className={`inline-flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-semibold ${
-                theme === 'dark'
-                  ? 'bg-[#2997FF] text-[#0B0C10]'
-                  : 'border border-black/[0.08] dark:border-white/[0.1]'
-              }`}
-            >
-              <Moon className="h-3.5 w-3.5" />
-              <span>Тёмная</span>
-            </button>
-            <PWAInstallButton compact />
-            <button
-              type="button"
-              disabled={pushBusy}
-              onClick={() => void handleEnablePush()}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-black/[0.08] px-3.5 py-2 text-xs font-semibold dark:border-white/[0.1] disabled:opacity-50"
-            >
-              <span>{pushBusy ? 'Включаю…' : 'Включить push'}</span>
-            </button>
-            <button
-              type="button"
-              onClick={onLogout}
-              className="inline-flex items-center gap-1.5 rounded-xl bg-red-500/10 px-3.5 py-2 text-xs font-semibold text-red-600 dark:text-red-400"
-            >
-              <LogOut className="h-3.5 w-3.5" />
-              <span>Выйти</span>
-            </button>
-          </div>
-        </div>
-        {pushMsg && <p role="status" className="mt-2 text-xs text-blue-600 dark:text-blue-300">{pushMsg}</p>}
-      </div>
+      <SectionHeader<'profile' | 'company'>
+        title="Настройки"
+        description={
+          isAdmin
+            ? 'Личный профиль, оформление, параметры компании и резервное копирование'
+            : 'Личный профиль, пароль, уведомления и оформление'
+        }
+        tabs={
+          isAdmin
+            ? [
+                { id: 'profile', label: 'Мой профиль', icon: User },
+                { id: 'company', label: 'Компания', icon: Building2 },
+              ]
+            : undefined
+        }
+        activeTab={isAdmin ? tab : 'profile'}
+        onSelectTab={setTab}
+      />
 
-      {/* Self-service Login / Password / Profile */}
+      {/* Profile Tab */}
+      {tab === 'profile' && (
+        <>
+          {/* Appearance & PWA */}
+          <div className="rounded-2xl border border-black/[0.06] bg-white p-5 dark:border-white/[0.08] dark:bg-[#15171C]">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h3 className="font-display text-base font-bold">Внешний вид и приложение</h3>
+                <p className="text-xs text-zinc-500">Переключение светлой/тёмной темы и установка PWA</p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setTheme('light')}
+                  className={`inline-flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-semibold ${
+                    theme === 'light'
+                      ? 'bg-[#0071E3] text-white'
+                      : 'border border-black/[0.08] dark:border-white/[0.1]'
+                  }`}
+                >
+                  <Sun className="h-3.5 w-3.5" />
+                  <span>Светлая</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTheme('dark')}
+                  className={`inline-flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-semibold ${
+                    theme === 'dark'
+                      ? 'bg-[#2997FF] text-[#0B0C10]'
+                      : 'border border-black/[0.08] dark:border-white/[0.1]'
+                  }`}
+                >
+                  <Moon className="h-3.5 w-3.5" />
+                  <span>Тёмная</span>
+                </button>
+                <PWAInstallButton compact />
+                <button
+                  type="button"
+                  disabled={pushBusy}
+                  onClick={() => void handleEnablePush()}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-black/[0.08] px-3.5 py-2 text-xs font-semibold hover:bg-black/[0.03] disabled:opacity-50 dark:border-white/[0.1]"
+                >
+                  <Bell className="h-3.5 w-3.5" />
+                  <span>Включить push-уведомления</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={onLogout}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-red-500/10 px-3.5 py-2 text-xs font-semibold text-red-600 dark:text-red-400"
+                >
+                  <LogOut className="h-3.5 w-3.5" />
+                  <span>Выйти</span>
+                </button>
+              </div>
+            </div>
+            {pushMsg && <p role="status" className="mt-2.5 text-xs text-zinc-500 dark:text-zinc-400">{pushMsg}</p>}
+          </div>
+
+          {/* Self-service Login / Password / Profile */}
       <form
         onSubmit={handleSaveProfile}
         className="rounded-2xl border border-black/[0.06] bg-white p-5 dark:border-white/[0.08] dark:bg-[#15171C]"
@@ -325,10 +352,74 @@ export function SettingsView({
           <span>Сохранить профиль</span>
         </button>
       </form>
+        </>
+      )}
 
-      {/* Admin-only Company Settings, XLSX Exports & Audit Log */}
-      {isAdmin && (
+      {/* Company Tab (Admin only) */}
+      {isAdmin && tab === 'company' && (
         <>
+          <div className="space-y-3 rounded-2xl border border-black/[0.06] bg-white p-5 dark:border-white/[0.08] dark:bg-[#15171C]">
+            <h3 className="font-display text-base font-bold">Резервные копии на Яндекс Диск</h3>
+            <p className="text-sm text-zinc-500">После подключения копия базы и файлов будет сохраняться раз в неделю в отдельной папке приложения и храниться месяц. Пароль вводится только на странице Яндекса.</p>
+            {yandexStatus && <p className="text-sm">{yandexStatus.connected ? 'Диск подключён.' : yandexStatus.configured ? 'Диск не подключён.' : 'Для подключения сначала нужно настроить приложение Яндекса на сервере.'}</p>}
+            {yandexMessage && <p role="status" className="text-sm text-blue-600 dark:text-blue-300">{yandexMessage}</p>}
+            {yandexStatus?.connected ? (
+              confirmDisconnectYandex ? (
+                <div className="flex flex-wrap items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs">
+                  <span className="text-amber-900 dark:text-amber-200">
+                    Отключить автоматические копии на Яндекс Диск? Уже сохранённые копии останутся на Диске.
+                  </span>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void disconnectYandex()}
+                    className="rounded-lg bg-red-600 px-3 py-1.5 font-semibold text-white"
+                  >
+                    Отключить точно
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmDisconnectYandex(false)}
+                    className="rounded-lg border border-black/[0.1] px-3 py-1.5 text-zinc-600 dark:border-white/[0.12] dark:text-zinc-300"
+                  >
+                    Отмена
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => setConfirmDisconnectYandex(true)}
+                  className="rounded-xl border border-zinc-400 px-4 py-2 text-sm"
+                >
+                  Отключить Диск
+                </button>
+              )
+            ) : (
+              <button
+                type="button"
+                disabled={busy || !yandexStatus?.configured}
+                onClick={() => void connectYandex()}
+                className="rounded-xl bg-[#0071E3] px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+              >
+                Подключить Яндекс Диск
+              </button>
+            )}
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-black/[0.06] bg-white p-5 dark:border-white/[0.08] dark:bg-[#15171C]">
+            <div>
+              <h3 className="font-display text-base font-bold">Учётные записи сотрудников</h3>
+              <p className="text-xs text-zinc-500">Добавление администраторов, увольнение и восстановление сотрудников</p>
+            </div>
+            <button
+              type="button"
+              onClick={onManageEmployees}
+              className="rounded-xl border border-black/[0.1] px-4 py-2 text-sm font-semibold dark:border-white/[0.12]"
+            >
+              Управлять сотрудниками
+            </button>
+          </div>
           <form
             onSubmit={handleSaveSettings}
             className="rounded-2xl border border-black/[0.06] bg-white p-5 dark:border-white/[0.08] dark:bg-[#15171C]"

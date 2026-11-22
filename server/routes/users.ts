@@ -165,6 +165,7 @@ export function createUsersRouter(db: DatabaseSync): express.Router {
     withTransaction(db, () => {
       const now = new Date().toISOString();
       db.prepare('UPDATE users SET is_active=0,dismissed_at=?,updated_at=? WHERE id=?').run(now,now,targetId);
+      db.prepare('DELETE FROM push_subscriptions WHERE user_id=?').run(targetId);
       db.prepare('DELETE FROM sessions WHERE user_id=?').run(targetId);
       writeAuditLog(db,req.authUser!.id,'user',targetId,'user_dismissed',{});
     });
@@ -288,6 +289,7 @@ export function createUsersRouter(db: DatabaseSync): express.Router {
       }
 
       if (nextActive === 0) {
+        db.prepare('DELETE FROM push_subscriptions WHERE user_id = ?').run(targetId);
         db.prepare('DELETE FROM sessions WHERE user_id = ?').run(targetId);
       }
 

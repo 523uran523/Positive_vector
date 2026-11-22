@@ -58,6 +58,7 @@ const CLEAR_ORDER = [
   'quick_tasks',
   'chat_reads',
   'chat_avatars',
+  'chat_message_files',
   'chat_messages',
   'chat_files',
   'chat_room_members',

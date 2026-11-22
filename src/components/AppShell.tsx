@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import {
   Bell,
-  CalendarDays,
+  Briefcase,
   CheckCheck,
   LogOut,
   Moon,
@@ -12,8 +12,8 @@ import {
   Users,
   Wallet,
   Building2,
-  ClipboardCheck,
   FileText,
+  MoreHorizontal,
   X,
 } from 'lucide-react';
 import { formatDateTimeRu } from '../lib/api';
@@ -23,9 +23,8 @@ import { PWAInstallButton } from './PWAInstallButton';
 import { useTheme } from './ThemeContext';
 
 export type NavTab =
-  | 'calendar'
+  | 'work'
   | 'chat'
-  | 'reports'
   | 'clients'
   | 'warehouse'
   | 'finance'
@@ -46,6 +45,9 @@ interface AppShellProps {
   onMarkAllNotificationsRead: () => void;
   onOpenOrderLink?: (orderId: string) => void;
   onOpenTaskLink?: (taskId: string) => void;
+  onOpenSalaryLink?: () => void;
+  onOpenChatLink?: (roomId: string) => void;
+  onOpenSettingsLink?: () => void;
   onLogout: () => void;
   children: React.ReactNode;
 }
@@ -62,28 +64,42 @@ export function AppShell({
   onMarkAllNotificationsRead,
   onOpenOrderLink,
   onOpenTaskLink,
+  onOpenSalaryLink,
+  onOpenChatLink,
+  onOpenSettingsLink,
   onLogout,
   children,
 }: AppShellProps) {
   const { theme, toggleTheme } = useTheme();
   const [notifOpen, setNotifOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
 
   const isAdmin = user.role === 'admin';
+  const empCanClients = !isAdmin && Boolean(user.permissions['clients.view_all'] || user.permissions['orders.create']);
+  const empCanWarehouse =
+    !isAdmin &&
+    Boolean(
+      user.permissions['warehouse.take'] ||
+        user.permissions['warehouse.receive'] ||
+        user.permissions['warehouse.edit']
+    );
 
   const navItems: Array<{ id: NavTab; label: string; icon: React.ComponentType<{ className?: string }> }> = isAdmin
     ? [
-        { id: 'calendar', label: 'Работа', icon: CalendarDays },
-        { id: 'finance', label: 'Финансы', icon: Wallet },
-        { id: 'warehouse', label: 'Склад', icon: Package },
+        { id: 'work', label: 'Работа', icon: Briefcase },
         { id: 'chat', label: 'Чат', icon: MessageCircle },
-        ...(user.documentsAccess ? [{ id: 'documents' as const, label: 'Документы', icon: FileText }] : []),
         { id: 'clients', label: 'Клиенты', icon: Building2 },
+        { id: 'warehouse', label: 'Склад', icon: Package },
+        { id: 'finance', label: 'Финансы', icon: Wallet },
+        ...(user.documentsAccess ? [{ id: 'documents' as const, label: 'Документы', icon: FileText }] : []),
         { id: 'employees', label: 'Сотрудники', icon: Users },
         { id: 'settings', label: 'Настройки', icon: Settings },
       ]
     : [
-        { id: 'calendar', label: 'Работа', icon: CalendarDays },
+        { id: 'work', label: 'Работа', icon: Briefcase },
         { id: 'chat', label: 'Чат', icon: MessageCircle },
+        ...(empCanClients ? [{ id: 'clients' as const, label: 'Клиенты', icon: Building2 }] : []),
+        ...(empCanWarehouse ? [{ id: 'warehouse' as const, label: 'Склад', icon: Package }] : []),
         { id: 'salary', label: 'Моя зарплата', icon: Wallet },
         { id: 'settings', label: 'Настройки', icon: Settings },
       ];
@@ -103,12 +119,12 @@ export function AppShell({
               {companyName || 'Позитив Вектор'}
             </div>
             <div className="truncate text-xs text-zinc-500 dark:text-zinc-400">
-              {isAdmin ? 'Администратор' : user.position || 'Сотрудник'}
+              {isAdmin ? 'Администратор' : user.position || 'Монтажник'}
             </div>
           </div>
         </div>
 
-        <nav className="flex-1 space-y-1 px-3 py-2">
+        <nav aria-label="Основное меню" className="flex-1 space-y-1 overflow-y-auto px-3 py-2">
           {navItems.map((item) => {
             const Icon = item.icon;
             const active = activeTab === item.id;
@@ -124,8 +140,12 @@ export function AppShell({
                 }`}
               >
                 <Icon className="h-4.5 w-4.5 shrink-0" />
-                <span>{item.label}</span>
-                {item.id === 'chat' && chatUnread > 0 && <span className="rounded-full bg-red-600 px-1.5 text-xs text-white">{chatUnread}</span>}
+                <span className="truncate">{item.label}</span>
+                {item.id === 'chat' && chatUnread > 0 && (
+                  <span className="ml-auto rounded-full bg-red-600 px-1.5 py-0.5 text-[11px] font-bold leading-none text-white tabular-nums">
+                    {chatUnread > 99 ? '99+' : chatUnread}
+                  </span>
+                )}
               </button>
             );
           })}
@@ -142,6 +162,7 @@ export function AppShell({
               onClick={onLogout}
               className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-zinc-500 transition hover:bg-red-500/10 hover:text-red-600 dark:text-zinc-400 dark:hover:text-red-400"
               title="Выйти"
+              aria-label="Выйти"
             >
               <LogOut className="h-4 w-4" />
             </button>
@@ -154,16 +175,16 @@ export function AppShell({
       <div className="flex min-h-screen flex-col md:pl-64">
         {/* Top Sticky Header */}
         <header className="sticky top-0 z-20 flex h-14 items-center justify-between border-b border-black/[0.06] bg-[#F5F5F7]/85 px-4 backdrop-blur-xl sm:px-6 dark:border-white/[0.08] dark:bg-[#0B0C10]/85">
-          <div className="flex items-center gap-2.5">
-            <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-[#0071E3] text-xs font-bold text-white md:hidden dark:bg-[#2997FF] dark:text-[#0B0C10]">
+          <div className="flex min-w-0 items-center gap-2.5">
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-[#0071E3] text-xs font-bold text-white md:hidden dark:bg-[#2997FF] dark:text-[#0B0C10]">
               ПВ
             </div>
-            <h1 className="font-display text-lg font-bold tracking-tight sm:text-xl">
+            <h1 className="truncate font-display text-lg font-bold tracking-tight sm:text-xl">
               {activeTitle}
             </h1>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex shrink-0 items-center gap-2">
             <div className="md:hidden">
               <PWAInstallButton compact />
             </div>
@@ -183,6 +204,7 @@ export function AppShell({
               onClick={toggleTheme}
               className="flex h-10 w-10 items-center justify-center rounded-xl border border-black/[0.06] bg-white text-zinc-600 transition hover:bg-zinc-50 dark:border-white/[0.08] dark:bg-[#15171C] dark:text-zinc-300 dark:hover:bg-white/[0.06]"
               title={theme === 'light' ? 'Тёмная тема' : 'Светлая тема'}
+              aria-label={theme === 'light' ? 'Тёмная тема' : 'Светлая тема'}
             >
               {theme === 'light' ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
             </button>
@@ -193,6 +215,7 @@ export function AppShell({
                 onClick={() => setNotifOpen(!notifOpen)}
                 className="relative flex h-10 w-10 items-center justify-center rounded-xl border border-black/[0.06] bg-white text-zinc-600 transition hover:bg-zinc-50 dark:border-white/[0.08] dark:bg-[#15171C] dark:text-zinc-300 dark:hover:bg-white/[0.06]"
                 title="Уведомления"
+                aria-label="Уведомления"
               >
                 <Bell className="h-4 w-4" />
                 {unreadCount > 0 && (
@@ -252,6 +275,18 @@ export function AppShell({
                                 onOpenTaskLink(n.link_entity_id);
                                 setNotifOpen(false);
                               }
+                              if (n.link_entity_type === 'salary' && onOpenSalaryLink) {
+                                onOpenSalaryLink();
+                                setNotifOpen(false);
+                              }
+                              if (n.link_entity_type === 'chat_room' && n.link_entity_id && onOpenChatLink) {
+                                onOpenChatLink(n.link_entity_id);
+                                setNotifOpen(false);
+                              }
+                              if (n.type === 'backup_error' && onOpenSettingsLink) {
+                                onOpenSettingsLink();
+                                setNotifOpen(false);
+                              }
                             }}
                             className={`w-full rounded-xl p-3 text-left transition ${
                               n.is_read === 0
@@ -289,30 +324,125 @@ export function AppShell({
       </div>
 
       {/* Mobile Bottom Navigation Bar */}
-      <nav className="pb-safe fixed inset-x-0 bottom-0 z-30 border-t border-black/[0.08] bg-white/90 backdrop-blur-xl md:hidden dark:border-white/[0.08] dark:bg-[#15171C]/92">
-        <div className="mx-auto flex h-16 max-w-lg overflow-x-auto">
-          {navItems.map((item) => {
-            const Icon = item.icon;
-            const active = activeTab === item.id;
-            return (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => onSelectTab(item.id)}
-                className={`flex min-h-[44px] min-w-[64px] flex-1 flex-col items-center justify-center gap-0.5 px-1 text-[10px] font-medium transition ${
-                  active
-                    ? 'text-[#0071E3] dark:text-[#2997FF]'
-                    : 'text-zinc-500 dark:text-zinc-400'
-                }`}
-              >
-                <Icon className="h-5 w-5" />
-                <span className="truncate max-w-full">{item.label}</span>
-                {item.id === 'chat' && chatUnread > 0 && <span className="absolute -translate-y-5 translate-x-3 rounded-full bg-red-600 px-1 text-[9px] text-white">{chatUnread}</span>}
-              </button>
-            );
-          })}
-        </div>
-      </nav>
+      {(() => {
+        const useMoreDrawer = navItems.length > 5;
+        const primaryIds: NavTab[] = isAdmin ? ['work', 'chat', 'warehouse', 'finance'] : navItems.slice(0, 4).map((n) => n.id);
+        const primaryItems = useMoreDrawer
+          ? primaryIds
+              .map((id) => navItems.find((n) => n.id === id))
+              .filter((n): n is (typeof navItems)[number] => Boolean(n))
+          : navItems;
+        const overflowItems = useMoreDrawer
+          ? navItems.filter((n) => !primaryItems.some((p) => p.id === n.id))
+          : [];
+        const overflowActive = overflowItems.some((n) => n.id === activeTab);
+
+        return (
+          <>
+            {useMoreDrawer && moreOpen && (
+              <>
+                <div
+                  className="fixed inset-0 z-30 bg-black/30 backdrop-blur-[1px] md:hidden"
+                  onClick={() => setMoreOpen(false)}
+                />
+                <div
+                  role="dialog"
+                  aria-label="Дополнительные разделы"
+                  className="fixed inset-x-3 bottom-20 z-40 rounded-2xl border border-black/[0.08] bg-white p-3 shadow-2xl md:hidden dark:border-white/[0.1] dark:bg-[#15171C]"
+                >
+                  <div className="mb-2 flex items-center justify-between px-1">
+                    <span className="text-xs font-bold text-zinc-500 dark:text-zinc-400">Другие разделы</span>
+                    <button
+                      type="button"
+                      onClick={() => setMoreOpen(false)}
+                      aria-label="Закрыть меню"
+                      className="rounded-lg p-1 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    {overflowItems.map((item) => {
+                      const Icon = item.icon;
+                      const active = activeTab === item.id;
+                      return (
+                        <button
+                          key={item.id}
+                          type="button"
+                          onClick={() => {
+                            onSelectTab(item.id);
+                            setMoreOpen(false);
+                          }}
+                          className={`flex min-h-[44px] items-center gap-2.5 rounded-xl px-3 py-2.5 text-xs font-semibold transition ${
+                            active
+                              ? 'bg-[#0071E3] text-white dark:bg-[#2997FF] dark:text-[#0B0C10]'
+                              : 'bg-[#F5F5F7] text-[#1D1D1F] hover:bg-black/[0.06] dark:bg-[#0B0C10] dark:text-zinc-200'
+                          }`}
+                        >
+                          <Icon className="h-4 w-4 shrink-0" />
+                          <span className="truncate">{item.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </>
+            )}
+
+            <nav
+              aria-label="Мобильное меню"
+              className="pb-safe fixed inset-x-0 bottom-0 z-30 border-t border-black/[0.08] bg-white/95 backdrop-blur-xl md:hidden dark:border-white/[0.08] dark:bg-[#15171C]/95"
+            >
+              <div className="mx-auto flex h-16 max-w-2xl items-stretch px-1">
+                {primaryItems.map((item) => {
+                  const Icon = item.icon;
+                  const active = activeTab === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => {
+                        setMoreOpen(false);
+                        onSelectTab(item.id);
+                      }}
+                      className={`relative flex min-h-[44px] min-w-0 flex-1 flex-col items-center justify-center gap-0.5 px-1 text-[10px] font-semibold transition ${
+                        active
+                          ? 'text-[#0071E3] dark:text-[#2997FF]'
+                          : 'text-zinc-500 dark:text-zinc-400'
+                      }`}
+                    >
+                      <span className="relative flex items-center justify-center">
+                        <Icon className="h-5 w-5" />
+                        {item.id === 'chat' && chatUnread > 0 && (
+                          <span className="absolute -right-2.5 -top-1 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-red-600 px-1 text-[9px] font-bold text-white tabular-nums">
+                            {chatUnread > 99 ? '99+' : chatUnread}
+                          </span>
+                        )}
+                      </span>
+                      <span className="max-w-full truncate">{item.label}</span>
+                    </button>
+                  );
+                })}
+                {useMoreDrawer && (
+                  <button
+                    type="button"
+                    aria-expanded={moreOpen}
+                    onClick={() => setMoreOpen((open) => !open)}
+                    className={`relative flex min-h-[44px] min-w-0 flex-1 flex-col items-center justify-center gap-0.5 px-1 text-[10px] font-semibold transition ${
+                      overflowActive || moreOpen
+                        ? 'text-[#0071E3] dark:text-[#2997FF]'
+                        : 'text-zinc-500 dark:text-zinc-400'
+                    }`}
+                  >
+                    <MoreHorizontal className="h-5 w-5" />
+                    <span className="max-w-full truncate">Ещё</span>
+                  </button>
+                )}
+              </div>
+            </nav>
+          </>
+        );
+      })()}
 
       <OfflineIndicator />
     </div>
