@@ -498,9 +498,11 @@ test('UI redesign enforces zero browser alert/confirm/prompt, no duplicate + but
   }
 
   const workView = fs.readFileSync(path.resolve('src/views/WorkView.tsx'), 'utf8');
-  for (const tab of ['Календарь', 'Заказы', 'Быстрые задачи', 'Смены и отчёты', 'Смены в цеху', 'Отчёты']) {
+  for (const tab of ['Календарь', 'Заказы', 'Быстрые задачи', 'Смены в цеху', 'Отчёты']) {
     assert.ok(workView.includes(tab), `WorkView missing tab ${tab}`);
   }
+  assert.ok(workView.includes('workDropdownOpen'), 'WorkView must have calendar dropdown state');
+  assert.ok(workView.includes('role="menu"'), 'WorkView dropdown must be an accessible menu');
   assert.ok(workView.includes('Незапланированные заказы и черновики'));
 
   const financeView = fs.readFileSync(path.resolve('src/views/FinanceView.tsx'), 'utf8');

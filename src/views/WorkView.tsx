@@ -3,6 +3,7 @@ import {
   Briefcase,
   CalendarDays,
   CheckSquare,
+  ChevronDown,
   ClipboardCheck,
   Clock,
   Inbox,
@@ -98,6 +99,7 @@ export function WorkView({
   const [shiftsSubMode, setShiftsSubMode] = useState<'shifts' | 'reports'>(
     workTab === 'reports' ? 'reports' : 'shifts'
   );
+  const [workDropdownOpen, setWorkDropdownOpen] = useState(false);
 
   useEffect(() => {
     if (workTab === 'reports') setShiftsSubMode('reports');
@@ -370,14 +372,83 @@ export function WorkView({
                 <span>Новый заказ</span>
               </button>
             )}
+            {/* Кнопка календаря с выпадающим меню подразделов "Работа" (для монтажников и админа) */}
+            <div className="relative inline-block">
+              <button
+                type="button"
+                onClick={() => setWorkDropdownOpen(!workDropdownOpen)}
+                className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 px-3.5 py-2 text-xs font-semibold hover:bg-black/[0.04] dark:border-white/[0.1] dark:bg-[#0B0C10] dark:hover:bg-white/[0.06]"
+                aria-expanded={workDropdownOpen}
+                aria-haspopup="true"
+                aria-label="Подразделы Работа"
+              >
+                <CalendarDays className="h-4 w-4" />
+                <span>Работа</span>
+                <ChevronDown
+                  className={`h-3.5 w-3.5 transition-transform ${workDropdownOpen ? 'rotate-180' : ''}`}
+                />
+              </button>
+              {workDropdownOpen && (
+                <div
+                  className="absolute bottom-[calc(100%+8px)] left-0 z-50 w-52 rounded-xl border border-black/[0.08] bg-white shadow-xl p-1 animate-[slide-down_150ms_ease-out] dark:border-white/[0.1] dark:bg-[#15171C]"
+                  role="menu"
+                  aria-label="Подразделы Работа"
+                >
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      onSelectWorkTab('orders');
+                      setWorkDropdownOpen(false);
+                    }}
+                    className="w-full flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06]"
+                  >
+                    <Briefcase className="h-4 w-4 shrink-0" />
+                    <span>Заказы</span>
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      onSelectWorkTab('tasks');
+                      setWorkDropdownOpen(false);
+                    }}
+                    className="w-full flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06]"
+                  >
+                    <CheckSquare className="h-4 w-4 shrink-0" />
+                    <span>Быстрые задачи</span>
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setShiftsSubMode('shifts');
+                      onSelectWorkTab('shifts');
+                      setWorkDropdownOpen(false);
+                    }}
+                    className="w-full flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06]"
+                  >
+                    <Wrench className="h-4 w-4 shrink-0" />
+                    <span>Смены</span>
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      onSelectWorkTab('reports');
+                      setWorkDropdownOpen(false);
+                    }}
+                    className="w-full flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06]"
+                  >
+                    <ClipboardCheck className="h-4 w-4 shrink-0" />
+                    <span>Отчёты</span>
+                  </button>
+                </div>
+              )}
+            </div>
           </>
         }
-        tabs={[
-          { id: 'calendar', label: 'Календарь', icon: CalendarDays },
-          { id: 'orders', label: 'Заказы', count: orders.length, icon: Briefcase },
-          { id: 'tasks', label: 'Быстрые задачи', count: openTasksCount, icon: CheckSquare },
-          { id: 'shifts', label: 'Смены и отчёты', count: shifts.length, icon: Wrench },
-        ]}
+        tabs={undefined}
         activeTab={workTab === 'reports' ? 'shifts' : workTab}
         onSelectTab={(nextTab) => {
           if (nextTab === 'shifts') setShiftsSubMode('shifts');
