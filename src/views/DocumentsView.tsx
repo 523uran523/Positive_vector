@@ -85,9 +85,7 @@ export function DocumentsView() {
 
   return (
     <section className="space-y-4">
-      <h2 className="text-xl font-bold">Документы</h2>
-      <p className="text-sm text-zinc-500">Файлы доступны администраторам, которым открыт доступ к документам.</p>
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <button
           type="button"
           onClick={() => setCategory('acts')}
@@ -102,15 +100,30 @@ export function DocumentsView() {
         >
           Чертежи
         </button>
-      </div>
-      <div className="flex flex-wrap items-center gap-3">
-        <input key={inputKey} type="file" aria-label="Выбрать документ" onChange={(e) => setFile(e.target.files?.[0] || null)} />
-        <button type="button" disabled={busy} onClick={() => void upload()} className="rounded-xl bg-[#0071E3] px-4 py-2 text-white disabled:opacity-50">
-          {busy ? 'Загрузка…' : 'Загрузить файл'}
-        </button>
-      </div>
-      <div className="flex flex-wrap gap-2">
-        <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Поиск по названию" aria-label="Поиск по названию" className="rounded-xl border border-zinc-400 bg-white px-3 py-2 dark:bg-[#0B0C10]" />
+        <label className="relative flex items-center gap-2">
+          <input
+            key={inputKey}
+            type="file"
+            aria-label="Выбрать документ"
+            onChange={(e) => setFile(e.target.files?.[0] || null)}
+            className="hidden"
+          />
+          <button
+            type="button"
+            disabled={busy || !file}
+            onClick={() => void upload()}
+            className="rounded-xl bg-[#0071E3] px-4 py-2 text-white disabled:opacity-50"
+          >
+            {busy ? 'Загрузка…' : (file ? `Загрузить ${file.name}` : 'Выберите файл и загрузить')}
+          </button>
+        </label>
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Поиск по названию"
+          aria-label="Поиск по названию"
+          className="rounded-xl border border-zinc-400 bg-white px-3 py-2 dark:bg-[#0B0C10]"
+        />
         <select value={sort} onChange={(e) => setSort(e.target.value)} aria-label="Сортировка по дате" className="rounded-xl border border-zinc-400 bg-white px-3 py-2 dark:bg-[#0B0C10]">
           <option value="newest">Сначала новые</option>
           <option value="oldest">Сначала старые</option>

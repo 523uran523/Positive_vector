@@ -39,7 +39,6 @@ export function SettingsView({
   const [pushMsg, setPushMsg] = useState('');
   const [pushBusy, setPushBusy] = useState(false);
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<'profile' | 'company'>('profile');
 
   // Admin global settings
   const [companyName, setCompanyName] = useState(settings.company_name || 'Позитив Вектор');
@@ -187,27 +186,7 @@ export function SettingsView({
 
   return (
     <div className="space-y-5">
-      {isAdmin ? (
-        <div className="flex gap-2" role="tablist" aria-label="Разделы настроек">
-          {([
-            ['profile', 'Мой профиль'],
-            ['company', 'Компания'],
-          ] as const).map(([key, label]) => (
-            <button
-              key={key}
-              type="button"
-              role="tab"
-              aria-selected={settingsTab === key}
-              onClick={() => setSettingsTab(key)}
-              className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${
-                settingsTab === key ? 'bg-[#0071E3] text-white' : 'bg-zinc-200 dark:bg-[#282b32]'
-              }`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-      ) : null}
+      {isAdmin ? null : null}
       {isAdmin && <div className="space-y-3 rounded-2xl border border-black/[0.06] bg-white p-5 dark:border-white/[0.08] dark:bg-[#15171C]">
         <h3 className="font-display text-base font-bold">Резервные копии на Яндекс Диск</h3>
         <p className="text-sm text-zinc-500">После подключения копия базы и файлов будет сохраняться раз в неделю в отдельной папке приложения и храниться месяц. Пароль вводится только на странице Яндекса.</p>
@@ -274,7 +253,7 @@ export function SettingsView({
       </div>
 
       {/* Self-service Login / Password / Profile */}
-      {settingsTab === 'profile' && <form
+      <form
         onSubmit={handleSaveProfile}
         className="rounded-2xl border border-black/[0.06] bg-white p-5 dark:border-white/[0.08] dark:bg-[#15171C]"
       >
@@ -345,10 +324,10 @@ export function SettingsView({
           <Save className="h-3.5 w-3.5" />
           <span>Сохранить профиль</span>
         </button>
-      </form>}
+      </form>
 
       {/* Admin-only Company Settings, XLSX Exports & Audit Log */}
-      {isAdmin && settingsTab === 'company' && (
+      {isAdmin && (
         <>
           <form
             onSubmit={handleSaveSettings}

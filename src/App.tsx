@@ -381,6 +381,7 @@ function CRMWorkspace() {
             setCreateOrderOpen(true);
           }}
           onOpenOrder={setSelectedOrder}
+          onOpenOrderById={(id) => void handleOpenOrderById(id)}
           onShiftChanged={() => void loadWorkspaceData(user)}
         />
       )}

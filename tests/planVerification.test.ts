@@ -507,8 +507,8 @@ test('UI redesign enforces zero browser alert/confirm/prompt, no duplicate + but
   }
 
   const settingsView = fs.readFileSync(path.resolve('src/views/SettingsView.tsx'), 'utf8');
-  for (const tab of ['Мой профиль', 'Компания']) {
-    assert.ok(settingsView.includes(tab), `SettingsView missing tab ${tab}`);
+  for (const tab of ['Мой аккаунт и пароль', 'Настройки компании']) {
+    assert.ok(settingsView.includes(tab), `SettingsView missing section ${tab}`);
   }
 
   const clientsView = fs.readFileSync(path.resolve('src/views/ClientsView.tsx'), 'utf8');
@@ -522,7 +522,7 @@ test('UI redesign enforces zero browser alert/confirm/prompt, no duplicate + but
   assert.ok(warehouseView.includes('Журнал операций'));
 
   const documentsView = fs.readFileSync(path.resolve('src/views/DocumentsView.tsx'), 'utf8');
-  assert.ok(documentsView.includes('Загрузить файл'));
+  assert.ok(documentsView.includes('Выберите файл'));
   assert.equal(documentsView.includes('disabled={!file'), false, 'Documents upload button must stay active');
 });
 

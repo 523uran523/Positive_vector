@@ -3,6 +3,7 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  ClipboardCheck,
   Clock,
   Inbox,
   MapPin,
@@ -29,6 +30,7 @@ import type {
   WorkshopShift,
 } from '../types/crm';
 import { QuickTasks } from './QuickTasks';
+import { ReportsView } from './ReportsView';
 
 const WEEKDAYS = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
 const MONTHS_RU = [
@@ -57,6 +59,7 @@ interface CalendarViewProps {
   onConsumeOpenTask: () => void;
   onOpenCreateOrder: (defaultDate?: string) => void;
   onOpenOrder: (order: Order) => void;
+  onOpenOrderById: (orderId: string) => void;
   onShiftChanged: () => void;
 }
 
@@ -71,6 +74,7 @@ export function CalendarView({
   onConsumeOpenTask,
   onOpenCreateOrder,
   onOpenOrder,
+  onOpenOrderById,
   onShiftChanged,
 }: CalendarViewProps) {
   const isAdmin = user.role === 'admin';
@@ -87,6 +91,7 @@ export function CalendarView({
   const [showUnplanned, setShowUnplanned] = useState(false);
   const [calendarView, setCalendarView] = useState<'calendar' | 'orders' | 'tasks' | 'shifts'>('calendar');
   const [viewMenuOpen, setViewMenuOpen] = useState(false);
+  const [showReports, setShowReports] = useState(false);
   const [quickTasks, setQuickTasks] = useState<QuickTask[]>([]);
   const [taskLoadError, setTaskLoadError] = useState('');
   const loadQuickTasks = useCallback(async () => {
@@ -488,21 +493,25 @@ export function CalendarView({
 
             <button
               type="button"
-              onClick={() => setShowUnplanned(!showUnplanned)}
+              onClick={() => setShowReports((v) => !v)}
               className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-semibold transition ${
-                showUnplanned
+                showReports
                   ? 'bg-[#0071E3] text-white dark:bg-[#2997FF] dark:text-[#0B0C10]'
                   : 'bg-[#F5F5F7] text-zinc-700 hover:bg-black/[0.06] dark:bg-[#0B0C10] dark:text-zinc-300'
               }`}
             >
-              <Inbox className="h-3.5 w-3.5" />
-              <span>Незапланированные ({unplannedOrders.length})</span>
+              <ClipboardCheck className="h-3.5 w-3.5" />
+              <span>Отчёты</span>
             </button>
           </div>
         </div>
 
-        {/* Selected Date Agenda Panel */}
-        <div className="rounded-2xl border border-black/[0.06] bg-white p-4 shadow-[0_1px_3px_rgba(0,0,0,0.04)] sm:p-5 lg:col-span-5 dark:border-white/[0.08] dark:bg-[#15171C]">
+        {showReports ? (
+          <ReportsView user={user} directory={directory} onOpenOrderById={onOpenOrderById} />
+        ) : (
+          <>
+            {/* Selected Date Agenda Panel */}
+            <div className="rounded-2xl border border-black/[0.06] bg-white p-4 shadow-[0_1px_3px_rgba(0,0,0,0.04)] sm:p-5 lg:col-span-5 dark:border-white/[0.08] dark:bg-[#15171C]">
           {/* Mandatory "+ Добавить заказ" button positioned directly above orders */}
           {canCreateOrder && (
             <button
@@ -661,7 +670,9 @@ export function CalendarView({
               </div>
             </div>
           )}
-        </div>
+            </div>
+          </>
+        )}
       </div>
 
       {/* Finish Shift Modal */}
