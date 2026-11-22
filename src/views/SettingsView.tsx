@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Bell, Download, LogOut, Moon, Save, Sun } from 'lucide-react';
+import { Bell, Download, LogOut, Moon, RefreshCw, Save, Sun } from 'lucide-react';
 import { PWAInstallButton } from '../components/PWAInstallButton';
 import { SectionHeader } from '../components/SectionHeader';
 import { useTheme } from '../components/ThemeContext';
@@ -58,6 +58,25 @@ export function SettingsView({
   const [pushBusy, setPushBusy] = useState(false);
   const [yandexStatus,setYandexStatus] = useState<{configured:boolean;connected:boolean}|null>(null);
   const [yandexMessage,setYandexMessage] = useState(()=>new URLSearchParams(window.location.search).get('yandex_connection')==='connected'?'Яндекс Диск подключён.':new URLSearchParams(window.location.search).has('yandex_connection')?'Не удалось подключить Яндекс Диск. Попробуйте ещё раз.':'');
+
+  // Deploy from GitHub
+  const [deployBusy, setDeployBusy] = useState(false);
+  const [deployMsg, setDeployMsg] = useState('');
+  const [deployErr, setDeployErr] = useState('');
+
+  const triggerDeploy = async () => {
+    setDeployBusy(true);
+    setDeployMsg('');
+    setDeployErr('');
+    try {
+      await apiRequest('/api/deploy/from-git', { method: 'POST' });
+      setDeployMsg('Обновление запущено. Сервер будет перезапущен автоматически.');
+    } catch (err) {
+      setDeployErr(err instanceof Error ? err.message : 'Не удалось запустить обновление.');
+    } finally {
+      setDeployBusy(false);
+    }
+  };
 
   const handleEnablePush = async () => {
     setPushBusy(true);
@@ -388,6 +407,22 @@ export function SettingsView({
                 Подключить Яндекс Диск
               </button>
             )}
+          </div>
+
+          <div className="space-y-3 rounded-2xl border border-black/[0.06] bg-white p-5 dark:border-white/[0.08] dark:bg-[#15171C]">
+            <h3 className="font-display text-base font-bold">Обновление из GitHub</h3>
+            <p className="text-sm text-zinc-500">Кнопка запустит `git pull`, сборку, тесты и перезапуск службы на сервере. Автоматическая чистка старых логов и резервных копий выполняется каждые 7 дней.</p>
+            {deployMsg && <div role="status" className="text-xs text-emerald-600">{deployMsg}</div>}
+            {deployErr && <div role="alert" className="text-xs text-red-600">{deployErr}</div>}
+            <button
+              type="button"
+              disabled={deployBusy}
+              onClick={() => void triggerDeploy()}
+              className="inline-flex items-center gap-1.5 rounded-xl bg-[#0071E3] px-4 py-2 text-xs font-semibold text-white disabled:opacity-50 dark:bg-[#2997FF] dark:text-[#0B0C10]"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${deployBusy ? 'animate-spin' : ''}`} />
+              <span>{deployBusy ? 'Обновляется…' : 'Обновить из GitHub'}</span>
+            </button>
           </div>
 
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-black/[0.06] bg-white p-5 dark:border-white/[0.08] dark:bg-[#15171C]">

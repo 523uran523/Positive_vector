@@ -9,6 +9,7 @@ import { assertProductionConfig, isProduction, resolveHost, resolvePort } from '
 import { openDatabase, runMigrations } from './server/db.ts';
 import { cleanDeletedFiles } from './server/services/fileCleanup.ts';
 import { startBackupScheduler } from './server/services/backupScheduler.ts';
+import { startWeeklyCleanup } from './server/services/serverCleanup.ts';
 import { notifyAdmins } from './server/security.ts';
 import { createYandexOAuth } from './server/services/yandexOAuth.ts';
 
@@ -42,6 +43,10 @@ async function startServer() {
       try {notifyAdmins(db,'backup_error','Не создана резервная копия','Проверьте свободное место и доступность хранилища.');} catch { /* Logging still records the failure. */ }
     }
   },()=>yandex.cloud());
+  const deployRoot = process.env.DEPLOY_ROOT || path.resolve(__dirname);
+  const stopCleanup = startWeeklyCleanup(deployRoot, (message) => {
+    console.error('[cleanup]', message);
+  });
   const maintain = () => {
     try { cleanDeletedFiles(db,process.env.UPLOAD_DIR || './data/uploads'); }
     catch(error) { console.error('[maintenance]',error instanceof Error ? error.message : 'failed'); }
@@ -115,6 +120,7 @@ async function startServer() {
     shuttingDown = true;
     clearInterval(maintenanceTimer);
     stopBackups();
+    stopCleanup();
     console.log(`[Позитив Вектор] Получен ${signal}, останавливаем сервер...`);
     const forceTimer = setTimeout(() => {
       console.error('[Позитив Вектор] Принудительное завершение по таймауту.');
