@@ -187,25 +187,27 @@ export function SettingsView({
 
   return (
     <div className="space-y-5">
-      <div className="flex gap-2" role="tablist" aria-label="Разделы настроек">
-        {([
-          ['profile', 'Мой профиль'],
-          ['company', 'Компания'],
-        ] as const).map(([key, label]) => (
-          <button
-            key={key}
-            type="button"
-            role="tab"
-            aria-selected={settingsTab === key}
-            onClick={() => setSettingsTab(key)}
-            className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${
-              settingsTab === key ? 'bg-[#0071E3] text-white' : 'bg-zinc-200 dark:bg-[#282b32]'
-            }`}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
+      {isAdmin ? (
+        <div className="flex gap-2" role="tablist" aria-label="Разделы настроек">
+          {([
+            ['profile', 'Мой профиль'],
+            ['company', 'Компания'],
+          ] as const).map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              role="tab"
+              aria-selected={settingsTab === key}
+              onClick={() => setSettingsTab(key)}
+              className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${
+                settingsTab === key ? 'bg-[#0071E3] text-white' : 'bg-zinc-200 dark:bg-[#282b32]'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      ) : null}
       {isAdmin && <div className="space-y-3 rounded-2xl border border-black/[0.06] bg-white p-5 dark:border-white/[0.08] dark:bg-[#15171C]">
         <h3 className="font-display text-base font-bold">Резервные копии на Яндекс Диск</h3>
         <p className="text-sm text-zinc-500">После подключения копия базы и файлов будет сохраняться раз в неделю в отдельной папке приложения и храниться месяц. Пароль вводится только на странице Яндекса.</p>

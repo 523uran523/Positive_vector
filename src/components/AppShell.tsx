@@ -73,19 +73,17 @@ export function AppShell({
   const navItems: Array<{ id: NavTab; label: string; icon: React.ComponentType<{ className?: string }> }> = isAdmin
     ? [
         { id: 'calendar', label: 'Работа', icon: CalendarDays },
-        { id: 'chat', label: 'Чат', icon: MessageCircle },
-        { id: 'reports', label: 'Отчёты', icon: ClipboardCheck },
-        { id: 'clients', label: 'Клиенты', icon: Building2 },
-        { id: 'warehouse', label: 'Склад', icon: Package },
         { id: 'finance', label: 'Финансы', icon: Wallet },
+        { id: 'warehouse', label: 'Склад', icon: Package },
+        { id: 'chat', label: 'Чат', icon: MessageCircle },
         ...(user.documentsAccess ? [{ id: 'documents' as const, label: 'Документы', icon: FileText }] : []),
+        { id: 'clients', label: 'Клиенты', icon: Building2 },
         { id: 'employees', label: 'Сотрудники', icon: Users },
         { id: 'settings', label: 'Настройки', icon: Settings },
       ]
     : [
         { id: 'calendar', label: 'Работа', icon: CalendarDays },
         { id: 'chat', label: 'Чат', icon: MessageCircle },
-        { id: 'reports', label: 'Отчёты', icon: ClipboardCheck },
         { id: 'salary', label: 'Моя зарплата', icon: Wallet },
         { id: 'settings', label: 'Настройки', icon: Settings },
       ];

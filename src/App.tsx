@@ -25,7 +25,6 @@ import { EmployeeSalaryView } from './views/EmployeeSalaryView';
 import { EmployeesView } from './views/EmployeesView';
 import { FinanceView } from './views/FinanceView';
 import { CreateOrderModal, OrderDetailModal } from './views/OrderModals';
-import { ReportsView } from './views/ReportsView';
 import { SettingsView } from './views/SettingsView';
 import { WarehouseView } from './views/WarehouseView';
 import { ChatView } from './views/ChatView';
@@ -388,14 +387,6 @@ function CRMWorkspace() {
 
       {activeTab === 'chat' && <ChatView user={user} onRead={refreshChatUnread} attachedOrder={chatOrder} onClearOrder={() => setChatOrder(null)} onOpenOrder={(id) => void handleOpenChatOrder(id)} />}
 
-      {activeTab === 'reports' && (
-        <ReportsView
-          user={user}
-          directory={directory}
-          onOpenOrderById={(id) => void handleOpenOrderById(id)}
-        />
-      )}
-
       {activeTab === 'clients' && (isAdmin || empCanClients) && (
         <ClientsView
           user={user}
@@ -421,6 +412,8 @@ function CRMWorkspace() {
 
       {activeTab === 'finance' && isAdmin && (
         <FinanceView
+          user={user}
+          directory={directory}
           orders={orders}
           expenseCategories={
             settings.expense_categories || [

@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { Download, Pencil, Plus, Receipt, Trash2, TrendingDown, TrendingUp, X } from 'lucide-react';
+import { Download, Pencil, Plus, Receipt, Save, Trash2, TrendingDown, TrendingUp, X } from 'lucide-react';
 import { apiRequest, formatDateRu, formatRub, PAYMENT_TYPE_LABELS } from '../lib/api';
-import type { Order } from '../types/crm';
+import type { AuthUser, DirectoryUser, Order } from '../types/crm';
+import { ReportsView } from './ReportsView';
 
 interface FinanceOverview {
   period: { from: string; to: string };
@@ -57,12 +58,15 @@ interface FinanceOverview {
 }
 
 interface FinanceViewProps {
+  user: AuthUser;
+  directory: DirectoryUser[];
   orders: Order[];
   expenseCategories: Array<{ key: string; label: string }>;
   onOpenOrderById: (orderId: string) => void;
 }
 
-export function FinanceView({ orders, expenseCategories, onOpenOrderById }: FinanceViewProps) {
+export function FinanceView({ user, directory, orders, expenseCategories, onOpenOrderById }: FinanceViewProps) {
+  const isAdmin = user.role === 'admin';
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
   const [data, setData] = useState<FinanceOverview | null>(null);
@@ -73,7 +77,11 @@ export function FinanceView({ orders, expenseCategories, onOpenOrderById }: Fina
   const [editingPaymentId, setEditingPaymentId] = useState<string | null>(null);
   const [editingExpenseId, setEditingExpenseId] = useState<string | null>(null);
   const [confirmDeleteKey, setConfirmDeleteKey] = useState<string | null>(null);
-  const [financeTab, setFinanceTab] = useState<'overview' | 'payments' | 'expenses' | 'economy'>('overview');
+  const [financeTab, setFinanceTab] = useState<'overview' | 'payments' | 'expenses' | 'reports'>('overview');
+
+  // Inline table editing state
+  const [editCell, setEditCell] = useState<{ orderId: string; field: 'price' | 'paid' | 'debt' | 'materials' } | null>(null);
+  const [editValue, setEditValue] = useState('');
 
   // Payment form
   const [payOrderId, setPayOrderId] = useState('');
@@ -428,9 +436,9 @@ export function FinanceView({ orders, expenseCategories, onOpenOrderById }: Fina
       <div className="flex flex-wrap gap-2" role="tablist" aria-label="Разделы финансов">
         {([
           ['overview', 'Обзор'],
+          ['reports', 'Отчёты по работе'],
           ['payments', 'Платежи клиентов'],
           ['expenses', 'Расходы'],
-          ['economy', 'Экономика заказов'],
         ] as const).map(([key, label]) => (
           <button
             key={key}
@@ -500,7 +508,63 @@ export function FinanceView({ orders, expenseCategories, onOpenOrderById }: Fina
       )}
 
       {/* Order Financial Breakdown */}
-      {data && financeTab === 'economy' && (
+      {/* KPI Metrics Grid — cleanly separated accrual vs cash flows */}
+      {m && financeTab === 'overview' && (
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          <div className="rounded-2xl border border-black/[0.06] bg-white p-4 dark:border-white/[0.08] dark:bg-[#15171C]">
+            <div className="text-xs text-zinc-500">Объём заказов</div>
+            <div className="mt-1 text-xl font-bold tabular-nums">{formatRub(m.totalOrderPriceKopecks)}</div>
+            <div className="mt-1 text-[11px] text-emerald-600 tabular-nums dark:text-emerald-400">
+              Получено деньгами: {formatRub(m.totalReceivedCashKopecks)}
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-black/[0.06] bg-white p-4 dark:border-white/[0.08] dark:bg-[#15171C]">
+            <div className="text-xs text-zinc-500">Долг клиентов</div>
+            <div className="mt-1 text-xl font-bold text-amber-600 tabular-nums dark:text-amber-400">
+              {formatRub(m.totalClientDebtKopecks)}
+            </div>
+            <div className="mt-1 text-[11px] text-zinc-400">
+              По всем активным заказам
+              {(from || to) && (
+                <> · за период: {formatRub(m.periodClientDebtKopecks)}</>
+              )}
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-black/[0.06] bg-white p-4 dark:border-white/[0.08] dark:bg-[#15171C]">
+            <div className="text-xs text-zinc-500">Зарплаты и материалы</div>
+            <div className="mt-1 text-base font-bold tabular-nums">
+              Начислено ЗП: {formatRub(m.accruedSalariesKopecks)}
+            </div>
+            <div className="mt-1 text-[11px] text-zinc-500 tabular-nums">
+              Выплачено: {formatRub(m.paidSalariesKopecks)} · Себест. мат.:{' '}
+              {formatRub(m.effectiveMaterialCostKopecks)}
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-black/[0.06] bg-white p-4 dark:border-white/[0.08] dark:bg-[#15171C]">
+            <div className="flex items-center justify-between text-xs text-zinc-500">
+              <span>Чистая прибыль / Касса</span>
+              {m.accrualProfitKopecks >= 0 ? (
+                <TrendingUp className="h-4 w-4 text-emerald-500" />
+              ) : (
+                <TrendingDown className="h-4 w-4 text-red-500" />
+              )}
+            </div>
+            <div className="mt-1 text-xl font-bold tabular-nums">{formatRub(m.accrualProfitKopecks)}</div>
+            <div className="mt-1 text-[11px] text-zinc-500 tabular-nums">
+              Денежный поток: {formatRub(m.netCashFlowKopecks)}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Отчёты по работе (вкладка) */}
+      {financeTab === 'reports' && <ReportsView user={user} directory={directory} onOpenOrderById={onOpenOrderById} />}
+
+      {/* Economy table (вкладка Обзор) */}
+      {data && financeTab === 'overview' && (
         <div className="rounded-2xl border border-black/[0.06] bg-white p-4 sm:p-5 dark:border-white/[0.08] dark:bg-[#15171C]">
           <h3 className="mb-3 font-display text-base font-bold">Экономика заказов</h3>
           <div className="overflow-x-auto">
@@ -516,70 +580,193 @@ export function FinanceView({ orders, expenseCategories, onOpenOrderById }: Fina
                 </tr>
               </thead>
               <tbody>
-                {data.orderBreakdown.map((o) => (
-                  <tr
-                    key={o.id}
-                    className="border-b border-black/[0.04] last:border-0 dark:border-white/[0.05]"
-                  >
-                    <td className="py-2.5 pr-3">
-                      <button
-                        type="button"
-                        onClick={() => onOpenOrderById(o.id)}
-                        className="text-left hover:text-[#0071E3]"
-                      >
-                        <span className="font-mono font-semibold text-zinc-500">{o.order_number}</span>{' '}
-                        <span className="font-semibold">{o.title}</span>
-                      </button>
-                    </td>
-                    <td className="px-3 py-2.5 font-semibold tabular-nums">{formatRub(o.price_kopecks)}</td>
-                    <td className="px-3 py-2.5 text-emerald-600 tabular-nums dark:text-emerald-400">
-                      {formatRub(o.paid_kopecks)}
-                    </td>
-                    <td className="px-3 py-2.5 font-semibold text-amber-600 tabular-nums dark:text-amber-400">
-                      {formatRub(o.debt_kopecks)}
-                    </td>
-                    <td className="px-3 py-2.5 tabular-nums">
-                      {formatRub(o.effective_material_cost_kopecks)}
-                      {o.cost_override_kopecks !== null && (
-                        <span className="ml-1 text-[10px] text-[#0071E3]">(ручн.)</span>
-                      )}
-                    </td>
-                    <td className="py-2.5 pl-3 text-right">
-                      <div className="flex flex-wrap justify-end gap-x-3 gap-y-1">
+                {data.orderBreakdown.map((o) => {
+                  const isEditingPrice = editCell?.orderId === o.id && editCell.field === 'price';
+                  const isEditingPaid = editCell?.orderId === o.id && editCell.field === 'paid';
+                  const isEditingDebt = editCell?.orderId === o.id && editCell.field === 'debt';
+                  const isEditingMaterials = editCell?.orderId === o.id && editCell.field === 'materials';
+                  return (
+                    <tr
+                      key={o.id}
+                      className="border-b border-black/[0.04] last:border-0 dark:border-white/[0.05]"
+                    >
+                      <td className="py-2.5 pr-3">
                         <button
                           type="button"
-                          onClick={() => openPaymentForOrder(o.id, o.paid_kopecks)}
-                          className="text-xs font-medium text-emerald-600 hover:underline dark:text-emerald-400"
+                          onClick={() => onOpenOrderById(o.id)}
+                          className="text-left hover:text-[#0071E3]"
                         >
-                          Оплата
+                          <span className="font-mono font-semibold text-zinc-500">{o.order_number}</span>{' '}
+                          <span className="font-semibold">{o.title}</span>
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => openPriceEditor(o)}
-                          className="text-xs font-medium text-[#0071E3] hover:underline dark:text-[#2997FF]"
-                        >
-                          Цена
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setOvrOrderId(o.id);
-                            setOvrRub(
-                              o.cost_override_kopecks !== null
-                                ? String(Math.round(o.cost_override_kopecks / 100))
-                                : ''
-                            );
-                            setOvrReason('');
-                            setModal('override');
-                          }}
-                          className="text-xs font-medium text-[#0071E3] hover:underline dark:text-[#2997FF]"
-                        >
-                          Себест.
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                      </td>
+                      <td className="px-3 py-2.5 tabular-nums">
+                        {isEditingPrice ? (
+                          <input
+                            type="number"
+                            min="0"
+                            value={editValue}
+                            onChange={(e) => setEditValue(e.target.value)}
+                            onBlur={() => {
+                              if (editValue.trim() !== '') {
+                                void apiRequest(`/api/orders/${o.id}`, {
+                                  method: 'PATCH',
+                                  body: { priceKopecks: Math.round(Number(editValue) * 100) },
+                                  offlineLabel: 'Изменение цены заказа',
+                                }).then(() => {
+                                  setEditCell(null);
+                                  void loadOverview();
+                                });
+                              } else {
+                                setEditCell(null);
+                              }
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') e.currentTarget.blur();
+                            }}
+                            className="w-full rounded border border-black/[0.1] bg-[#F5F5F7]/70 px-2 py-1 text-xs outline-none focus:border-[#0071E3] dark:border-white/[0.1] dark:bg-[#0B0C10]"
+                            autoFocus
+                          />
+                        ) : (
+                          <span
+                            onClick={() => setEditCell({ orderId: o.id, field: 'price' })}
+                            className="font-semibold tabular-nums cursor-pointer hover:text-[#0071E3] dark:hover:text-[#2997FF]"
+                          >
+                            {formatRub(o.price_kopecks)}
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2.5 text-emerald-600 tabular-nums dark:text-emerald-400">
+                        {isEditingPaid ? (
+                          <input
+                            type="number"
+                            min="0"
+                            value={editValue}
+                            onChange={(e) => setEditValue(e.target.value)}
+                            onBlur={() => {
+                              if (editValue.trim() !== '') {
+                                void apiRequest(`/api/finance/payments`, {
+                                  method: 'POST',
+                                  body: {
+                                    orderId: o.id,
+                                    amountKopecks: Math.round(Number(editValue) * 100),
+                                    paymentType: 'partial',
+                                    paidAt: new Date().toISOString().slice(0, 10),
+                                    comment: '',
+                                  },
+                                  offlineLabel: 'Запись оплаты',
+                                }).then(() => {
+                                  setEditCell(null);
+                                  void loadOverview();
+                                });
+                              } else {
+                                setEditCell(null);
+                              }
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') e.currentTarget.blur();
+                            }}
+                            className="w-full rounded border border-black/[0.1] bg-[#F5F5F7]/70 px-2 py-1 text-xs outline-none focus:border-[#0071E3] dark:border-white/[0.1] dark:bg-[#0B0C10]"
+                            autoFocus
+                          />
+                        ) : (
+                          formatRub(o.paid_kopecks)
+                        )}
+                      </td>
+                      <td className="px-3 py-2.5 font-semibold text-amber-600 tabular-nums dark:text-amber-400">
+                        {isEditingDebt ? (
+                          <input
+                            type="number"
+                            min="0"
+                            value={editValue}
+                            onChange={(e) => setEditValue(e.target.value)}
+                            onBlur={() => {
+                              if (editValue.trim() !== '') {
+                                void apiRequest(`/api/orders/${o.id}`, {
+                                  method: 'PATCH',
+                                  body: { priceKopecks: o.paid_kopecks + Math.round(Number(editValue) * 100) },
+                                  offlineLabel: 'Изменение долга',
+                                }).then(() => {
+                                  setEditCell(null);
+                                  void loadOverview();
+                                });
+                              } else {
+                                setEditCell(null);
+                              }
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') e.currentTarget.blur();
+                            }}
+                            className="w-full rounded border border-black/[0.1] bg-[#F5F5F7]/70 px-2 py-1 text-xs outline-none focus:border-[#0071E3] dark:border-white/[0.1] dark:bg-[#0B0C10]"
+                            autoFocus
+                          />
+                        ) : (
+                          formatRub(o.debt_kopecks)
+                        )}
+                      </td>
+                      <td className="px-3 py-2.5 tabular-nums">
+                        {isEditingMaterials ? (
+                          <input
+                            type="number"
+                            min="0"
+                            value={editValue}
+                            onChange={(e) => setEditValue(e.target.value)}
+                            onBlur={() => {
+                              if (editValue.trim() !== '') {
+                                void apiRequest(`/api/finance/orders/${o.id}/cost-override`, {
+                                  method: 'POST',
+                                  body: {
+                                    costOverrideKopecks: Math.round(Number(editValue) * 100),
+                                    reason: 'Ручная правка из таблицы экономики',
+                                  },
+                                  offlineLabel: 'Корректировка себестоимости',
+                                }).then(() => {
+                                  setEditCell(null);
+                                  void loadOverview();
+                                });
+                              } else {
+                                setEditCell(null);
+                              }
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') e.currentTarget.blur();
+                            }}
+                            className="w-full rounded border border-black/[0.1] bg-[#F5F5F7]/70 px-2 py-1 text-xs outline-none focus:border-[#0071E3] dark:border-white/[0.1] dark:bg-[#0B0C10]"
+                            autoFocus
+                          />
+                        ) : (
+                          <span
+                            onClick={() => setEditCell({ orderId: o.id, field: 'materials' })}
+                            className="cursor-pointer hover:text-[#0071E3] dark:hover:text-[#2997FF]"
+                          >
+                            {formatRub(o.effective_material_cost_kopecks)}
+                            {o.cost_override_kopecks !== null && (
+                              <span className="ml-1 text-[10px] text-[#0071E3]">(ручн.)</span>
+                            )}
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-2.5 pl-3 text-right">
+                        <div className="flex flex-wrap justify-end gap-x-3 gap-y-1">
+                          <button
+                            type="button"
+                            onClick={() => openPaymentForOrder(o.id, o.paid_kopecks)}
+                            className="text-xs font-medium text-emerald-600 hover:underline dark:text-emerald-400"
+                          >
+                            Оплата
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => openPriceEditor(o)}
+                            className="text-xs font-medium text-[#0071E3] hover:underline dark:text-[#2997FF]"
+                          >
+                            Цена
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
