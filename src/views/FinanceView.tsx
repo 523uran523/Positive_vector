@@ -1,9 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { ArrowLeftRight, BarChart3, Briefcase, Download, Pencil, Plus, Receipt, Search, Trash2, TrendingDown, TrendingUp, Users, X } from 'lucide-react';
+import { ArrowLeftRight, BarChart3, ClipboardList, Download, Pencil, Plus, Receipt, Search, Trash2, TrendingDown, TrendingUp, Users, X } from 'lucide-react';
 import { DatePresets } from '../components/DatePresets';
 import { SectionHeader } from '../components/SectionHeader';
 import { apiRequest, formatDateRu, formatRub, PAYMENT_TYPE_LABELS } from '../lib/api';
-import type { Order } from '../types/crm';
+import { ReportsView } from './ReportsView';
+import type { AuthUser, DirectoryUser, Order } from '../types/crm';
 
 interface FinanceOverview {
   period: { from: string; to: string };
@@ -58,16 +59,18 @@ interface FinanceOverview {
   }>;
 }
 
-type FinanceTab = 'overview' | 'cashflow' | 'orders';
+type FinanceTab = 'overview' | 'reports' | 'cashflow';
 
 interface FinanceViewProps {
+  user: AuthUser;
+  directory: DirectoryUser[];
   orders: Order[];
   expenseCategories: Array<{ key: string; label: string }>;
   onOpenOrderById: (orderId: string) => void;
   onOpenSalaries?: () => void;
 }
 
-export function FinanceView({ orders, expenseCategories, onOpenOrderById, onOpenSalaries }: FinanceViewProps) {
+export function FinanceView({ user, directory, orders, expenseCategories, onOpenOrderById, onOpenSalaries }: FinanceViewProps) {
   const [tab, setTab] = useState<FinanceTab>('overview');
   const [cashflowType, setCashflowType] = useState<'all' | 'income' | 'expense'>('all');
   const [from, setFrom] = useState('');
@@ -528,13 +531,13 @@ export function FinanceView({ orders, expenseCategories, onOpenOrderById, onOpen
         }
         tabs={[
           { id: 'overview', label: 'Обзор', icon: BarChart3 },
+          { id: 'reports', label: 'Отчёты по работе', icon: ClipboardList },
           {
             id: 'cashflow',
             label: 'Движение денег',
             count: data ? data.payments.length + data.expenses.length : undefined,
             icon: ArrowLeftRight,
           },
-          { id: 'orders', label: 'Экономика заказов', count: data?.orderBreakdown.length, icon: Briefcase },
         ]}
         activeTab={tab}
         onSelectTab={setTab}
@@ -726,13 +729,6 @@ export function FinanceView({ orders, expenseCategories, onOpenOrderById, onOpen
                 >
                   Движение денег →
                 </button>
-                <button
-                  type="button"
-                  onClick={() => setTab('orders')}
-                  className="text-xs font-semibold text-[#0071E3] hover:underline dark:text-[#2997FF]"
-                >
-                  Экономика заказов →
-                </button>
               </div>
             </div>
             {onOpenSalaries && (
@@ -755,6 +751,16 @@ export function FinanceView({ orders, expenseCategories, onOpenOrderById, onOpen
             )}
           </div>
         </div>
+      )}
+
+      {/* Отчёты по работе */}
+      {tab === 'reports' && (
+        <ReportsView
+          user={user}
+          directory={directory}
+          orders={orders}
+          onOpenOrderById={onOpenOrderById}
+        />
       )}
 
       {/* Tab 2: Unified Cashflow (Payments + Expenses) */}
@@ -939,8 +945,8 @@ export function FinanceView({ orders, expenseCategories, onOpenOrderById, onOpen
         </div>
       )}
 
-      {/* Tab 4: Order Breakdown */}
-      {tab === 'orders' && data && (
+      {/* Экономика заказов — внутри «Обзора» */}
+      {tab === 'overview' && data && (
         <div className="rounded-2xl border border-black/[0.06] bg-white p-4 sm:p-5 dark:border-white/[0.08] dark:bg-[#15171C]">
           <h3 className="mb-3 font-display text-base font-bold">
             Экономика заказов ({filteredOrderBreakdown.length})

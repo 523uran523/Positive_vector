@@ -483,6 +483,8 @@ function CRMWorkspace() {
 
       {activeTab === 'finance' && isAdmin && (
         <FinanceView
+          user={user}
+          directory={directory}
           orders={orders}
           expenseCategories={
             settings.expense_categories || [

@@ -489,6 +489,13 @@ test('UI redesign enforces zero browser alert/confirm/prompt, no duplicate + but
   for (const section of ['Работа', 'Чат', 'Клиенты', 'Склад', 'Финансы', 'Документы', 'Сотрудники', 'Настройки', 'Моя зарплата']) {
     assert.ok(appShell.includes(section), `AppShell missing section ${section}`);
   }
+  const adminNav = appShell.slice(appShell.indexOf('const navItems'), appShell.indexOf('const activeTitle'));
+  let navPos = -1;
+  for (const label of ['Работа', 'Финансы', 'Склад', 'Чат', 'Документы', 'Клиенты', 'Сотрудники', 'Настройки']) {
+    const next = adminNav.indexOf(`label: '${label}'`, navPos + 1);
+    assert.ok(next > navPos, `AppShell admin nav order broken at ${label}`);
+    navPos = next;
+  }
 
   const workView = fs.readFileSync(path.resolve('src/views/WorkView.tsx'), 'utf8');
   for (const tab of ['Календарь', 'Заказы', 'Быстрые задачи', 'Смены и отчёты', 'Смены в цеху', 'Отчёты']) {
@@ -497,9 +504,11 @@ test('UI redesign enforces zero browser alert/confirm/prompt, no duplicate + but
   assert.ok(workView.includes('Незапланированные заказы и черновики'));
 
   const financeView = fs.readFileSync(path.resolve('src/views/FinanceView.tsx'), 'utf8');
-  for (const tab of ['Обзор', 'Движение денег', 'Поступления', 'Расходы', 'Экономика заказов']) {
+  for (const tab of ['Обзор', 'Отчёты по работе', 'Движение денег', 'Экономика заказов']) {
     assert.ok(financeView.includes(tab), `FinanceView missing tab ${tab}`);
   }
+  assert.ok(financeView.includes('ReportsView'), 'FinanceView must embed ReportsView');
+  assert.equal(financeView.includes("id: 'orders'"), false, 'Order economics must live inside Overview');
 
   const empView = fs.readFileSync(path.resolve('src/views/EmployeesView.tsx'), 'utf8');
   for (const tab of ['Сотрудники', 'Уволенные', 'Зарплаты']) {
@@ -509,10 +518,11 @@ test('UI redesign enforces zero browser alert/confirm/prompt, no duplicate + but
   assert.ok(empView.includes('Детальная таблица начислений, удержаний и выплат'));
 
   const settingsView = fs.readFileSync(path.resolve('src/views/SettingsView.tsx'), 'utf8');
-  for (const tab of ['Мой профиль', 'Компания']) {
-    assert.ok(settingsView.includes(tab), `SettingsView missing tab ${tab}`);
+  for (const section of ['Мой аккаунт и пароль', 'Справочники и параметры компании', 'Резервные копии на Яндекс Диск']) {
+    assert.ok(settingsView.includes(section), `SettingsView missing section ${section}`);
   }
-  assert.ok(settingsView.includes(': undefined'));
+  assert.equal(settingsView.includes('activeTab'), false, 'Settings must be a single list without tabs');
+  assert.equal(settingsView.includes('onSelectTab'), false, 'Settings must be a single list without tabs');
 
   const clientsView = fs.readFileSync(path.resolve('src/views/ClientsView.tsx'), 'utf8');
   assert.equal(clientsView.includes('ИНН'), false, 'ClientsView should not show ИНН field');

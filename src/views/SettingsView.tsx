@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Bell, Building2, Download, LogOut, Moon, Save, Sun, User } from 'lucide-react';
+import { Bell, Download, LogOut, Moon, Save, Sun } from 'lucide-react';
 import { PWAInstallButton } from '../components/PWAInstallButton';
 import { SectionHeader } from '../components/SectionHeader';
 import { useTheme } from '../components/ThemeContext';
@@ -26,11 +26,6 @@ export function SettingsView({
 }: SettingsViewProps) {
   const isAdmin = user.role === 'admin';
   const { theme, setTheme } = useTheme();
-  const [tab, setTab] = useState<'profile' | 'company'>(() =>
-    user.role === 'admin' && new URLSearchParams(window.location.search).has('yandex_connection')
-      ? 'company'
-      : 'profile'
-  );
   const [confirmDisconnectYandex, setConfirmDisconnectYandex] = useState(false);
 
   // Profile self-service
@@ -202,28 +197,17 @@ export function SettingsView({
 
   return (
     <div className="space-y-5">
-      <SectionHeader<'profile' | 'company'>
+      <SectionHeader
         title="Настройки"
         description={
           isAdmin
             ? 'Личный профиль, оформление, параметры компании и резервное копирование'
             : 'Личный профиль, пароль, уведомления и оформление'
         }
-        tabs={
-          isAdmin
-            ? [
-                { id: 'profile', label: 'Мой профиль', icon: User },
-                { id: 'company', label: 'Компания', icon: Building2 },
-              ]
-            : undefined
-        }
-        activeTab={isAdmin ? tab : 'profile'}
-        onSelectTab={setTab}
       />
 
-      {/* Profile Tab */}
-      {tab === 'profile' && (
-        <>
+      {/* Профиль и приложение */}
+      <>
           {/* Appearance & PWA */}
           <div className="rounded-2xl border border-black/[0.06] bg-white p-5 dark:border-white/[0.08] dark:bg-[#15171C]">
             <div className="flex flex-wrap items-center justify-between gap-3">
@@ -352,11 +336,10 @@ export function SettingsView({
           <span>Сохранить профиль</span>
         </button>
       </form>
-        </>
-      )}
+      </>
 
-      {/* Company Tab (Admin only) */}
-      {isAdmin && tab === 'company' && (
+      {/* Параметры компании (только администратор) */}
+      {isAdmin && (
         <>
           <div className="space-y-3 rounded-2xl border border-black/[0.06] bg-white p-5 dark:border-white/[0.08] dark:bg-[#15171C]">
             <h3 className="font-display text-base font-bold">Резервные копии на Яндекс Диск</h3>
