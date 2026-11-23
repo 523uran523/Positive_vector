@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { ArrowLeftRight, BarChart3, ClipboardList, Download, Pencil, Plus, Receipt, Search, Trash2, TrendingDown, TrendingUp, Users, X } from 'lucide-react';
+import { ArrowLeftRight, BarChart3, ClipboardList, Download, Minus, Pencil, Plus, Search, Trash2, TrendingDown, TrendingUp, Users, X } from 'lucide-react';
 import { DatePresets } from '../components/DatePresets';
 import { SectionHeader } from '../components/SectionHeader';
 import { apiRequest, formatDateRu, formatRub, PAYMENT_TYPE_LABELS } from '../lib/api';
@@ -522,7 +522,7 @@ export function FinanceView({ user, directory, orders, expenseCategories, onOpen
               onClick={openNewExpense}
               className="inline-flex min-h-[36px] shrink-0 whitespace-nowrap items-center gap-1.5 rounded-xl bg-[#0071E3] px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-[#0077ED] dark:bg-[#2997FF] dark:text-[#0B0C10]"
             >
-              <Receipt className="h-3.5 w-3.5" />
+              <Minus className="h-3.5 w-3.5" />
               <span>Расход</span>
             </button>
             <a
@@ -548,36 +548,22 @@ export function FinanceView({ user, directory, orders, expenseCategories, onOpen
         onSelectTab={setTab}
         filters={
           <div className="space-y-2">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex flex-wrap items-center gap-2">
-                <input
-                  type="date"
-                  aria-label="Период с"
-                  value={from}
-                  onChange={(e) => setFrom(e.target.value)}
-                  className="rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 px-2.5 py-1.5 text-xs tabular-nums dark:border-white/[0.1] dark:bg-[#0B0C10]"
-                />
-                <span className="text-xs text-zinc-400">—</span>
-                <input
-                  type="date"
-                  aria-label="Период по"
-                  value={to}
-                  onChange={(e) => setTo(e.target.value)}
-                  className="rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 px-2.5 py-1.5 text-xs tabular-nums dark:border-white/[0.1] dark:bg-[#0B0C10]"
-                />
-                {(from || to) && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setFrom('');
-                      setTo('');
-                    }}
-                    className="shrink-0 whitespace-nowrap text-xs font-medium text-[#0071E3] hover:underline dark:text-[#2997FF]"
-                  >
-                    Сбросить период
-                  </button>
-                )}
-              </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                type="date"
+                aria-label="Период с"
+                value={from}
+                onChange={(e) => setFrom(e.target.value)}
+                className="rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 px-2.5 py-1.5 text-xs tabular-nums dark:border-white/[0.1] dark:bg-[#0B0C10]"
+              />
+              <span className="text-xs text-zinc-400">—</span>
+              <input
+                type="date"
+                aria-label="Период по"
+                value={to}
+                onChange={(e) => setTo(e.target.value)}
+                className="rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 px-2.5 py-1.5 text-xs tabular-nums dark:border-white/[0.1] dark:bg-[#0B0C10]"
+              />
               <DatePresets
                 from={from}
                 to={to}
@@ -586,6 +572,18 @@ export function FinanceView({ user, directory, orders, expenseCategories, onOpen
                   setTo(t);
                 }}
               />
+              {(from || to) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setFrom('');
+                    setTo('');
+                  }}
+                  className="shrink-0 whitespace-nowrap text-xs font-medium text-[#0071E3] hover:underline dark:text-[#2997FF]"
+                >
+                  Сбросить период
+                </button>
+              )}
             </div>
 
             {tab !== 'overview' && (

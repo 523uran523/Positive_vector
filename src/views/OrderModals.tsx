@@ -7,6 +7,7 @@ import {
   ClipboardList,
   FileText,
   Image as ImageIcon,
+  List,
   MapPin,
   MessageSquare,
   Package,
@@ -14,6 +15,7 @@ import {
   Phone,
   Plus,
   RotateCcw,
+  Search,
   Trash2,
   Upload,
   UserCheck,
@@ -85,14 +87,15 @@ export function CreateOrderModal({
   const [localContacts, setLocalContacts] = useState<Contact[]>(contacts);
   const [localMaterials, setLocalMaterials] = useState<MaterialItem[]>(materials);
   const [localTools, setLocalTools] = useState<ToolItem[]>(tools);
+  const [localTags, setLocalTags] = useState<string[]>(availableTags);
 
   useEffect(() => { setLocalCompanies(companies); }, [companies]);
   useEffect(() => { setLocalContacts(contacts); }, [contacts]);
   useEffect(() => { setLocalMaterials(materials); }, [materials]);
   useEffect(() => { setLocalTools(tools); }, [tools]);
+  useEffect(() => { setLocalTags(availableTags); }, [availableTags]);
 
   const [title, setTitle] = useState('');
-  const [orderNumber, setOrderNumber] = useState('');
   const [scheduledAt, setScheduledAt] = useState(defaultDate ? `${defaultDate}T10:00` : '');
   const [unplanned, setUnplanned] = useState(false);
   const [companyId, setCompanyId] = useState('');
@@ -110,12 +113,20 @@ export function CreateOrderModal({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
-  // Live substring search & inline quick-create states
+  // Uniform input mode ('search' vs 'list') & live substring search / quick-create states
+  const [companyInputMode, setCompanyInputMode] = useState<'search' | 'list'>('search');
+  const [contactInputMode, setContactInputMode] = useState<'search' | 'list'>('search');
+  const [tagInputMode, setTagInputMode] = useState<'search' | 'list'>('search');
+  const [materialInputMode, setMaterialInputMode] = useState<'search' | 'list'>('search');
+  const [toolInputMode, setToolInputMode] = useState<'search' | 'list'>('search');
+
   const [companyQuery, setCompanyQuery] = useState('');
   const [contactQuery, setContactQuery] = useState('');
+  const [tagQuery, setTagQuery] = useState('');
+  const [assigneeQuery, setAssigneeQuery] = useState('');
   const [materialQuery, setMaterialQuery] = useState('');
   const [toolQuery, setToolQuery] = useState('');
-  const [quickAdd, setQuickAdd] = useState<'company' | 'contact' | 'material' | 'tool' | null>(null);
+  const [quickAdd, setQuickAdd] = useState<'company' | 'contact' | 'tag' | 'material' | 'tool' | null>(null);
   const [quickBusy, setQuickBusy] = useState(false);
 
   const [qcName, setQcName] = useState('');
@@ -125,6 +136,8 @@ export function CreateOrderModal({
   const [qctName, setQctName] = useState('');
   const [qctPhone, setQctPhone] = useState('');
   const [qctPos, setQctPos] = useState('');
+
+  const [qTagName, setQTagName] = useState('');
 
   const [qmName, setQmName] = useState('');
   const [qmUnit, setQmUnit] = useState('шт');
@@ -143,6 +156,8 @@ export function CreateOrderModal({
       setClientContactId(defaultContactId || '');
       setCompanyQuery('');
       setContactQuery('');
+      setTagQuery('');
+      setAssigneeQuery('');
       setMaterialQuery('');
       setToolQuery('');
       setQuickAdd(null);
@@ -177,6 +192,16 @@ export function CreateOrderModal({
         .slice(0, 6)
     : [];
 
+  const matchingTags = tagQuery.trim()
+    ? localTags
+        .filter((t) => !selectedTags.includes(t) && t.toLowerCase().includes(tagQuery.trim().toLowerCase()))
+        .slice(0, 6)
+    : [];
+
+  const filteredDirectory = assigneeQuery.trim()
+    ? directory.filter((emp) => emp.fullName.toLowerCase().includes(assigneeQuery.trim().toLowerCase()))
+    : directory;
+
   const matchingMaterials = materialQuery.trim()
     ? localMaterials
         .filter(
@@ -192,6 +217,9 @@ export function CreateOrderModal({
         .filter((t) => t.name.toLowerCase().includes(toolQuery.trim().toLowerCase()))
         .slice(0, 6)
     : [];
+
+  const selectedCompany = companyId ? localCompanies.find((c) => c.id === companyId) : undefined;
+  const selectedContact = clientContactId ? localContacts.find((c) => c.id === clientContactId) : undefined;
 
   const handleQuickCreateCompany = async () => {
     if (!qcName.trim()) {
@@ -331,6 +359,36 @@ export function CreateOrderModal({
     }
   };
 
+  const handleQuickCreateTag = async () => {
+    const clean = qTagName.trim();
+    if (!clean) {
+      setError('Укажите название тега.');
+      return;
+    }
+    setQuickBusy(true);
+    setError('');
+    try {
+      const nextTags = Array.from(new Set([...localTags, clean]));
+      setLocalTags(nextTags);
+      setSelectedTags((prev) => (prev.includes(clean) ? prev : [...prev, clean]));
+      if (isAdmin) {
+        await apiRequest('/api/settings', {
+          method: 'PUT',
+          skipOfflineQueue: true,
+          body: { order_tags: nextTags },
+        });
+        onRefreshWorkspace?.();
+      }
+      setQTagName('');
+      setTagQuery('');
+      setQuickAdd(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Ошибка добавления тега');
+    } finally {
+      setQuickBusy(false);
+    }
+  };
+
   const toggleTag = (tag: string) => {
     setSelectedTags((prev) =>
       prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag]
@@ -371,7 +429,6 @@ export function CreateOrderModal({
       const res = await apiRequest<{ order?: Order; offlineQueued?: boolean }>('/api/orders', {
         method: 'POST',
         body: {
-          orderNumber: orderNumber.trim() || undefined,
           title: title.trim() || undefined,
           scheduledAt: effectiveScheduled,
           companyId: companyId || null,
@@ -397,7 +454,6 @@ export function CreateOrderModal({
         onCreated(res.order);
       }
       setTitle('');
-      setOrderNumber('');
       setCompanyId('');
       setClientContactId('');
       setSiteContactName('');
@@ -440,32 +496,18 @@ export function CreateOrderModal({
         )}
 
         <form onSubmit={handleSubmit} className="space-y-4">
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-            <div className="sm:col-span-2">
-              <label className="mb-1 block text-xs font-semibold text-zinc-600 dark:text-zinc-300">
-                Название заказа *
-              </label>
-              <input
-                type="text"
-                required
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                placeholder="Например: Фасадный баннер 5×3 м"
-                className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3.5 py-2.5 text-sm outline-none focus:border-[#0071E3] focus:bg-white dark:focus:bg-[#0B0C10] dark:border-white/[0.12] dark:bg-[#0B0C10]"
-              />
-            </div>
-            <div>
-              <label className="mb-1 block text-xs font-semibold text-zinc-600 dark:text-zinc-300">
-                Номер (авто если пусто)
-              </label>
-              <input
-                type="text"
-                value={orderNumber}
-                onChange={(e) => setOrderNumber(e.target.value)}
-                placeholder="ПВ-26..."
-                className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3.5 py-2.5 text-sm font-mono outline-none focus:border-[#0071E3] focus:bg-white dark:focus:bg-[#0B0C10] dark:border-white/[0.12] dark:bg-[#0B0C10]"
-              />
-            </div>
+          <div>
+            <label className="mb-1 block text-xs font-semibold text-zinc-600 dark:text-zinc-300">
+              Название заказа *
+            </label>
+            <input
+              type="text"
+              required
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="Например: Фасадный баннер 5×3 м"
+              className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3.5 py-2.5 text-sm outline-none focus:border-[#0071E3] focus:bg-white dark:focus:bg-[#0B0C10] dark:border-white/[0.12] dark:bg-[#0B0C10]"
+            />
           </div>
 
           <div className="grid grid-cols-1 gap-3">
@@ -497,32 +539,64 @@ export function CreateOrderModal({
 
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div>
-              <div className="mb-1 flex items-center justify-between gap-2">
-                <label className="text-xs font-semibold text-zinc-600 dark:text-zinc-300">
-                  Компания
-                </label>
+              <label className="mb-1 block text-xs font-semibold text-zinc-600 dark:text-zinc-300">
+                Компания
+              </label>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setCompanyInputMode((prev) => (prev === 'search' ? 'list' : 'search'))}
+                  title={companyInputMode === 'search' ? 'Поиск по имени (нажмите для списка)' : 'Выпадающий список (нажмите для поиска)'}
+                  aria-label={companyInputMode === 'search' ? 'Открыть список компаний' : 'Переключить на поиск компании'}
+                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 text-zinc-600 transition hover:border-[#0071E3] hover:text-[#0071E3] dark:border-white/[0.12] dark:bg-[#0B0C10] dark:text-zinc-300"
+                >
+                  {companyInputMode === 'search' ? <Search className="h-4 w-4" /> : <List className="h-4 w-4" />}
+                </button>
+                {companyInputMode === 'search' ? (
+                  <input
+                    type="text"
+                    value={companyQuery}
+                    onChange={(e) => setCompanyQuery(e.target.value)}
+                    placeholder="Поиск компании по названию..."
+                    className="h-9 min-w-0 flex-1 rounded-xl border border-black/[0.08] bg-white px-3 text-xs outline-none focus:border-[#0071E3] dark:border-white/[0.1] dark:bg-[#0B0C10]"
+                  />
+                ) : (
+                  <select
+                    aria-label="Выбор компании из списка"
+                    value={companyId}
+                    onChange={(e) => {
+                      const nextId = e.target.value;
+                      setCompanyId(nextId);
+                      setClientContactId('');
+                      const selected = localCompanies.find((c) => c.id === nextId);
+                      if (selected && !address.trim() && selected.address) {
+                        setAddress(selected.address);
+                      }
+                    }}
+                    className="h-9 min-w-0 flex-1 rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3 text-xs outline-none dark:border-white/[0.12] dark:bg-[#0B0C10]"
+                  >
+                    <option value="">— Не выбрана —</option>
+                    {localCompanies.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name}
+                      </option>
+                    ))}
+                  </select>
+                )}
                 {canCreateClient && (
                   <button
                     type="button"
                     aria-label="Добавить компанию"
                     title="Создать новую компанию"
                     onClick={() => setQuickAdd((prev) => (prev === 'company' ? null : 'company'))}
-                    className="inline-flex items-center gap-1 text-xs font-semibold text-[#0071E3] hover:underline dark:text-[#2997FF]"
+                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-[#0071E3]/30 bg-[#0071E3]/10 text-[#0071E3] transition hover:bg-[#0071E3]/15 dark:border-[#2997FF]/30 dark:text-[#2997FF]"
                   >
-                    <Plus className="h-3.5 w-3.5" />
-                    <span>Новая</span>
+                    <Plus className="h-4 w-4" />
                   </button>
                 )}
               </div>
-              <input
-                type="text"
-                value={companyQuery}
-                onChange={(e) => setCompanyQuery(e.target.value)}
-                placeholder="Поиск компании по части названия..."
-                className="mb-1.5 w-full rounded-xl border border-black/[0.08] bg-white px-3 py-1.5 text-xs outline-none focus:border-[#0071E3] dark:border-white/[0.1] dark:bg-[#0B0C10]"
-              />
-              {matchingCompanies.length > 0 && (
-                <div className="mb-1.5 max-h-28 overflow-y-auto rounded-xl border border-black/[0.08] bg-white p-1 dark:border-white/[0.1] dark:bg-[#0B0C10]">
+              {companyInputMode === 'search' && matchingCompanies.length > 0 && (
+                <div className="mt-1.5 max-h-28 overflow-y-auto rounded-xl border border-black/[0.08] bg-white p-1 dark:border-white/[0.1] dark:bg-[#0B0C10]">
                   {matchingCompanies.map((c) => (
                     <button
                       key={c.id}
@@ -541,26 +615,22 @@ export function CreateOrderModal({
                   ))}
                 </div>
               )}
-              <select
-                value={companyId}
-                onChange={(e) => {
-                  const nextId = e.target.value;
-                  setCompanyId(nextId);
-                  setClientContactId('');
-                  const selected = localCompanies.find((c) => c.id === nextId);
-                  if (selected && !address.trim() && selected.address) {
-                    setAddress(selected.address);
-                  }
-                }}
-                className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3.5 py-2.5 text-sm outline-none dark:border-white/[0.12] dark:bg-[#0B0C10]"
-              >
-                <option value="">— Не выбрана —</option>
-                {localCompanies.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-              </select>
+              {companyInputMode === 'search' && selectedCompany && (
+                <div className="mt-1.5 flex items-center justify-between gap-2 rounded-lg bg-[#0071E3]/10 px-2.5 py-1 text-xs font-medium text-[#0071E3] dark:text-[#2997FF]">
+                  <span className="truncate">{selectedCompany.name}</span>
+                  <button
+                    type="button"
+                    aria-label="Снять выбор компании"
+                    onClick={() => {
+                      setCompanyId('');
+                      setClientContactId('');
+                    }}
+                    className="shrink-0 rounded p-0.5 hover:bg-black/[0.08] dark:hover:bg-white/[0.1]"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              )}
               {quickAdd === 'company' && (
                 <div className="mt-2 space-y-2 rounded-xl border border-[#0071E3]/30 bg-[#0071E3]/[0.04] p-3">
                   <div className="text-[11px] font-semibold text-[#0071E3] dark:text-[#2997FF]">Новая компания</div>
@@ -609,32 +679,56 @@ export function CreateOrderModal({
             </div>
 
             <div>
-              <div className="mb-1 flex items-center justify-between gap-2">
-                <label className="text-xs font-semibold text-zinc-600 dark:text-zinc-300">
-                  Контакт клиента
-                </label>
+              <label className="mb-1 block text-xs font-semibold text-zinc-600 dark:text-zinc-300">
+                Контакт клиента
+              </label>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setContactInputMode((prev) => (prev === 'search' ? 'list' : 'search'))}
+                  title={contactInputMode === 'search' ? 'Поиск по имени (нажмите для списка)' : 'Выпадающий список (нажмите для поиска)'}
+                  aria-label={contactInputMode === 'search' ? 'Открыть список контактов' : 'Переключить на поиск контакта'}
+                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 text-zinc-600 transition hover:border-[#0071E3] hover:text-[#0071E3] dark:border-white/[0.12] dark:bg-[#0B0C10] dark:text-zinc-300"
+                >
+                  {contactInputMode === 'search' ? <Search className="h-4 w-4" /> : <List className="h-4 w-4" />}
+                </button>
+                {contactInputMode === 'search' ? (
+                  <input
+                    type="text"
+                    value={contactQuery}
+                    onChange={(e) => setContactQuery(e.target.value)}
+                    placeholder="Поиск контакта по имени или телефону..."
+                    className="h-9 min-w-0 flex-1 rounded-xl border border-black/[0.08] bg-white px-3 text-xs outline-none focus:border-[#0071E3] dark:border-white/[0.1] dark:bg-[#0B0C10]"
+                  />
+                ) : (
+                  <select
+                    aria-label="Выбор контакта из списка"
+                    value={clientContactId}
+                    onChange={(e) => setClientContactId(e.target.value)}
+                    className="h-9 min-w-0 flex-1 rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3 text-xs outline-none dark:border-white/[0.12] dark:bg-[#0B0C10]"
+                  >
+                    <option value="">— Не выбран —</option>
+                    {filteredContacts.map((ct) => (
+                      <option key={ct.id} value={ct.id}>
+                        {ct.full_name} {ct.phone ? `(${ct.phone})` : ''}
+                      </option>
+                    ))}
+                  </select>
+                )}
                 {canCreateClient && (
                   <button
                     type="button"
                     aria-label="Добавить контакт"
                     title="Создать новый контакт"
                     onClick={() => setQuickAdd((prev) => (prev === 'contact' ? null : 'contact'))}
-                    className="inline-flex items-center gap-1 text-xs font-semibold text-[#0071E3] hover:underline dark:text-[#2997FF]"
+                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-[#0071E3]/30 bg-[#0071E3]/10 text-[#0071E3] transition hover:bg-[#0071E3]/15 dark:border-[#2997FF]/30 dark:text-[#2997FF]"
                   >
-                    <Plus className="h-3.5 w-3.5" />
-                    <span>Новый</span>
+                    <Plus className="h-4 w-4" />
                   </button>
                 )}
               </div>
-              <input
-                type="text"
-                value={contactQuery}
-                onChange={(e) => setContactQuery(e.target.value)}
-                placeholder="Поиск контакта по имени или телефону..."
-                className="mb-1.5 w-full rounded-xl border border-black/[0.08] bg-white px-3 py-1.5 text-xs outline-none focus:border-[#0071E3] dark:border-white/[0.1] dark:bg-[#0B0C10]"
-              />
-              {matchingContacts.length > 0 && (
-                <div className="mb-1.5 max-h-28 overflow-y-auto rounded-xl border border-black/[0.08] bg-white p-1 dark:border-white/[0.1] dark:bg-[#0B0C10]">
+              {contactInputMode === 'search' && matchingContacts.length > 0 && (
+                <div className="mt-1.5 max-h-28 overflow-y-auto rounded-xl border border-black/[0.08] bg-white p-1 dark:border-white/[0.1] dark:bg-[#0B0C10]">
                   {matchingContacts.map((ct) => (
                     <button
                       key={ct.id}
@@ -651,18 +745,22 @@ export function CreateOrderModal({
                   ))}
                 </div>
               )}
-              <select
-                value={clientContactId}
-                onChange={(e) => setClientContactId(e.target.value)}
-                className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3.5 py-2.5 text-sm outline-none dark:border-white/[0.12] dark:bg-[#0B0C10]"
-              >
-                <option value="">— Не выбран —</option>
-                {filteredContacts.map((ct) => (
-                  <option key={ct.id} value={ct.id}>
-                    {ct.full_name} {ct.phone ? `(${ct.phone})` : ''}
-                  </option>
-                ))}
-              </select>
+              {contactInputMode === 'search' && selectedContact && (
+                <div className="mt-1.5 flex items-center justify-between gap-2 rounded-lg bg-[#0071E3]/10 px-2.5 py-1 text-xs font-medium text-[#0071E3] dark:text-[#2997FF]">
+                  <span className="truncate">
+                    {selectedContact.full_name}
+                    {selectedContact.phone ? ` (${selectedContact.phone})` : ''}
+                  </span>
+                  <button
+                    type="button"
+                    aria-label="Снять выбор контакта"
+                    onClick={() => setClientContactId('')}
+                    className="shrink-0 rounded p-0.5 hover:bg-black/[0.08] dark:hover:bg-white/[0.1]"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              )}
               {quickAdd === 'contact' && (
                 <div className="mt-2 space-y-2 rounded-xl border border-[#0071E3]/30 bg-[#0071E3]/[0.04] p-3">
                   <div className="text-[11px] font-semibold text-[#0071E3] dark:text-[#2997FF]">Новый контакт</div>
@@ -788,54 +886,169 @@ export function CreateOrderModal({
           </div>
 
           {/* Tags */}
-          {availableTags.length > 0 && (
-            <div>
-              <div className="mb-1.5 text-xs font-semibold text-zinc-600 dark:text-zinc-300">Теги</div>
-              <div className="flex flex-wrap gap-1.5">
-                {availableTags.map((tag) => {
-                  const active = selectedTags.includes(tag);
-                  return (
-                    <button
-                      key={tag}
-                      type="button"
-                      onClick={() => toggleTag(tag)}
-                      className={`rounded-lg px-2.5 py-1 text-xs font-medium transition ${
-                        active
-                          ? 'bg-[#0071E3] text-white dark:bg-[#2997FF] dark:text-[#0B0C10]'
-                          : 'bg-black/[0.05] text-zinc-600 hover:bg-black/[0.08] dark:bg-white/[0.06] dark:text-zinc-300'
-                      }`}
-                    >
-                      {tag}
-                    </button>
-                  );
-                })}
-              </div>
+          <div>
+            <div className="mb-1.5 text-xs font-semibold text-zinc-600 dark:text-zinc-300">Теги</div>
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => setTagInputMode((prev) => (prev === 'search' ? 'list' : 'search'))}
+                title={tagInputMode === 'search' ? 'Поиск по названию (нажмите для списка)' : 'Выпадающий список (нажмите для поиска)'}
+                aria-label={tagInputMode === 'search' ? 'Открыть список тегов' : 'Переключить на поиск тегов'}
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 text-zinc-600 transition hover:border-[#0071E3] hover:text-[#0071E3] dark:border-white/[0.12] dark:bg-[#0B0C10] dark:text-zinc-300"
+              >
+                {tagInputMode === 'search' ? <Search className="h-4 w-4" /> : <List className="h-4 w-4" />}
+              </button>
+              {tagInputMode === 'search' ? (
+                <input
+                  type="text"
+                  value={tagQuery}
+                  onChange={(e) => setTagQuery(e.target.value)}
+                  placeholder="Поиск тега..."
+                  className="h-9 min-w-0 flex-1 rounded-xl border border-black/[0.08] bg-white px-3 text-xs outline-none focus:border-[#0071E3] dark:border-white/[0.1] dark:bg-[#0B0C10]"
+                />
+              ) : (
+                <select
+                  aria-label="Выбор тега из списка"
+                  value=""
+                  onChange={(e) => {
+                    const nextTag = e.target.value;
+                    if (!nextTag) return;
+                    setSelectedTags((prev) => (prev.includes(nextTag) ? prev : [...prev, nextTag]));
+                  }}
+                  className="h-9 min-w-0 flex-1 rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3 text-xs outline-none dark:border-white/[0.12] dark:bg-[#0B0C10]"
+                >
+                  <option value="">— Выбрать тег —</option>
+                  {localTags
+                    .filter((t) => !selectedTags.includes(t))
+                    .map((tag) => (
+                      <option key={tag} value={tag}>
+                        {tag}
+                      </option>
+                    ))}
+                </select>
+              )}
+              <button
+                type="button"
+                aria-label="Добавить тег"
+                title="Создать новый тег"
+                onClick={() => setQuickAdd((prev) => (prev === 'tag' ? null : 'tag'))}
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-[#0071E3]/30 bg-[#0071E3]/10 text-[#0071E3] transition hover:bg-[#0071E3]/15 dark:border-[#2997FF]/30 dark:text-[#2997FF]"
+              >
+                <Plus className="h-4 w-4" />
+              </button>
             </div>
-          )}
+            {tagInputMode === 'search' && matchingTags.length > 0 && (
+              <div className="mt-1.5 max-h-28 overflow-y-auto rounded-xl border border-black/[0.08] bg-white p-1 dark:border-white/[0.1] dark:bg-[#0B0C10]">
+                {matchingTags.map((tag) => (
+                  <button
+                    key={tag}
+                    type="button"
+                    onClick={() => {
+                      setSelectedTags((prev) => (prev.includes(tag) ? prev : [...prev, tag]));
+                      setTagQuery('');
+                    }}
+                    className="flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-xs font-medium hover:bg-[#0071E3]/10 hover:text-[#0071E3]"
+                  >
+                    <span>{tag}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+            {quickAdd === 'tag' && (
+              <div className="mt-2 space-y-2 rounded-xl border border-[#0071E3]/30 bg-[#0071E3]/[0.04] p-3">
+                <div className="text-[11px] font-semibold text-[#0071E3] dark:text-[#2997FF]">Новый тег</div>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <input
+                    type="text"
+                    value={qTagName}
+                    onChange={(e) => setQTagName(e.target.value)}
+                    placeholder="Название тега *"
+                    className="min-w-[160px] flex-1 rounded-lg border border-black/[0.1] bg-white px-2.5 py-1.5 text-xs dark:border-white/[0.1] dark:bg-[#0B0C10]"
+                  />
+                  <button
+                    type="button"
+                    disabled={quickBusy}
+                    onClick={() => void handleQuickCreateTag()}
+                    className="rounded-lg bg-[#0071E3] px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50"
+                  >
+                    Сохранить и выбрать
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setQuickAdd(null)}
+                    className="rounded-lg border border-black/[0.1] px-2.5 py-1.5 text-xs dark:border-white/[0.1]"
+                  >
+                    Отмена
+                  </button>
+                </div>
+              </div>
+            )}
+            {selectedTags.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {selectedTags.map((tag) => (
+                  <button
+                    key={tag}
+                    type="button"
+                    onClick={() => toggleTag(tag)}
+                    className="inline-flex items-center gap-1 rounded-lg bg-[#0071E3] px-2.5 py-1 text-xs font-medium text-white transition hover:opacity-90 dark:bg-[#2997FF] dark:text-[#0B0C10]"
+                  >
+                    <span>{tag}</span>
+                    <X className="h-3 w-3" />
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
 
           {/* Assignees */}
           <div>
             <div className="mb-1.5 text-xs font-semibold text-zinc-600 dark:text-zinc-300">
               Назначенные монтажники
             </div>
+            <div className="relative mb-2">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400" />
+              <input
+                type="text"
+                value={assigneeQuery}
+                onChange={(e) => setAssigneeQuery(e.target.value)}
+                placeholder="Поиск монтажника по имени..."
+                className={`h-9 w-full rounded-xl border border-black/[0.08] bg-white pl-8 text-xs outline-none focus:border-[#0071E3] dark:border-white/[0.1] dark:bg-[#0B0C10] ${
+                  assigneeQuery ? 'pr-8' : 'pr-3'
+                }`}
+              />
+              {assigneeQuery && (
+                <button
+                  type="button"
+                  aria-label="Очистить поиск монтажника"
+                  onClick={() => setAssigneeQuery('')}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-0.5 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </div>
             <div className="flex flex-wrap gap-2">
-              {directory.map((emp) => {
-                const active = assigneeIds.includes(emp.id);
-                return (
-                  <button
-                    key={emp.id}
-                    type="button"
-                    onClick={() => toggleAssignee(emp.id)}
-                    className={`rounded-xl border px-3 py-1.5 text-xs font-medium transition ${
-                      active
-                        ? 'border-[#0071E3] bg-[#0071E3]/10 text-[#0071E3] dark:border-[#2997FF] dark:text-[#2997FF]'
-                        : 'border-black/[0.08] bg-transparent text-zinc-600 hover:bg-black/[0.03] dark:border-white/[0.1] dark:text-zinc-300'
-                    }`}
-                  >
-                    {emp.fullName}
-                  </button>
-                );
-              })}
+              {filteredDirectory.length === 0 ? (
+                <span className="text-xs text-zinc-400">Монтажники не найдены</span>
+              ) : (
+                filteredDirectory.map((emp) => {
+                  const active = assigneeIds.includes(emp.id);
+                  return (
+                    <button
+                      key={emp.id}
+                      type="button"
+                      onClick={() => toggleAssignee(emp.id)}
+                      className={`rounded-xl border px-3 py-1.5 text-xs font-medium transition ${
+                        active
+                          ? 'border-[#0071E3] bg-[#0071E3]/10 text-[#0071E3] dark:border-[#2997FF] dark:text-[#2997FF]'
+                          : 'border-black/[0.08] bg-transparent text-zinc-600 hover:bg-black/[0.03] dark:border-white/[0.1] dark:text-zinc-300'
+                      }`}
+                    >
+                      {emp.fullName}
+                    </button>
+                  );
+                })
+              )}
             </div>
           </div>
 
@@ -903,66 +1116,66 @@ export function CreateOrderModal({
 
           {/* Scenario A: Planned materials & tools */}
           <div className="rounded-2xl border border-black/[0.06] bg-[#F5F5F7]/60 p-3.5 dark:border-white/[0.08] dark:bg-[#0B0C10]">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <span className="text-xs font-semibold text-zinc-700 dark:text-zinc-200">
-                Материалы и инструменты для заказа
-              </span>
-              <div className="flex flex-wrap items-center gap-3">
-                <button
-                  type="button"
-                  disabled={!localMaterials.some(m => !plannedMaterials.some(p => p.materialId === m.id))}
-                  onClick={() =>
-                    setPlannedMaterials((p) => [...p, { materialId: localMaterials.find(m => !p.some(item => item.materialId === m.id))?.id || '', qty: '1' }])
-                  }
-                  className="text-xs font-semibold text-[#0071E3] hover:underline disabled:opacity-40 dark:text-[#2997FF]"
-                >
-                  Выбрать материал
-                </button>
-                {canCreateWarehouseItem && (
-                  <button
-                    type="button"
-                    onClick={() => setQuickAdd((prev) => (prev === 'material' ? null : 'material'))}
-                    className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-600 hover:underline dark:text-emerald-400"
-                  >
-                    <Plus className="h-3.5 w-3.5" />
-                    <span>Новый материал</span>
-                  </button>
-                )}
-                <button
-                  type="button"
-                  disabled={localTools.length === 0}
-                  onClick={() =>
-                    setPlannedTools((p) => [...p, { toolId: localTools[0]?.id || '', qty: '1' }])
-                  }
-                  className="text-xs font-semibold text-[#0071E3] hover:underline disabled:opacity-40 dark:text-[#2997FF]"
-                >
-                  Выбрать инструмент
-                </button>
-                {canCreateWarehouseItem && (
-                  <button
-                    type="button"
-                    onClick={() => setQuickAdd((prev) => (prev === 'tool' ? null : 'tool'))}
-                    className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-600 hover:underline dark:text-emerald-400"
-                  >
-                    <Plus className="h-3.5 w-3.5" />
-                    <span>Новый инструмент</span>
-                  </button>
-                )}
-              </div>
+            <div className="mb-2.5 text-xs font-semibold text-zinc-700 dark:text-zinc-200">
+              Материалы и инструменты для заказа
             </div>
 
-            {/* Substring search inputs for materials & tools */}
-            <div className="mt-2.5 grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div>
-                <input
-                  type="text"
-                  value={materialQuery}
-                  onChange={(e) => setMaterialQuery(e.target.value)}
-                  placeholder="Быстрый поиск материала по названию..."
-                  className="w-full rounded-xl border border-black/[0.08] bg-white px-3 py-1.5 text-xs outline-none focus:border-[#0071E3] dark:border-white/[0.1] dark:bg-[#15171C]"
-                />
-                {matchingMaterials.length > 0 && (
-                  <div className="mt-1 max-h-28 overflow-y-auto rounded-xl border border-black/[0.08] bg-white p-1 dark:border-white/[0.1] dark:bg-[#15171C]">
+                <div className="mb-1 text-[11px] font-semibold text-zinc-500 dark:text-zinc-400">Материалы</div>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setMaterialInputMode((prev) => (prev === 'search' ? 'list' : 'search'))}
+                    title={materialInputMode === 'search' ? 'Поиск по названию (нажмите для списка)' : 'Выпадающий список (нажмите для поиска)'}
+                    aria-label={materialInputMode === 'search' ? 'Открыть список материалов' : 'Переключить на поиск материалов'}
+                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-black/[0.1] bg-white text-zinc-600 transition hover:border-[#0071E3] hover:text-[#0071E3] dark:border-white/[0.12] dark:bg-[#15171C] dark:text-zinc-300"
+                  >
+                    {materialInputMode === 'search' ? <Search className="h-4 w-4" /> : <List className="h-4 w-4" />}
+                  </button>
+                  {materialInputMode === 'search' ? (
+                    <input
+                      type="text"
+                      value={materialQuery}
+                      onChange={(e) => setMaterialQuery(e.target.value)}
+                      placeholder="Поиск материала по названию..."
+                      className="h-9 min-w-0 flex-1 rounded-xl border border-black/[0.08] bg-white px-3 text-xs outline-none focus:border-[#0071E3] dark:border-white/[0.1] dark:bg-[#15171C]"
+                    />
+                  ) : (
+                    <select
+                      aria-label="Выбор материала из списка"
+                      value=""
+                      onChange={(e) => {
+                        const matId = e.target.value;
+                        if (!matId) return;
+                        setPlannedMaterials((prev) => [...prev, { materialId: matId, qty: '1' }]);
+                      }}
+                      className="h-9 min-w-0 flex-1 rounded-xl border border-black/[0.1] bg-white px-3 text-xs outline-none dark:border-white/[0.12] dark:bg-[#15171C]"
+                    >
+                      <option value="">— Выбрать материал —</option>
+                      {localMaterials
+                        .filter((m) => !plannedMaterials.some((p) => p.materialId === m.id))
+                        .map((m) => (
+                          <option key={m.id} value={m.id}>
+                            {m.name} ({formatQty(Math.max(0, m.quantity_milli - (m.reserved_milli || 0)))} {m.unit})
+                          </option>
+                        ))}
+                    </select>
+                  )}
+                  {canCreateWarehouseItem && (
+                    <button
+                      type="button"
+                      aria-label="Добавить материал"
+                      title="Добавить новый материал"
+                      onClick={() => setQuickAdd((prev) => (prev === 'material' ? null : 'material'))}
+                      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-emerald-500/35 bg-emerald-500/10 text-emerald-700 transition hover:bg-emerald-500/15 dark:text-emerald-300"
+                    >
+                      <Plus className="h-4 w-4" />
+                    </button>
+                  )}
+                </div>
+                {materialInputMode === 'search' && matchingMaterials.length > 0 && (
+                  <div className="mt-1.5 max-h-28 overflow-y-auto rounded-xl border border-black/[0.08] bg-white p-1 dark:border-white/[0.1] dark:bg-[#15171C]">
                     {matchingMaterials.map((m) => (
                       <button
                         key={m.id}
@@ -982,16 +1195,60 @@ export function CreateOrderModal({
                   </div>
                 )}
               </div>
+
               <div>
-                <input
-                  type="text"
-                  value={toolQuery}
-                  onChange={(e) => setToolQuery(e.target.value)}
-                  placeholder="Быстрый поиск инструмента по названию..."
-                  className="w-full rounded-xl border border-black/[0.08] bg-white px-3 py-1.5 text-xs outline-none focus:border-[#0071E3] dark:border-white/[0.1] dark:bg-[#15171C]"
-                />
-                {matchingTools.length > 0 && (
-                  <div className="mt-1 max-h-28 overflow-y-auto rounded-xl border border-black/[0.08] bg-white p-1 dark:border-white/[0.1] dark:bg-[#15171C]">
+                <div className="mb-1 text-[11px] font-semibold text-zinc-500 dark:text-zinc-400">Инструменты</div>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setToolInputMode((prev) => (prev === 'search' ? 'list' : 'search'))}
+                    title={toolInputMode === 'search' ? 'Поиск по названию (нажмите для списка)' : 'Выпадающий список (нажмите для поиска)'}
+                    aria-label={toolInputMode === 'search' ? 'Открыть список инструментов' : 'Переключить на поиск инструментов'}
+                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-black/[0.1] bg-white text-zinc-600 transition hover:border-[#0071E3] hover:text-[#0071E3] dark:border-white/[0.12] dark:bg-[#15171C] dark:text-zinc-300"
+                  >
+                    {toolInputMode === 'search' ? <Search className="h-4 w-4" /> : <List className="h-4 w-4" />}
+                  </button>
+                  {toolInputMode === 'search' ? (
+                    <input
+                      type="text"
+                      value={toolQuery}
+                      onChange={(e) => setToolQuery(e.target.value)}
+                      placeholder="Поиск инструмента по названию..."
+                      className="h-9 min-w-0 flex-1 rounded-xl border border-black/[0.08] bg-white px-3 text-xs outline-none focus:border-[#0071E3] dark:border-white/[0.1] dark:bg-[#15171C]"
+                    />
+                  ) : (
+                    <select
+                      aria-label="Выбор инструмента из списка"
+                      value=""
+                      onChange={(e) => {
+                        const toolId = e.target.value;
+                        if (!toolId) return;
+                        setPlannedTools((prev) => [...prev, { toolId, qty: '1' }]);
+                      }}
+                      className="h-9 min-w-0 flex-1 rounded-xl border border-black/[0.1] bg-white px-3 text-xs outline-none dark:border-white/[0.12] dark:bg-[#15171C]"
+                    >
+                      <option value="">— Выбрать инструмент —</option>
+                      {localTools.map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.icon_emoji} {t.name} ({t.available_qty}/{t.total_qty})
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                  {canCreateWarehouseItem && (
+                    <button
+                      type="button"
+                      aria-label="Добавить инструмент"
+                      title="Добавить новый инструмент"
+                      onClick={() => setQuickAdd((prev) => (prev === 'tool' ? null : 'tool'))}
+                      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-emerald-500/35 bg-emerald-500/10 text-emerald-700 transition hover:bg-emerald-500/15 dark:text-emerald-300"
+                    >
+                      <Plus className="h-4 w-4" />
+                    </button>
+                  )}
+                </div>
+                {toolInputMode === 'search' && matchingTools.length > 0 && (
+                  <div className="mt-1.5 max-h-28 overflow-y-auto rounded-xl border border-black/[0.08] bg-white p-1 dark:border-white/[0.1] dark:bg-[#15171C]">
                     {matchingTools.map((t) => (
                       <button
                         key={t.id}

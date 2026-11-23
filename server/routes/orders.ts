@@ -470,6 +470,10 @@ export function createOrdersRouter(db: DatabaseSync): express.Router {
         const priority =
           b.priority && ORDER_PRIORITIES.has(b.priority) ? b.priority : 'normal';
 
+        const cleanTags = Array.isArray(b.tags)
+          ? Array.from(new Set(b.tags.map((t) => (typeof t === 'string' ? t.trim() : '')).filter(Boolean)))
+          : [];
+
         db.prepare(
           `INSERT INTO orders
            (id, order_number, title, status, priority, scheduled_at, company_id, client_contact_id, site_contact_name, site_contact_phone, address, description, price_kopecks, tags_json, comments, created_by, created_at, updated_at)
@@ -488,12 +492,37 @@ export function createOrdersRouter(db: DatabaseSync): express.Router {
           (b.address || '').trim(),
           (b.description || '').trim(),
           user.role === 'admin' ? Math.max(0, Math.round(Number(b.priceKopecks || 0))) : 0,
-          JSON.stringify(Array.isArray(b.tags) ? b.tags.filter((t) => typeof t === 'string') : []),
+          JSON.stringify(cleanTags),
           (b.comments || '').trim(),
           user.id,
           now,
           now
         );
+
+        if (cleanTags.length > 0) {
+          const tagRow = db
+            .prepare("SELECT value_json FROM settings WHERE key = 'order_tags'")
+            .get() as { value_json: string } | undefined;
+          let existingTags: string[] = [];
+          if (tagRow) {
+            try {
+              const parsed = JSON.parse(tagRow.value_json);
+              if (Array.isArray(parsed)) {
+                existingTags = parsed.filter((t): t is string => typeof t === 'string' && Boolean(t.trim()));
+              }
+            } catch {
+              existingTags = [];
+            }
+          }
+          const mergedTags = Array.from(new Set([...existingTags, ...cleanTags]));
+          if (mergedTags.length > existingTags.length) {
+            db.prepare(
+              `INSERT INTO settings (key, value_json, updated_at)
+               VALUES ('order_tags', ?, ?)
+               ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`
+            ).run(JSON.stringify(mergedTags), now);
+          }
+        }
 
       const assigneeSet = new Set<string>(Array.isArray(b.assigneeIds) ? b.assigneeIds : []);
       const insOrderAssignee = db.prepare(

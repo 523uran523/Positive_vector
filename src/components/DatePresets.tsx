@@ -21,32 +21,48 @@ export function DatePresets({ from, to, onChange }: DatePresetsProps) {
   const prevMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
   const prevMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0);
 
+  const thisYearStart = new Date(now.getFullYear(), 0, 1);
+  const thisYearEnd = new Date(now.getFullYear(), 11, 31);
+
   const presets = [
     { id: 'today', label: 'Сегодня', from: todayStr, to: todayStr },
     { id: 'week', label: 'Неделя', from: toLocalDateString(weekStart), to: toLocalDateString(weekEnd) },
     { id: 'month', label: 'Этот месяц', from: toLocalDateString(thisMonthStart), to: toLocalDateString(thisMonthEnd) },
     { id: 'prev_month', label: 'Прошлый месяц', from: toLocalDateString(prevMonthStart), to: toLocalDateString(prevMonthEnd) },
+    { id: 'year', label: 'Этот год', from: toLocalDateString(thisYearStart), to: toLocalDateString(thisYearEnd) },
   ];
 
+  const matchedPreset = presets.find((p) => p.from === from && p.to === to);
+  const selectValue = matchedPreset ? matchedPreset.id : from || to ? '__custom__' : '';
+
   return (
-    <div className="flex flex-wrap items-center gap-1.5">
-      {presets.map((p) => {
-        const active = from === p.from && to === p.to;
-        return (
-          <button
-            key={p.id}
-            type="button"
-            onClick={() => (active ? onChange('', '') : onChange(p.from, p.to))}
-            className={`min-h-[32px] shrink-0 whitespace-nowrap rounded-xl px-2.5 py-1 text-[11px] font-semibold transition ${
-              active
-                ? 'bg-[#0071E3] text-white dark:bg-[#2997FF] dark:text-[#0B0C10]'
-                : 'bg-[#F5F5F7] text-zinc-600 hover:bg-black/[0.06] dark:bg-[#0B0C10] dark:text-zinc-300 dark:hover:bg-white/[0.08]'
-            }`}
-          >
-            {p.label}
-          </button>
-        );
-      })}
-    </div>
+    <select
+      aria-label="Быстрый выбор периода"
+      value={selectValue}
+      onChange={(e) => {
+        const val = e.target.value;
+        if (!val) {
+          onChange('', '');
+          return;
+        }
+        const preset = presets.find((p) => p.id === val);
+        if (preset) {
+          onChange(preset.from, preset.to);
+        }
+      }}
+      className="min-h-[32px] shrink-0 rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 px-2.5 py-1.5 text-xs font-medium text-zinc-700 outline-none focus:border-[#0071E3] dark:border-white/[0.1] dark:bg-[#0B0C10] dark:text-zinc-200"
+    >
+      <option value="">За всё время</option>
+      {selectValue === '__custom__' && (
+        <option value="__custom__" disabled>
+          Свой период
+        </option>
+      )}
+      {presets.map((p) => (
+        <option key={p.id} value={p.id}>
+          {p.label}
+        </option>
+      ))}
+    </select>
   );
 }

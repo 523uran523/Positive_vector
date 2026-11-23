@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Bell, ChevronDown, Download, LogOut, Moon, RefreshCw, Save, Sun } from 'lucide-react';
+import { DatePresets } from '../components/DatePresets';
 import { PWAInstallButton } from '../components/PWAInstallButton';
 import { useTheme } from '../components/ThemeContext';
 import { apiRequest, formatDateTimeRu } from '../lib/api';
@@ -621,6 +622,7 @@ export function SettingsView({
                   <div className="flex flex-wrap items-center gap-2">
                     <input
                       type="date"
+                      aria-label="Экспорт с"
                       value={expFrom}
                       onChange={(e) => setExpFrom(e.target.value)}
                       className="rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 px-3 py-2 text-xs dark:border-white/[0.1] dark:bg-[#0B0C10]"
@@ -628,9 +630,18 @@ export function SettingsView({
                     <span className="text-xs text-zinc-400">—</span>
                     <input
                       type="date"
+                      aria-label="Экспорт по"
                       value={expTo}
                       onChange={(e) => setExpTo(e.target.value)}
                       className="rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 px-3 py-2 text-xs dark:border-white/[0.1] dark:bg-[#0B0C10]"
+                    />
+                    <DatePresets
+                      from={expFrom}
+                      to={expTo}
+                      onChange={(f, t) => {
+                        setExpFrom(f);
+                        setExpTo(t);
+                      }}
                     />
                   </div>
 

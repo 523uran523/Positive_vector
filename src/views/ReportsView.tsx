@@ -258,14 +258,6 @@ export function ReportsView({ user, directory, orders = [], onOpenOrderById }: R
               <span>Быстрые задачи ({quickTaskReports.length})</span>
             </button>
           </div>
-          <DatePresets
-            from={fromDate}
-            to={toDate}
-            onChange={(f, t) => {
-              setFromDate(f);
-              setToDate(t);
-            }}
-          />
         </div>
 
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-12">
@@ -324,20 +316,28 @@ export function ReportsView({ user, directory, orders = [], onOpenOrderById }: R
             </select>
           )}
 
-          <input
-            type="date"
-            aria-label="Дата с"
-            value={fromDate}
-            onChange={(e) => setFromDate(e.target.value)}
-            className="min-w-0 w-full rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 px-2.5 py-1.5 text-xs tabular-nums lg:col-span-2 dark:border-white/[0.1] dark:bg-[#0B0C10]"
-          />
-          <div className="flex items-center gap-1.5 lg:col-span-2">
+          <div className="flex flex-wrap items-center gap-1.5 sm:col-span-2 md:col-span-3 lg:col-span-4">
+            <input
+              type="date"
+              aria-label="Дата с"
+              value={fromDate}
+              onChange={(e) => setFromDate(e.target.value)}
+              className="min-w-0 flex-1 rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 px-2.5 py-1.5 text-xs tabular-nums dark:border-white/[0.1] dark:bg-[#0B0C10]"
+            />
             <input
               type="date"
               aria-label="Дата по"
               value={toDate}
               onChange={(e) => setToDate(e.target.value)}
               className="min-w-0 flex-1 rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 px-2.5 py-1.5 text-xs tabular-nums dark:border-white/[0.1] dark:bg-[#0B0C10]"
+            />
+            <DatePresets
+              from={fromDate}
+              to={toDate}
+              onChange={(f, t) => {
+                setFromDate(f);
+                setToDate(t);
+              }}
             />
             {hasFilters && (
               <button

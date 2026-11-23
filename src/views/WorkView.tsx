@@ -770,8 +770,7 @@ export function WorkView({
                 aria-label="Инструменты и работа"
               >
                 <CalendarDays className="h-3.5 w-3.5 shrink-0" />
-                <span>Инструменты и работа</span>
-                <span className="rounded-lg bg-black/[0.06] px-1.5 py-0.5 text-[11px] font-semibold text-zinc-700 dark:bg-white/[0.1] dark:text-zinc-200">
+                <span>
                   {workTab === 'calendar'
                     ? 'Календарь'
                     : workTab === 'orders'
@@ -907,43 +906,33 @@ export function WorkView({
         <div className="space-y-4">
           {/* Orders Search & Filters */}
           <div className="space-y-2.5 rounded-2xl border border-black/[0.06] bg-white p-3.5 shadow-[0_1px_3px_rgba(0,0,0,0.04)] sm:p-4 dark:border-white/[0.08] dark:bg-[#15171C]">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex flex-wrap items-center gap-1.5">
-                {[
-                  { id: 'all', label: 'Все заказы' },
-                  { id: 'today', label: 'Сегодня' },
-                  { id: 'mine', label: 'Мои активные' },
-                  ...(isAdmin ? [{ id: 'debt', label: 'С долгом' }] : []),
-                ].map((chip) => {
-                  const active = orderQuickFilter === chip.id;
-                  return (
-                    <button
-                      key={chip.id}
-                      type="button"
-                      onClick={() =>
-                        setOrderQuickFilter(
-                          active && chip.id !== 'all' ? 'all' : (chip.id as typeof orderQuickFilter)
-                        )
-                      }
-                      className={`min-h-[32px] shrink-0 whitespace-nowrap rounded-xl px-2.5 py-1 text-xs font-semibold transition ${
-                        active
-                          ? 'bg-[#0071E3] text-white dark:bg-[#2997FF] dark:text-[#0B0C10]'
-                          : 'bg-[#F5F5F7] text-zinc-600 hover:bg-black/[0.06] dark:bg-[#0B0C10] dark:text-zinc-300 dark:hover:bg-white/[0.08]'
-                      }`}
-                    >
-                      {chip.label}
-                    </button>
-                  );
-                })}
-              </div>
-              <DatePresets
-                from={orderFromDate}
-                to={orderToDate}
-                onChange={(f, t) => {
-                  setOrderFromDate(f);
-                  setOrderToDate(t);
-                }}
-              />
+            <div className="flex flex-wrap items-center gap-1.5">
+              {[
+                { id: 'all', label: 'Все заказы' },
+                { id: 'today', label: 'Сегодня' },
+                { id: 'mine', label: 'Мои активные' },
+                ...(isAdmin ? [{ id: 'debt', label: 'С долгом' }] : []),
+              ].map((chip) => {
+                const active = orderQuickFilter === chip.id;
+                return (
+                  <button
+                    key={chip.id}
+                    type="button"
+                    onClick={() =>
+                      setOrderQuickFilter(
+                        active && chip.id !== 'all' ? 'all' : (chip.id as typeof orderQuickFilter)
+                      )
+                    }
+                    className={`min-h-[32px] shrink-0 whitespace-nowrap rounded-xl px-2.5 py-1 text-xs font-semibold transition ${
+                      active
+                        ? 'bg-[#0071E3] text-white dark:bg-[#2997FF] dark:text-[#0B0C10]'
+                        : 'bg-[#F5F5F7] text-zinc-600 hover:bg-black/[0.06] dark:bg-[#0B0C10] dark:text-zinc-300 dark:hover:bg-white/[0.08]'
+                    }`}
+                  >
+                    {chip.label}
+                  </button>
+                );
+              })}
             </div>
 
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-12">
@@ -1013,7 +1002,7 @@ export function WorkView({
                 </select>
               )}
 
-              <div className={`flex items-center gap-1.5 ${companies.length > 0 ? 'lg:col-span-3' : 'lg:col-span-5'}`}>
+              <div className={`flex flex-wrap items-center gap-1.5 sm:flex-nowrap ${companies.length > 0 ? 'lg:col-span-3' : 'lg:col-span-5'}`}>
                 <input
                   type="date"
                   aria-label="Дата с"
@@ -1027,6 +1016,14 @@ export function WorkView({
                   value={orderToDate}
                   onChange={(e) => setOrderToDate(e.target.value)}
                   className="min-w-0 flex-1 rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 px-2.5 py-1.5 text-xs tabular-nums dark:border-white/[0.1] dark:bg-[#0B0C10]"
+                />
+                <DatePresets
+                  from={orderFromDate}
+                  to={orderToDate}
+                  onChange={(f, t) => {
+                    setOrderFromDate(f);
+                    setOrderToDate(t);
+                  }}
                 />
                 {hasOrderFilters && (
                   <button

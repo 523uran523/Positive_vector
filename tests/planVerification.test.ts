@@ -501,7 +501,7 @@ test('UI redesign enforces zero browser alert/confirm/prompt, no duplicate + but
   for (const tab of ['Календарь', 'Заказы', 'Быстрые задачи', 'Смены в цеху', 'Отчёты']) {
     assert.ok(workView.includes(tab), `WorkView missing tab ${tab}`);
   }
-  assert.ok(workView.includes('Инструменты и работа'), 'WorkView must label switcher Инструменты и работа');
+  assert.equal(workView.includes('<span>Инструменты и работа</span>'), false, 'WorkView switcher button must not show Инструменты и работа text');
   assert.ok(workView.includes('workDropdownOpen'), 'WorkView must have calendar dropdown state');
   assert.ok(workView.includes('addTaskDropdownOpen'), 'WorkView must have add task dropdown state');
   assert.ok(workView.includes('Добавить задачу'), 'WorkView must rename button to Добавить задачу');
@@ -515,10 +515,15 @@ test('UI redesign enforces zero browser alert/confirm/prompt, no duplicate + but
   assert.ok(chatViewChecks.includes('Чаты'), 'ChatView must use Чаты dropdown button');
   assert.ok(chatViewChecks.includes('BellOff') && chatViewChecks.includes('Bell'), 'ChatView must use compact bell toggle');
 
+  const datePresetsFile = fs.readFileSync(path.resolve('src/components/DatePresets.tsx'), 'utf8');
+  assert.ok(datePresetsFile.includes('<select'), 'DatePresets must render as dropdown select');
+  assert.ok(datePresetsFile.includes('Этот год'), 'DatePresets must include Этот год option');
+
   const financeView = fs.readFileSync(path.resolve('src/views/FinanceView.tsx'), 'utf8');
   for (const tab of ['Обзор', 'Отчёты по работе', 'Движение денег', 'Экономика заказов']) {
     assert.ok(financeView.includes(tab), `FinanceView missing tab ${tab}`);
   }
+  assert.ok(financeView.includes('<Minus className="h-3.5 w-3.5" />'), 'FinanceView expense button must use Minus icon');
   assert.ok(financeView.includes('Сводка прибыли по месяцам'), 'FinanceView must show monthly profit table');
   assert.ok(financeView.includes('ReportsView'), 'FinanceView must embed ReportsView');
   assert.equal(financeView.includes("id: 'orders'"), false, 'Order economics must live inside Overview');
