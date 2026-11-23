@@ -54,15 +54,19 @@ export function createDeployRouter(db: DatabaseSync): express.Router {
 $ErrorActionPreference = 'Stop'
 Set-Location ${DEPLOY_ROOT}
 
-Write-Host '=== Cleaning up caches and old backups ==='
-& node -e "const {cleanupNow} = require('./server/services/serverCleanup.ts'); const r = cleanupNow(${JSON.stringify(DEPLOY_ROOT)}); console.log('removed', r.removed.length, 'errors', r.errors.length);" || Write-Host 'cleanup step reported errors, continuing'
+Write-Host '=== Clean git tree ==='
+git reset --hard HEAD
+git clean -fd
 
 Write-Host '=== Git pull ==='
 git pull origin master
 
-Write-Host '=== Restore node_modules ==='
-if (Test-Path .\\node_modules) { Remove-Item -Recurse -Force .\\node_modules }
-npm ci
+Write-Host '=== Install dependencies (only if package.json changed) ==='
+if (git diff --quiet HEAD~1 -- package.json 2>NUL) {
+  Write-Host 'package.json unchanged, skipping npm ci'
+} else {
+  npm ci
+}
 
 Write-Host '=== Build ==='
 npm run build
