@@ -14,13 +14,14 @@ import {
   X,
 } from 'lucide-react';
 import { SectionHeader } from '../components/SectionHeader';
-import { apiRequest, formatDateTimeRu, formatRub } from '../lib/api';
-import type { AuthUser, PermissionKey } from '../types/crm';
+import { apiRequest, formatDateTimeRu, formatDuration, formatRub } from '../lib/api';
+import type { AuthUser, DismissalSummary, PermissionKey, SalarySourceSubtype } from '../types/crm';
 
 interface SalaryAccrualRecord {
   id: string;
   user_id: string;
   source_type: 'visit' | 'shift' | 'manual';
+  source_subtype?: SalarySourceSubtype;
   source_id: string | null;
   amount_kopecks: number;
   description: string;
@@ -28,6 +29,7 @@ interface SalaryAccrualRecord {
   order_id: string | null;
   order_number: string | null;
   visit_title: string | null;
+  quick_task_title?: string | null;
 }
 
 interface SalaryPayoutRecord {
@@ -64,6 +66,7 @@ interface LedgerEntry {
   id: string;
   kind: 'accrual' | 'payout';
   source: 'visit' | 'shift' | 'manual' | 'payout';
+  source_subtype?: SalarySourceSubtype;
   amount_kopecks: number;
   description: string;
   occurred_at: string;
@@ -101,6 +104,25 @@ interface VisitAssignmentRow {
   order_title: string;
 }
 
+interface ShiftAssignmentRow {
+  shift_id: string;
+  user_id: string;
+  employee_name: string;
+  started_at: string;
+  ended_at: string | null;
+  work_date: string;
+  shift_type: string;
+  work_done: string;
+  order_id: string | null;
+  visit_id: string | null;
+  quick_task_id: string | null;
+  order_number: string | null;
+  order_title: string | null;
+  visit_title: string | null;
+  quick_task_title: string | null;
+  wage_kopecks: number | null;
+}
+
 export type EmployeesTab = 'active' | 'dismissed' | 'salaries';
 
 interface EmployeesViewProps {
@@ -122,12 +144,17 @@ export function EmployeesView({
   );
   const [salaries, setSalaries] = useState<SalaryEmployeeSummary[]>([]);
   const [visitAssignments, setVisitAssignments] = useState<VisitAssignmentRow[]>([]);
+  const [shiftAssignments, setShiftAssignments] = useState<ShiftAssignmentRow[]>([]);
   const [busy, setBusy] = useState(false);
   const [tab, setTab] = useState<EmployeesTab>(initialTab);
   const [search, setSearch] = useState('');
   const [confirmEmploymentUserId, setConfirmEmploymentUserId] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [employmentNotice, setEmploymentNotice] = useState('');
+  const [dismissalReport, setDismissalReport] = useState<{
+    userName: string;
+    summary: DismissalSummary;
+  } | null>(null);
 
   useEffect(() => {
     setTab(initialTab);
@@ -158,8 +185,9 @@ export function EmployeesView({
   const [amountRub, setAmountRub] = useState('');
   const [comment, setComment] = useState('');
 
-  // Inline visit wage inputs
+  // Inline visit and shift wage inputs
   const [wageDrafts, setWageDrafts] = useState<Record<string, string>>({});
+  const [shiftWageDrafts, setShiftWageDrafts] = useState<Record<string, string>>({});
 
   // Payout form: payment date (payment method is no longer part of accounting)
   const [payDate, setPayDate] = useState(new Date().toISOString().slice(0, 10));
@@ -169,11 +197,11 @@ export function EmployeesView({
   const [ledger, setLedger] = useState<LedgerEntry[]>([]);
   const [ledgerBusy, setLedgerBusy] = useState(false);
   const [ledgerMonthFilter, setLedgerMonthFilter] = useState('');
-  const [ledgerTypeFilter, setLedgerTypeFilter] = useState<'all' | 'visit' | 'shift' | 'bonus' | 'deduction' | 'payout'>('all');
+  const [ledgerTypeFilter, setLedgerTypeFilter] = useState<'all' | 'visit' | 'shift' | 'task' | 'bonus' | 'deduction' | 'payout'>('all');
   const [months, setMonths] = useState<MonthlyRow[]>([]);
   const [salaryMonthFilter, setSalaryMonthFilter] = useState('');
   const [salaryUserFilter, setSalaryUserFilter] = useState('');
-  const [salaryOpFilter, setSalaryOpFilter] = useState<'all' | 'visit' | 'shift' | 'bonus' | 'deduction' | 'payout'>('all');
+  const [salaryOpFilter, setSalaryOpFilter] = useState<'all' | 'visit' | 'shift' | 'task' | 'bonus' | 'deduction' | 'payout'>('all');
 
   const openLedger = async (user: AuthUser) => {
     setLedgerUser(user);
@@ -213,12 +241,14 @@ export function EmployeesView({
         apiRequest<{
           employees: SalaryEmployeeSummary[];
           visitAssignments: VisitAssignmentRow[];
+          shiftAssignments?: ShiftAssignmentRow[];
         }>('/api/salaries/summary'),
       ]);
       setUsers(uRes.users);
       setPermissionLabels(uRes.permissionLabels);
       setSalaries(sRes.employees);
       setVisitAssignments(sRes.visitAssignments);
+      setShiftAssignments(sRes.shiftAssignments || []);
       void loadMonthly();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Ошибка загрузки списка сотрудников');
@@ -339,17 +369,21 @@ export function EmployeesView({
     setBusy(true);
     setError('');
     setEmploymentNotice('');
+    setDismissalReport(null);
     try {
-      const result = await apiRequest<{ activeShift?: boolean }>(
+      const result = await apiRequest<{
+        activeShift?: boolean;
+        dismissalSummary?: DismissalSummary;
+      }>(
         `/api/users/${u.id}/${restoring ? 'restore' : 'dismiss'}`,
         { method: 'POST', body: {}, skipOfflineQueue: true }
       );
       setConfirmEmploymentUserId(null);
       await loadAll();
-      if (result.activeShift) {
-        setEmploymentNotice(
-          `У ${u.fullName} осталась незавершённая смена. Она не закрыта автоматически и требует отдельной сверки.`
-        );
+      if (restoring) {
+        setEmploymentNotice(`Сотрудник ${u.fullName} восстановлен. При следующем входе потребуется сменить пароль.`);
+      } else if (result.dismissalSummary) {
+        setDismissalReport({ userName: u.fullName, summary: result.dismissalSummary });
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Ошибка изменения статуса сотрудника');
@@ -442,7 +476,34 @@ export function EmployeesView({
     }
   };
 
+  const handleAssignShiftWage = async (shiftId: string) => {
+    const val = Number(shiftWageDrafts[shiftId]);
+    if (Number.isNaN(val) || val < 0) return;
+    setBusy(true);
+    setError('');
+    try {
+      await apiRequest('/api/salaries/shift-wage', {
+        method: 'POST',
+        body: { shiftId, amountKopecks: Math.round(val * 100) },
+      });
+      await loadAll();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Ошибка назначения оплаты за смену');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const pendingVisits = visitAssignments.filter((v) => v.wage_kopecks === null);
+  const pendingShifts = shiftAssignments.filter(
+    (s) => s.wage_kopecks === null || s.wage_kopecks === undefined
+  );
+  const pendingVisitShifts = pendingShifts.filter((s) => s.shift_type === 'visit');
+  const pendingWorkshopShifts = pendingShifts.filter(
+    (s) => s.shift_type !== 'visit' && s.shift_type !== 'quick_task'
+  );
+  const pendingTaskShifts = pendingShifts.filter((s) => s.shift_type === 'quick_task');
+
   const activeUsers = useMemo(() => users.filter((u) => !u.dismissedAt), [users]);
   const dismissedUsers = useMemo(() => users.filter((u) => Boolean(u.dismissedAt)), [users]);
 
@@ -496,7 +557,8 @@ export function EmployeesView({
       userName: string;
       occurredAt: string;
       month: string;
-      category: 'visit' | 'shift' | 'bonus' | 'deduction' | 'payout';
+      category: 'visit' | 'shift' | 'task' | 'bonus' | 'deduction' | 'payout';
+      subtype?: SalarySourceSubtype;
       description: string;
       orderId: string | null;
       orderNumber: string | null;
@@ -505,14 +567,16 @@ export function EmployeesView({
     const rows: CombinedRow[] = [];
     for (const s of salaries) {
       for (const a of s.accruals || []) {
-        const category =
-          a.source_type === 'visit'
-            ? 'visit'
-            : a.source_type === 'shift'
-              ? 'shift'
-              : a.amount_kopecks < 0
-                ? 'deduction'
-                : 'bonus';
+        const category: CombinedRow['category'] =
+          a.source_subtype === 'task_shift'
+            ? 'task'
+            : a.source_type === 'visit'
+              ? 'visit'
+              : a.source_type === 'shift'
+                ? 'shift'
+                : a.amount_kopecks < 0
+                  ? 'deduction'
+                  : 'bonus';
         rows.push({
           id: `acc:${a.id}`,
           userId: s.id,
@@ -520,6 +584,7 @@ export function EmployeesView({
           occurredAt: a.created_at,
           month: a.created_at.slice(0, 7),
           category,
+          subtype: a.source_subtype,
           description: a.description || (category === 'deduction' ? 'Удержание' : 'Начисление'),
           orderId: a.order_id,
           orderNumber: a.order_number,
@@ -534,6 +599,7 @@ export function EmployeesView({
           occurredAt: p.paid_at,
           month: p.paid_at.slice(0, 7),
           category: 'payout',
+          subtype: 'payout',
           description: p.comment || 'Выплата зарплаты',
           orderId: null,
           orderNumber: null,
@@ -556,15 +622,13 @@ export function EmployeesView({
   return (
     <div className="space-y-5">
       <SectionHeader<EmployeesTab>
-        title="Сотрудники"
-        description="Учётные записи, права доступа, ставки смен, начисления и статистика"
         actions={
           <button
             type="button"
             onClick={openCreate}
-            className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl bg-[#0071E3] px-4 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-[#0077ED] dark:bg-[#2997FF] dark:text-[#0B0C10]"
+            className="inline-flex min-h-[36px] shrink-0 whitespace-nowrap items-center gap-1.5 rounded-xl bg-[#0071E3] px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-[#0077ED] dark:bg-[#2997FF] dark:text-[#0B0C10]"
           >
-            <Plus className="h-4 w-4" />
+            <Plus className="h-3.5 w-3.5" />
             <span>Добавить сотрудника</span>
           </button>
         }
@@ -574,22 +638,37 @@ export function EmployeesView({
           {
             id: 'salaries',
             label: 'Зарплаты',
-            count: pendingVisits.length > 0 ? pendingVisits.length : undefined,
+            count:
+              pendingVisits.length + pendingShifts.length > 0
+                ? pendingVisits.length + pendingShifts.length
+                : undefined,
             icon: Wallet,
           },
         ]}
         activeTab={tab}
         onSelectTab={setTab}
         filters={
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400" />
+          <div className="relative max-w-md">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400" />
             <input
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Поиск сотрудника по ФИО, логину или должности..."
-              className="w-full rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 py-2 pl-8 pr-3 text-xs outline-none focus:border-[#0071E3] focus:bg-white dark:border-white/[0.1] dark:bg-[#0B0C10] dark:focus:bg-[#0B0C10]"
+              className={`w-full rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 py-2 pl-8 text-xs outline-none focus:border-[#0071E3] focus:bg-white dark:border-white/[0.1] dark:bg-[#0B0C10] dark:focus:bg-[#0B0C10] ${
+                search ? 'pr-8' : 'pr-3'
+              }`}
             />
+            {search && (
+              <button
+                type="button"
+                aria-label="Очистить поиск"
+                onClick={() => setSearch('')}
+                className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-0.5 text-zinc-400 transition hover:bg-black/[0.06] hover:text-zinc-700 dark:hover:bg-white/[0.08] dark:hover:text-zinc-200"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
           </div>
         }
       />
@@ -605,13 +684,93 @@ export function EmployeesView({
         </div>
       )}
 
+      {dismissalReport && (
+        <div
+          role="status"
+          className="space-y-2 rounded-2xl border border-amber-500/30 bg-amber-500/[0.08] p-4 text-xs text-zinc-800 dark:text-zinc-100"
+        >
+          <div className="flex items-start justify-between gap-2">
+            <div className="text-sm font-bold">
+              Увольнение оформлено: {dismissalReport.userName}
+            </div>
+            <button
+              type="button"
+              onClick={() => setDismissalReport(null)}
+              className="text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200"
+              aria-label="Скрыть сводку увольнения"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+          {dismissalReport.summary.autoClosedShift && (
+            <div className="rounded-xl bg-white/80 px-3 py-2 dark:bg-[#15171C]/80">
+              Активная смена завершена автоматически ({formatDateTimeRu(dismissalReport.summary.autoClosedShift.startedAt)} →{' '}
+              {formatDateTimeRu(dismissalReport.summary.autoClosedShift.endedAt)}).
+            </div>
+          )}
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+            <div className="rounded-xl bg-white/80 px-3 py-2 dark:bg-[#15171C]/80">
+              <div className="text-[11px] text-zinc-500">Расчёт по зарплате</div>
+              {dismissalReport.summary.unpaidSalaryKopecks > 0 ? (
+                <div className="font-bold text-[#0071E3] tabular-nums dark:text-[#2997FF]">
+                  К выплате {formatRub(dismissalReport.summary.unpaidSalaryKopecks)}
+                </div>
+              ) : dismissalReport.summary.overpaidSalaryKopecks > 0 ? (
+                <div className="font-bold text-amber-600 tabular-nums dark:text-amber-400">
+                  Переплата {formatRub(dismissalReport.summary.overpaidSalaryKopecks)}
+                </div>
+              ) : (
+                <div className="font-semibold text-emerald-600 dark:text-emerald-400">Расчёт закрыт</div>
+              )}
+            </div>
+            <div className="rounded-xl bg-white/80 px-3 py-2 dark:bg-[#15171C]/80">
+              <div className="text-[11px] text-zinc-500">Инструменты на руках</div>
+              {dismissalReport.summary.unreturnedTools.length === 0 ? (
+                <div className="font-semibold text-emerald-600 dark:text-emerald-400">Долгов нет</div>
+              ) : (
+                <ul className="mt-0.5 space-y-0.5 font-medium text-amber-700 dark:text-amber-300">
+                  {dismissalReport.summary.unreturnedTools.map((t, i) => (
+                    <li key={`${t.toolId}:${i}`}>
+                      {t.toolName}
+                      {t.serialNumber ? ` #${t.serialNumber}` : ` ×${t.qty}`}
+                      {t.orderNumber ? ` (${t.orderNumber})` : ''}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            <div className="rounded-xl bg-white/80 px-3 py-2 dark:bg-[#15171C]/80">
+              <div className="text-[11px] text-zinc-500">Открытые заказы</div>
+              {dismissalReport.summary.activeOrders.length === 0 ? (
+                <div className="font-semibold text-emerald-600 dark:text-emerald-400">Нет активных</div>
+              ) : (
+                <ul className="mt-0.5 space-y-0.5 font-medium">
+                  {dismissalReport.summary.activeOrders.map((o) => (
+                    <li key={o.orderId}>
+                      <button
+                        type="button"
+                        onClick={() => onOpenOrderById(o.orderId)}
+                        className="text-[#0071E3] hover:underline dark:text-[#2997FF]"
+                      >
+                        {o.orderNumber}
+                      </button>{' '}
+                      · {o.title}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Tab 3: Salaries */}
       {tab === 'salaries' && (
         <div className="space-y-4">
-          {pendingVisits.length > 0 && (
+          {(pendingVisits.length > 0 || pendingVisitShifts.length > 0) && (
             <div className="rounded-2xl border border-amber-500/25 bg-amber-500/[0.06] p-4">
               <div className="mb-2.5 text-xs font-bold text-amber-800 dark:text-amber-300">
-                Выезды, ожидающие назначения оплаты ({pendingVisits.length})
+                Выезды и монтажи, ожидающие назначения оплаты ({pendingVisits.length + pendingVisitShifts.length})
               </div>
               <div className="space-y-2">
                 {pendingVisits.map((v) => {
@@ -656,19 +815,174 @@ export function EmployeesView({
                     </div>
                   );
                 })}
+                {pendingVisitShifts.map((sh) => {
+                  const mins = sh.ended_at
+                    ? Math.max(0, Math.round((Date.parse(sh.ended_at) - Date.parse(sh.started_at)) / 60_000))
+                    : null;
+                  const target = `Смена на монтаже ${sh.order_number || ''}${sh.visit_title ? ` · ${sh.visit_title}` : ''}`.trim();
+                  return (
+                    <div
+                      key={sh.shift_id}
+                      className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-white p-3 text-xs shadow-2xs dark:bg-[#15171C]"
+                    >
+                      <div>
+                        <div className="font-semibold">
+                          {sh.order_id ? (
+                            <button
+                              type="button"
+                              onClick={() => onOpenOrderById(sh.order_id!)}
+                              className="hover:text-[#0071E3]"
+                            >
+                              {target}
+                            </button>
+                          ) : (
+                            target
+                          )}
+                        </div>
+                        <div className="text-zinc-500">
+                          {sh.employee_name} · {formatDateTimeRu(sh.started_at)}
+                          {mins !== null ? ` · ${formatDuration(mins)}` : ''}
+                          {sh.work_done ? ` · ${sh.work_done}` : ''}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="number"
+                          min="0"
+                          placeholder="Сумма ₽"
+                          value={shiftWageDrafts[sh.shift_id] ?? ''}
+                          onChange={(e) =>
+                            setShiftWageDrafts((p) => ({ ...p, [sh.shift_id]: e.target.value }))
+                          }
+                          className="w-24 rounded-lg border border-black/[0.1] px-2.5 py-1.5 text-xs tabular-nums dark:border-white/[0.1] dark:bg-[#0B0C10]"
+                        />
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => void handleAssignShiftWage(sh.shift_id)}
+                          className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white"
+                        >
+                          Начислить
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {pendingWorkshopShifts.length > 0 && (
+            <div className="rounded-2xl border border-amber-500/25 bg-amber-500/[0.06] p-4">
+              <div className="mb-2.5 text-xs font-bold text-amber-800 dark:text-amber-300">
+                Смены в цеху, ожидающие назначения оплаты ({pendingWorkshopShifts.length})
+              </div>
+              <div className="space-y-2">
+                {pendingWorkshopShifts.map((sh) => {
+                  const mins = sh.ended_at
+                    ? Math.max(0, Math.round((Date.parse(sh.ended_at) - Date.parse(sh.started_at)) / 60_000))
+                    : null;
+                  return (
+                    <div
+                      key={sh.shift_id}
+                      className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-white p-3 text-xs shadow-2xs dark:bg-[#15171C]"
+                    >
+                      <div>
+                        <div className="font-semibold">Смена в цеху</div>
+                        <div className="text-zinc-500">
+                          {sh.employee_name} · {formatDateTimeRu(sh.started_at)}
+                          {mins !== null ? ` · ${formatDuration(mins)}` : ''}
+                          {sh.work_done ? ` · ${sh.work_done}` : ''}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="number"
+                          min="0"
+                          placeholder="Сумма ₽"
+                          value={shiftWageDrafts[sh.shift_id] ?? ''}
+                          onChange={(e) =>
+                            setShiftWageDrafts((p) => ({ ...p, [sh.shift_id]: e.target.value }))
+                          }
+                          className="w-24 rounded-lg border border-black/[0.1] px-2.5 py-1.5 text-xs tabular-nums dark:border-white/[0.1] dark:bg-[#0B0C10]"
+                        />
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => void handleAssignShiftWage(sh.shift_id)}
+                          className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white"
+                        >
+                          Начислить
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {pendingTaskShifts.length > 0 && (
+            <div className="rounded-2xl border border-amber-500/25 bg-amber-500/[0.06] p-4">
+              <div className="mb-2.5 text-xs font-bold text-amber-800 dark:text-amber-300">
+                Быстрые задачи, ожидающие назначения оплаты ({pendingTaskShifts.length})
+              </div>
+              <div className="space-y-2">
+                {pendingTaskShifts.map((sh) => {
+                  const mins = sh.ended_at
+                    ? Math.max(0, Math.round((Date.parse(sh.ended_at) - Date.parse(sh.started_at)) / 60_000))
+                    : null;
+                  return (
+                    <div
+                      key={sh.shift_id}
+                      className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-white p-3 text-xs shadow-2xs dark:bg-[#15171C]"
+                    >
+                      <div>
+                        <div className="font-semibold">
+                          Задача: {sh.quick_task_title || 'Без названия'}
+                        </div>
+                        <div className="text-zinc-500">
+                          {sh.employee_name} · {formatDateTimeRu(sh.started_at)}
+                          {mins !== null ? ` · ${formatDuration(mins)}` : ''}
+                          {sh.work_done ? ` · ${sh.work_done}` : ''}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="number"
+                          min="0"
+                          placeholder="Сумма ₽"
+                          value={shiftWageDrafts[sh.shift_id] ?? ''}
+                          onChange={(e) =>
+                            setShiftWageDrafts((p) => ({ ...p, [sh.shift_id]: e.target.value }))
+                          }
+                          className="w-24 rounded-lg border border-black/[0.1] px-2.5 py-1.5 text-xs tabular-nums dark:border-white/[0.1] dark:bg-[#0B0C10]"
+                        />
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => void handleAssignShiftWage(sh.shift_id)}
+                          className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white"
+                        >
+                          Начислить
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}
 
           {/* Salary Filters: Month, Employee, Operation Type */}
-          <div className="space-y-2.5 rounded-2xl border border-black/[0.06] bg-white p-4 dark:border-white/[0.08] dark:bg-[#15171C]">
+          <div className="flex flex-col gap-2 rounded-2xl border border-black/[0.06] bg-white p-3.5 lg:flex-row lg:items-center dark:border-white/[0.08] dark:bg-[#15171C]">
             {(() => {
               const now = new Date();
               const thisMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
               const prevDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
               const prevMonth = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, '0')}`;
               return (
-                <div className="flex flex-wrap items-center gap-1.5">
+                <div className="flex flex-wrap items-center gap-1.5 lg:shrink-0">
                   {[
                     { id: '', label: 'Все месяцы' },
                     { id: thisMonth, label: 'Этот месяц' },
@@ -680,7 +994,7 @@ export function EmployeesView({
                         key={chip.label}
                         type="button"
                         onClick={() => setSalaryMonthFilter(chip.id)}
-                        className={`min-h-[30px] rounded-xl px-2.5 py-1 text-[11px] font-semibold transition ${
+                        className={`min-h-[32px] shrink-0 whitespace-nowrap rounded-xl px-2.5 py-1 text-[11px] font-semibold transition ${
                           active
                             ? 'bg-[#0071E3] text-white dark:bg-[#2997FF] dark:text-[#0B0C10]'
                             : 'bg-[#F5F5F7] text-zinc-600 hover:bg-black/[0.06] dark:bg-[#0B0C10] dark:text-zinc-300 dark:hover:bg-white/[0.08]'
@@ -693,12 +1007,12 @@ export function EmployeesView({
                 </div>
               );
             })()}
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3 lg:flex-1">
               <select
                 aria-label="Фильтр по месяцу"
                 value={salaryMonthFilter}
                 onChange={(e) => setSalaryMonthFilter(e.target.value)}
-                className="min-w-0 w-full rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 px-3 py-2 text-xs dark:border-white/[0.1] dark:bg-[#0B0C10]"
+                className="min-w-0 w-full rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 px-3 py-1.5 text-xs dark:border-white/[0.1] dark:bg-[#0B0C10]"
               >
                 <option value="">Все месяцы</option>
                 {salaryMonthsList.map((m) => (
@@ -711,7 +1025,7 @@ export function EmployeesView({
                 aria-label="Фильтр по сотруднику"
                 value={salaryUserFilter}
                 onChange={(e) => setSalaryUserFilter(e.target.value)}
-                className="min-w-0 w-full rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 px-3 py-2 text-xs dark:border-white/[0.1] dark:bg-[#0B0C10]"
+                className="min-w-0 w-full rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 px-3 py-1.5 text-xs dark:border-white/[0.1] dark:bg-[#0B0C10]"
               >
                 <option value="">Все сотрудники</option>
                 {salaries.map((s) => (
@@ -724,11 +1038,12 @@ export function EmployeesView({
                 aria-label="Тип операции"
                 value={salaryOpFilter}
                 onChange={(e) => setSalaryOpFilter(e.target.value as any)}
-                className="min-w-0 w-full rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 px-3 py-2 text-xs dark:border-white/[0.1] dark:bg-[#0B0C10]"
+                className="min-w-0 w-full rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 px-3 py-1.5 text-xs dark:border-white/[0.1] dark:bg-[#0B0C10]"
               >
                 <option value="all">Все операции</option>
                 <option value="visit">Выезды и монтажи</option>
                 <option value="shift">Смены в цеху</option>
+                <option value="task">Быстрые задачи</option>
                 <option value="bonus">Премии</option>
                 <option value="deduction">Удержания / списания</option>
                 <option value="payout">Выплаты</option>
@@ -936,15 +1251,20 @@ export function EmployeesView({
                   <tbody>
                     {combinedSalaryLedger.map((row) => {
                       const badge =
-                        row.category === 'visit'
-                          ? { label: 'Выезд', cls: 'bg-sky-500/10 text-sky-700 dark:text-sky-300' }
-                          : row.category === 'shift'
-                            ? { label: 'Смена', cls: 'bg-indigo-500/10 text-indigo-700 dark:text-indigo-300' }
-                            : row.category === 'bonus'
-                              ? { label: 'Премия', cls: 'bg-amber-500/10 text-amber-700 dark:text-amber-300' }
-                              : row.category === 'deduction'
-                                ? { label: 'Удержание', cls: 'bg-red-500/10 text-red-600 dark:text-red-400' }
-                                : { label: 'Выплата', cls: 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' };
+                        row.category === 'task'
+                          ? { label: 'Быстрая задача', cls: 'bg-purple-500/10 text-purple-700 dark:text-purple-300' }
+                          : row.category === 'visit'
+                            ? { label: 'Выезд', cls: 'bg-sky-500/10 text-sky-700 dark:text-sky-300' }
+                            : row.category === 'shift'
+                              ? {
+                                  label: row.subtype === 'order_shift' ? 'Монтажная смена' : 'Смена в цеху',
+                                  cls: 'bg-indigo-500/10 text-indigo-700 dark:text-indigo-300',
+                                }
+                              : row.category === 'bonus'
+                                ? { label: 'Премия', cls: 'bg-amber-500/10 text-amber-700 dark:text-amber-300' }
+                                : row.category === 'deduction'
+                                  ? { label: 'Удержание', cls: 'bg-red-500/10 text-red-600 dark:text-red-400' }
+                                  : { label: 'Выплата', cls: 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' };
                       return (
                         <tr
                           key={row.id}
@@ -1437,6 +1757,7 @@ export function EmployeesView({
                   <option value="all">Все типы</option>
                   <option value="visit">Выезды</option>
                   <option value="shift">Смены</option>
+                  <option value="task">Быстрые задачи</option>
                   <option value="bonus">Премии</option>
                   <option value="deduction">Удержания</option>
                   <option value="payout">Выплаты</option>
@@ -1463,13 +1784,15 @@ export function EmployeesView({
                         const cat =
                           entry.kind === 'payout'
                             ? 'payout'
-                            : entry.source === 'visit'
-                              ? 'visit'
-                              : entry.source === 'shift'
-                                ? 'shift'
-                                : entry.amount_kopecks < 0
-                                  ? 'deduction'
-                                  : 'bonus';
+                            : entry.source_subtype === 'task_shift'
+                              ? 'task'
+                              : entry.source === 'visit'
+                                ? 'visit'
+                                : entry.source === 'shift'
+                                  ? 'shift'
+                                  : entry.amount_kopecks < 0
+                                    ? 'deduction'
+                                    : 'bonus';
                         if (ledgerTypeFilter !== 'all' && cat !== ledgerTypeFilter) return false;
                         return true;
                       })
@@ -1482,13 +1805,17 @@ export function EmployeesView({
                           <td className="px-3 py-2.5">
                             {entry.kind === 'payout'
                               ? 'Выплата'
-                              : entry.source === 'visit'
-                                ? 'Выезд'
-                                : entry.source === 'shift'
-                                  ? 'Смена'
-                                  : entry.amount_kopecks < 0
-                                    ? 'Удержание'
-                                    : 'Премия'}
+                              : entry.source_subtype === 'task_shift'
+                                ? 'Быстрая задача'
+                                : entry.source_subtype === 'order_shift'
+                                  ? 'Монтажная смена'
+                                  : entry.source === 'visit'
+                                    ? 'Выезд'
+                                    : entry.source === 'shift'
+                                      ? 'Смена в цеху'
+                                      : entry.amount_kopecks < 0
+                                        ? 'Удержание'
+                                        : 'Премия'}
                           </td>
                           <td className="px-3 py-2.5">
                             {entry.description || '—'}

@@ -199,12 +199,16 @@ function CRMWorkspace() {
       const taskId = params.get('task');
       const chatId = params.get('chat');
       const salaryFlag = params.get('salary');
+      const shiftsFlag = params.get('shifts');
       const settingsFlag = params.get('settings');
 
       if (chatId) {
         setActiveTab('chat');
       } else if (settingsFlag) {
         setActiveTab('settings');
+      } else if (shiftsFlag) {
+        setActiveTab('work');
+        setWorkTab('shifts');
       } else if (salaryFlag) {
         if (currentUser.role === 'admin') {
           setEmployeesInitialTab('salaries');
@@ -223,10 +227,11 @@ function CRMWorkspace() {
           .catch(() => {});
       }
 
-      if (orderId || taskId || salaryFlag || settingsFlag) {
+      if (orderId || taskId || salaryFlag || shiftsFlag || settingsFlag) {
         params.delete('order');
         params.delete('task');
         params.delete('salary');
+        params.delete('shifts');
         params.delete('settings');
         const nextQs = params.toString();
         window.history.replaceState({}, '', `${window.location.pathname}${nextQs ? `?${nextQs}` : ''}`);
@@ -391,6 +396,10 @@ function CRMWorkspace() {
           setActiveTab('salary');
         }
       }}
+      onOpenShiftsLink={() => {
+        setActiveTab('work');
+        setWorkTab('shifts');
+      }}
       onOpenChatLink={(roomId) => {
         const params = new URLSearchParams(window.location.search);
         params.set('chat', roomId);
@@ -553,6 +562,7 @@ function CRMWorkspace() {
           setCreateOrderCompanyId(undefined);
           setCreateOrderContactId(undefined);
         }}
+        onRefreshWorkspace={() => void loadWorkspaceData(user)}
         onCreated={(ord) => {
           setOrders((prev) => [ord, ...prev]);
           setSelectedOrder(ord);

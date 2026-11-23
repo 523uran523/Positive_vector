@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Calendar, Clock, ExternalLink, Wallet } from 'lucide-react';
 import { SectionHeader } from '../components/SectionHeader';
-import { apiRequest, formatDateRu, formatDateTimeRu, formatRub } from '../lib/api';
+import { apiRequest, formatDateRu, formatDateTimeRu, formatDuration, formatRub } from '../lib/api';
 import type { WorkshopShift } from '../types/crm';
 
 interface MySalaryData {
@@ -33,6 +33,19 @@ interface MySalaryData {
     visit_status: string;
     order_number: string;
     order_title: string;
+  }>;
+  pendingShifts?: Array<{
+    shift_id: string;
+    started_at: string;
+    ended_at: string | null;
+    work_date: string;
+    shift_type: string;
+    work_done: string;
+    order_id?: string | null;
+    order_number?: string | null;
+    order_title?: string | null;
+    visit_title?: string | null;
+    quick_task_title?: string | null;
   }>;
 }
 
@@ -88,11 +101,9 @@ export function EmployeeSalaryView({ onOpenOrderById }: EmployeeSalaryViewProps 
   return (
     <div className="space-y-5">
       <SectionHeader
-        title="Моя зарплата"
-        description="Начисления за выезды и смены, полученные выплаты и остаток к получению"
         actions={
-          <div className="flex items-center gap-2">
-            <label className="flex items-center gap-2 text-xs font-semibold text-zinc-600 dark:text-zinc-300">
+          <>
+            <label className="flex flex-wrap items-center gap-2 text-xs font-semibold text-zinc-600 dark:text-zinc-300">
               <span>Месяц:</span>
               <input
                 type="month"
@@ -105,12 +116,12 @@ export function EmployeeSalaryView({ onOpenOrderById }: EmployeeSalaryViewProps 
               <button
                 type="button"
                 onClick={() => setSelectedMonth(currentMonth)}
-                className="text-xs font-semibold text-[#0071E3] hover:underline dark:text-[#2997FF]"
+                className="shrink-0 whitespace-nowrap text-xs font-semibold text-[#0071E3] hover:underline dark:text-[#2997FF]"
               >
                 Текущий
               </button>
             )}
-          </div>
+          </>
         }
       />
 
@@ -169,11 +180,13 @@ export function EmployeeSalaryView({ onOpenOrderById }: EmployeeSalaryViewProps 
         )}
       </div>
 
-      {data.pendingVisits.length > 0 && (
+      {(data.pendingVisits.length > 0 || (data.pendingShifts?.length || 0) > 0) && (
         <div className="rounded-2xl border border-amber-500/25 bg-amber-500/[0.06] p-4">
           <div className="mb-2 flex items-center gap-2 text-xs font-bold text-amber-800 dark:text-amber-300">
             <Clock className="h-4 w-4" />
-            <span>Ожидает начисления оплаты ({data.pendingVisits.length})</span>
+            <span>
+              Ожидает начисления оплаты ({data.pendingVisits.length + (data.pendingShifts?.length || 0)})
+            </span>
           </div>
           <div className="space-y-2">
             {data.pendingVisits.map((pv) => (
@@ -207,6 +220,31 @@ export function EmployeeSalaryView({ onOpenOrderById }: EmployeeSalaryViewProps 
                 </span>
               </div>
             ))}
+            {(data.pendingShifts || []).map((ps) => {
+              const target =
+                ps.shift_type === 'visit'
+                  ? `Монтаж ${ps.order_number || ''}${ps.visit_title ? ` · ${ps.visit_title}` : ''}`
+                  : ps.shift_type === 'quick_task'
+                    ? `Задача: ${ps.quick_task_title || ''}`
+                    : 'Смена в цеху';
+              return (
+                <div
+                  key={ps.shift_id}
+                  className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-white px-3.5 py-2.5 text-xs dark:bg-[#15171C]"
+                >
+                  <div>
+                    <div className="font-semibold">{target.trim()}</div>
+                    <div className="text-zinc-400">
+                      {formatDateRu(ps.started_at)}
+                      {ps.work_done ? ` · ${ps.work_done}` : ''}
+                    </div>
+                  </div>
+                  <span className="font-semibold text-amber-600 dark:text-amber-400">
+                    Ожидает начисления
+                  </span>
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
@@ -305,32 +343,48 @@ export function EmployeeSalaryView({ onOpenOrderById }: EmployeeSalaryViewProps 
           <div className="text-xs text-zinc-400">Отработанных смен пока нет</div>
         ) : (
           <div className="space-y-2">
-            {shifts.map((sh) => (
-              <div
-                key={sh.id}
-                className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-black/[0.05] px-3.5 py-2.5 text-xs dark:border-white/[0.06]"
-              >
-                <div>
-                  <div className="font-semibold">
-                    {formatDateRu(sh.started_at)} ·{' '}
-                    <span className="tabular-nums text-zinc-500">
-                      {new Date(sh.started_at).toLocaleTimeString('ru-RU', {
-                        hour: '2-digit',
-                        minute: '2-digit',
-                      })}
-                      {sh.ended_at
-                        ? ` — ${new Date(sh.ended_at).toLocaleTimeString('ru-RU', {
-                            hour: '2-digit',
-                            minute: '2-digit',
-                          })}`
-                        : ' — идёт сейчас'}
-                    </span>
+            {shifts.map((sh) => {
+              const target =
+                sh.shift_type === 'visit'
+                  ? `Монтаж ${sh.order_number || ''}${sh.visit_title ? ` · ${sh.visit_title}` : ''}`
+                  : sh.shift_type === 'quick_task'
+                    ? `Задача: ${sh.quick_task_title || ''}`
+                    : 'Цех';
+              return (
+                <div
+                  key={sh.id}
+                  className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-black/[0.05] px-3.5 py-2.5 text-xs dark:border-white/[0.06]"
+                >
+                  <div>
+                    <div className="font-semibold">
+                      {formatDateRu(sh.started_at)} · {target.trim()} ·{' '}
+                      <span className="tabular-nums text-zinc-500">
+                        {new Date(sh.started_at).toLocaleTimeString('ru-RU', {
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })}
+                        {sh.ended_at
+                          ? ` — ${new Date(sh.ended_at).toLocaleTimeString('ru-RU', {
+                              hour: '2-digit',
+                              minute: '2-digit',
+                            })} (${formatDuration(sh.duration_minutes)})`
+                          : ' — идёт сейчас'}
+                      </span>
+                    </div>
+                    {sh.work_done && <div className="mt-0.5 text-zinc-500">{sh.work_done}</div>}
                   </div>
-                  {sh.work_done && <div className="mt-0.5 text-zinc-500">{sh.work_done}</div>}
+                  <div
+                    className={`font-bold tabular-nums ${
+                      sh.wage_kopecks != null
+                        ? 'text-emerald-600 dark:text-emerald-400'
+                        : 'text-amber-600 dark:text-amber-400'
+                    }`}
+                  >
+                    {sh.wage_kopecks != null ? formatRub(sh.wage_kopecks) : 'Ожидает начисления'}
+                  </div>
                 </div>
-                <div className="font-bold tabular-nums">{formatRub(sh.rate_snapshot_kopecks)}</div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>

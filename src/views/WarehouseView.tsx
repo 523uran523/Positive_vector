@@ -13,7 +13,7 @@ function ToolIconSelect({ value, onChange }: { value: string; onChange: (value: 
   </select>;
 }
 
-type BatchDetails = {batches:Array<{id:string;received_qty_milli:number;remaining_qty_milli:number;unit_cost_kopecks:number;estimated:number;created_at:string}>;receipts:Array<{id:string;qty_milli:number;unit_cost_kopecks:number;created_at:string}>;stockQtyMilli:number;averageCostKopecks:number|null;stockValueKopecks:number;purchaseTotalKopecks:number};
+type BatchDetails = {costMethod?:string;batches:Array<{id:string;received_qty_milli:number;remaining_qty_milli:number;unit_cost_kopecks:number;estimated:number;created_at:string}>;receipts:Array<{id:string;qty_milli:number;unit_cost_kopecks:number;created_at:string}>;stockQtyMilli:number;averageCostKopecks:number|null;stockValueKopecks:number;purchaseTotalKopecks:number};
 function MaterialBatches({material}:{material:MaterialItem}) {
   const [open,setOpen]=useState(false);
   const [details,setDetails]=useState<BatchDetails|null>(null);
@@ -25,14 +25,18 @@ function MaterialBatches({material}:{material:MaterialItem}) {
     return ()=>{active=false;};
   },[open,material.id,material.quantity_milli]);
   return <div className="mt-3 border-t border-black/5 pt-2 text-xs dark:border-white/10">
-    <button type="button" onClick={()=>setOpen(!open)} className="font-semibold text-[#0071E3] dark:text-[#71b5ff]">{open?'Скрыть закупки и партии':'Закупки и партии'}</button>
+    <button type="button" onClick={()=>setOpen(!open)} className="font-semibold text-[#0071E3] dark:text-[#71b5ff]">{open?'Скрыть поступления и себестоимость':'Поступления и себестоимость'}</button>
     {open && error && <p role="alert" className="mt-2 text-red-500">{error}</p>}
     {open && details && <div className="mt-2 space-y-2">
-      <p>Средняя цена остатка: {details.averageCostKopecks===null?'нет остатка':`${formatRub(details.averageCostKopecks)} / ${material.unit}`}</p>
+      <p>Средневзвешенная цена: {details.averageCostKopecks===null || details.stockQtyMilli<=0?'нет остатка':`${formatRub(details.averageCostKopecks)} / ${material.unit}`}</p>
       <p>Стоимость остатка: {formatRub(details.stockValueKopecks)} · Закуплено на: {formatRub(details.purchaseTotalKopecks)}</p>
       {details.stockQtyMilli<0 && <p className="text-red-500">Исторический отрицательный остаток: {formatQty(details.stockQtyMilli)} {material.unit}. Пополните склад.</p>}
-      <p className="font-semibold">Партии остатка (списание с ранней)</p>
-      {details.batches.filter(batch=>batch.remaining_qty_milli>0).map(batch=><div key={batch.id}>{formatQty(batch.remaining_qty_milli)} {material.unit} × {formatRub(batch.unit_cost_kopecks)}{batch.estimated?' · оценка старого остатка':''}</div>)}
+      {details.costMethod !== 'weighted_average' && details.batches.some(batch=>batch.remaining_qty_milli>0) && (
+        <>
+          <p className="font-semibold">Партии остатка</p>
+          {details.batches.filter(batch=>batch.remaining_qty_milli>0).map(batch=><div key={batch.id}>{formatQty(batch.remaining_qty_milli)} {material.unit} × {formatRub(batch.unit_cost_kopecks)}{batch.estimated?' · оценка старого остатка':''}</div>)}
+        </>
+      )}
       <p className="font-semibold">История поступлений</p>
       {details.receipts.map(receipt=><div key={receipt.id}>{formatDateTimeRu(receipt.created_at)} · {formatQty(receipt.qty_milli)} {material.unit} × {formatRub(receipt.unit_cost_kopecks)} = {formatRub(Math.round(receipt.qty_milli*receipt.unit_cost_kopecks/1000))}</div>)}
       {!details.receipts.length && <p>Поступлений в истории нет.</p>}
@@ -561,10 +565,8 @@ export function WarehouseView({
   return (
     <div className="space-y-4">
       <SectionHeader<'materials' | 'tools'>
-        title="Склад"
-        description="Остатки материалов, инструменты на руках и журнал операций"
         actions={
-          <div className="flex flex-wrap items-center gap-2">
+          <>
             {(canReceive || canEdit) && (
               <div ref={addMenuRef} className="relative">
                 <button
@@ -572,16 +574,16 @@ export function WarehouseView({
                   aria-haspopup="menu"
                   aria-expanded={addMenuOpen}
                   onClick={() => setAddMenuOpen((open) => !open)}
-                  className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl bg-[#0071E3] px-3.5 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-[#0077ED] dark:bg-[#2997FF] dark:text-[#0B0C10]"
+                  className="inline-flex min-h-[36px] shrink-0 whitespace-nowrap items-center gap-1.5 rounded-xl bg-[#0071E3] px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-[#0077ED] dark:bg-[#2997FF] dark:text-[#0B0C10]"
                 >
-                  <Plus className="h-4 w-4" />
+                  <Plus className="h-3.5 w-3.5" />
                   <span>Добавить</span>
                   <ChevronDown className={`h-3.5 w-3.5 transition-transform ${addMenuOpen ? 'rotate-180' : ''}`} />
                 </button>
                 {addMenuOpen && (
                   <div
                     role="menu"
-                    className="absolute left-0 z-30 mt-1.5 w-44 rounded-xl border border-black/[0.08] bg-white p-1.5 shadow-xl dark:border-white/[0.12] dark:bg-[#1C1F26]"
+                    className="absolute left-0 z-30 mt-1.5 w-44 max-w-[calc(100vw-3rem)] rounded-xl border border-black/[0.08] bg-white p-1.5 shadow-xl dark:border-white/[0.12] dark:bg-[#1C1F26]"
                   >
                     <button
                       type="button"
@@ -616,15 +618,15 @@ export function WarehouseView({
             <button
               type="button"
               onClick={() => setHistoryModalOpen(true)}
-              className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-black/[0.08] bg-white px-3.5 py-2 text-xs font-semibold hover:bg-zinc-50 dark:border-white/[0.1] dark:bg-[#0B0C10]"
+              className="inline-flex min-h-[36px] shrink-0 whitespace-nowrap items-center gap-1.5 rounded-xl border border-black/[0.08] bg-white px-3 py-1.5 text-xs font-semibold hover:bg-zinc-50 dark:border-white/[0.1] dark:bg-[#0B0C10]"
             >
-              <History className="h-4 w-4" />
+              <History className="h-3.5 w-3.5" />
               <span>Журнал</span>
               <span className="rounded-md bg-black/[0.06] px-1.5 py-0.5 text-[11px] tabular-nums dark:bg-white/[0.08]">
                 {operations.length}
               </span>
             </button>
-          </div>
+          </>
         }
         tabs={[
           { id: 'materials', label: 'Материалы', count: materials.length, icon: Package },
@@ -635,7 +637,7 @@ export function WarehouseView({
         filters={
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
             <div className="relative flex-1">
-              <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400" />
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400" />
               <input
                 type="text"
                 value={search}
@@ -645,8 +647,20 @@ export function WarehouseView({
                     ? 'Поиск материала по названию или категории...'
                     : 'Поиск инструмента, инвентарного № или сотрудника...'
                 }
-                className="w-full rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 py-2 pl-8 pr-3 text-xs outline-none focus:border-[#0071E3] focus:bg-white dark:border-white/[0.1] dark:bg-[#0B0C10] dark:focus:bg-[#0B0C10]"
+                className={`w-full rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 py-2 pl-8 text-xs outline-none focus:border-[#0071E3] focus:bg-white dark:border-white/[0.1] dark:bg-[#0B0C10] dark:focus:bg-[#0B0C10] ${
+                  search ? 'pr-8' : 'pr-3'
+                }`}
               />
+              {search && (
+                <button
+                  type="button"
+                  aria-label="Очистить поиск"
+                  onClick={() => setSearch('')}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-0.5 text-zinc-400 transition hover:bg-black/[0.06] hover:text-zinc-700 dark:hover:bg-white/[0.08] dark:hover:text-zinc-200"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              )}
             </div>
             {tab === 'materials' && (
               <select
@@ -685,9 +699,6 @@ export function WarehouseView({
               <Wrench className="h-3.5 w-3.5" />
               <span>У меня на руках ({myHeldTools.length})</span>
             </div>
-            <span className="text-[11px] text-zinc-500 dark:text-zinc-400">
-              Быстрый возврат на склад
-            </span>
           </div>
           <div className="flex flex-wrap gap-2">
             {myHeldTools.map((item) => (
@@ -938,12 +949,23 @@ export function WarehouseView({
                 )}
 
                 {t.tracking_mode === 'quantity' && t.activeHolders.length > 0 && (
-                  <div className="mt-3 space-y-1 border-t border-black/[0.05] pt-2.5 text-xs dark:border-white/[0.06]">
+                  <div className="mt-3 space-y-1.5 border-t border-black/[0.05] pt-2.5 text-xs dark:border-white/[0.06]">
                     <div className="text-[11px] text-zinc-400">На руках:</div>
                     {t.activeHolders.map((h) => (
-                      <div key={h.userId} className="flex items-center justify-between">
-                        <span>{h.holderName}</span>
-                        <span className="font-semibold tabular-nums">{h.qty} шт</span>
+                      <div key={h.userId} className="space-y-0.5">
+                        <div className="flex items-center justify-between">
+                          <span className="font-medium">{h.holderName}</span>
+                          <span className="font-semibold tabular-nums">{h.qty} шт</span>
+                        </div>
+                        {h.orderBreakdown && h.orderBreakdown.length > 0 && (
+                          <div className="flex flex-wrap gap-x-2 gap-y-0.5 text-[11px] text-zinc-500 tabular-nums">
+                            {h.orderBreakdown.map((b, idx) => (
+                              <span key={`${b.orderId || 'none'}-${idx}`}>
+                                {b.orderNumber || 'Без заказа'}: {b.qty} шт
+                              </span>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -1001,10 +1023,7 @@ export function WarehouseView({
         >
           <div className="flex max-h-[85vh] w-full max-w-2xl flex-col rounded-t-3xl border border-black/[0.08] bg-white shadow-2xl sm:rounded-3xl dark:border-white/[0.1] dark:bg-[#15171C]">
             <div className="flex items-center justify-between border-b border-black/[0.06] px-5 py-4 dark:border-white/[0.08]">
-              <div>
-                <h3 className="text-base font-bold">Журнал операций</h3>
-                <p className="text-xs text-zinc-500">Движение материалов и инструментов</p>
-              </div>
+              <h3 className="text-base font-bold">Журнал операций</h3>
               <button
                 type="button"
                 aria-label="Закрыть журнал"

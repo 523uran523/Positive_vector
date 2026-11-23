@@ -1,15 +1,8 @@
 node_modules/
 build/
 dist/
-dev-dist/
 coverage/
-data/
 .DS_Store
 *.log
 .env*
 !.env.example
-.tmp*
-public/assets/
-playwright-report/
-test-results/
-build-bundle.zip

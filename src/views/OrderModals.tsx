@@ -24,6 +24,7 @@ import {
   apiRequest,
   formatDateRu,
   formatDateTimeRu,
+  formatDuration,
   formatQty,
   formatRub,
   OP_TYPE_LABELS,
@@ -56,6 +57,7 @@ interface CreateOrderModalProps {
   tools: ToolItem[];
   availableTags: string[];
   onClose: () => void;
+  onRefreshWorkspace?: () => void;
   onCreated: (order: Order) => void;
 }
 
@@ -72,9 +74,23 @@ export function CreateOrderModal({
   tools,
   availableTags,
   onClose,
+  onRefreshWorkspace,
   onCreated,
 }: CreateOrderModalProps) {
   const isAdmin = user.role === 'admin';
+  const canCreateClient = isAdmin || Boolean(user.permissions['clients.create'] || user.permissions['orders.create']);
+  const canCreateWarehouseItem = isAdmin || Boolean(user.permissions['warehouse.edit'] || user.permissions['warehouse.receive']);
+
+  const [localCompanies, setLocalCompanies] = useState<Company[]>(companies);
+  const [localContacts, setLocalContacts] = useState<Contact[]>(contacts);
+  const [localMaterials, setLocalMaterials] = useState<MaterialItem[]>(materials);
+  const [localTools, setLocalTools] = useState<ToolItem[]>(tools);
+
+  useEffect(() => { setLocalCompanies(companies); }, [companies]);
+  useEffect(() => { setLocalContacts(contacts); }, [contacts]);
+  useEffect(() => { setLocalMaterials(materials); }, [materials]);
+  useEffect(() => { setLocalTools(tools); }, [tools]);
+
   const [title, setTitle] = useState('');
   const [orderNumber, setOrderNumber] = useState('');
   const [scheduledAt, setScheduledAt] = useState(defaultDate ? `${defaultDate}T10:00` : '');
@@ -94,21 +110,226 @@ export function CreateOrderModal({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
+  // Live substring search & inline quick-create states
+  const [companyQuery, setCompanyQuery] = useState('');
+  const [contactQuery, setContactQuery] = useState('');
+  const [materialQuery, setMaterialQuery] = useState('');
+  const [toolQuery, setToolQuery] = useState('');
+  const [quickAdd, setQuickAdd] = useState<'company' | 'contact' | 'material' | 'tool' | null>(null);
+  const [quickBusy, setQuickBusy] = useState(false);
+
+  const [qcName, setQcName] = useState('');
+  const [qcPhone, setQcPhone] = useState('');
+  const [qcAddress, setQcAddress] = useState('');
+
+  const [qctName, setQctName] = useState('');
+  const [qctPhone, setQctPhone] = useState('');
+  const [qctPos, setQctPos] = useState('');
+
+  const [qmName, setQmName] = useState('');
+  const [qmUnit, setQmUnit] = useState('шт');
+  const [qmQty, setQmQty] = useState('');
+  const [qmPriceRub, setQmPriceRub] = useState('');
+
+  const [qtName, setQtName] = useState('');
+  const [qtMode, setQtMode] = useState<'quantity' | 'individual'>('quantity');
+  const [qtQty, setQtQty] = useState('1');
+
   useEffect(() => {
     if (open) {
       setScheduledAt(defaultDate ? `${defaultDate}T10:00` : '');
       setUnplanned(!defaultDate);
       setCompanyId(defaultCompanyId || '');
       setClientContactId(defaultContactId || '');
+      setCompanyQuery('');
+      setContactQuery('');
+      setMaterialQuery('');
+      setToolQuery('');
+      setQuickAdd(null);
       setError('');
     }
   }, [open, defaultDate, defaultCompanyId, defaultContactId]);
 
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [open, onClose]);
+
   if (!open) return null;
 
   const filteredContacts = companyId
-    ? contacts.filter((c) => c.company_id === companyId)
-    : contacts;
+    ? localContacts.filter((c) => c.company_id === companyId)
+    : localContacts;
+
+  const matchingCompanies = companyQuery.trim()
+    ? localCompanies.filter((c) => c.name.toLowerCase().includes(companyQuery.trim().toLowerCase())).slice(0, 6)
+    : [];
+
+  const matchingContacts = contactQuery.trim()
+    ? filteredContacts
+        .filter((ct) =>
+          `${ct.full_name} ${ct.phone || ''}`.toLowerCase().includes(contactQuery.trim().toLowerCase())
+        )
+        .slice(0, 6)
+    : [];
+
+  const matchingMaterials = materialQuery.trim()
+    ? localMaterials
+        .filter(
+          (m) =>
+            !plannedMaterials.some((p) => p.materialId === m.id) &&
+            m.name.toLowerCase().includes(materialQuery.trim().toLowerCase())
+        )
+        .slice(0, 6)
+    : [];
+
+  const matchingTools = toolQuery.trim()
+    ? localTools
+        .filter((t) => t.name.toLowerCase().includes(toolQuery.trim().toLowerCase()))
+        .slice(0, 6)
+    : [];
+
+  const handleQuickCreateCompany = async () => {
+    if (!qcName.trim()) {
+      setError('Укажите название компании.');
+      return;
+    }
+    setQuickBusy(true);
+    setError('');
+    try {
+      const res = await apiRequest<{ company: Company }>('/api/clients/companies', {
+        method: 'POST',
+        skipOfflineQueue: true,
+        body: { name: qcName.trim(), phone: qcPhone.trim(), address: qcAddress.trim() },
+      });
+      setLocalCompanies((prev) => [res.company, ...prev]);
+      setCompanyId(res.company.id);
+      setClientContactId('');
+      if (!address.trim() && res.company.address) {
+        setAddress(res.company.address);
+      }
+      setCompanyQuery('');
+      setQcName('');
+      setQcPhone('');
+      setQcAddress('');
+      setQuickAdd(null);
+      onRefreshWorkspace?.();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Ошибка создания компании');
+    } finally {
+      setQuickBusy(false);
+    }
+  };
+
+  const handleQuickCreateContact = async () => {
+    if (!qctName.trim()) {
+      setError('Укажите ФИО контакта.');
+      return;
+    }
+    setQuickBusy(true);
+    setError('');
+    try {
+      const res = await apiRequest<{ contact: Contact }>('/api/clients/contacts', {
+        method: 'POST',
+        skipOfflineQueue: true,
+        body: {
+          companyId: companyId || null,
+          fullName: qctName.trim(),
+          phone: qctPhone.trim(),
+          position: qctPos.trim(),
+        },
+      });
+      setLocalContacts((prev) => [res.contact, ...prev]);
+      setClientContactId(res.contact.id);
+      setContactQuery('');
+      setQctName('');
+      setQctPhone('');
+      setQctPos('');
+      setQuickAdd(null);
+      onRefreshWorkspace?.();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Ошибка создания контакта');
+    } finally {
+      setQuickBusy(false);
+    }
+  };
+
+  const handleQuickCreateMaterial = async () => {
+    if (!qmName.trim()) {
+      setError('Укажите название материала.');
+      return;
+    }
+    setQuickBusy(true);
+    setError('');
+    try {
+      const qtyNum = Number(qmQty || 0);
+      const priceNum = Number(qmPriceRub || 0);
+      const res = await apiRequest<{ material: MaterialItem }>('/api/warehouse/materials', {
+        method: 'POST',
+        skipOfflineQueue: true,
+        body: {
+          name: qmName.trim(),
+          unit: qmUnit.trim() || 'шт',
+          initialQtyMilli: qtyNum > 0 ? Math.round(qtyNum * 1000) : 0,
+          purchasePriceKopecks: priceNum > 0 ? Math.round(priceNum * 100) : 0,
+        },
+      });
+      const created: MaterialItem = { ...res.material, reserved_milli: 0 };
+      setLocalMaterials((prev) => [created, ...prev]);
+      setPlannedMaterials((prev) => [...prev, { materialId: created.id, qty: '1' }]);
+      setMaterialQuery('');
+      setQmName('');
+      setQmQty('');
+      setQmPriceRub('');
+      setQuickAdd(null);
+      onRefreshWorkspace?.();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Ошибка создания материала');
+    } finally {
+      setQuickBusy(false);
+    }
+  };
+
+  const handleQuickCreateTool = async () => {
+    if (!qtName.trim()) {
+      setError('Укажите название инструмента.');
+      return;
+    }
+    setQuickBusy(true);
+    setError('');
+    try {
+      const totalQty = Math.max(1, Math.round(Number(qtQty || 1)));
+      const res = await apiRequest<{ tool: ToolItem }>('/api/warehouse/tools', {
+        method: 'POST',
+        skipOfflineQueue: true,
+        body: {
+          name: qtName.trim(),
+          trackingMode: qtMode,
+          totalQty,
+        },
+      });
+      const created: ToolItem = {
+        ...res.tool,
+        instances: res.tool.instances || [],
+        reserved_milli: 0,
+      };
+      setLocalTools((prev) => [created, ...prev]);
+      setPlannedTools((prev) => [...prev, { toolId: created.id, qty: '1' }]);
+      setToolQuery('');
+      setQtName('');
+      setQtQty('1');
+      setQuickAdd(null);
+      onRefreshWorkspace?.();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Ошибка создания инструмента');
+    } finally {
+      setQuickBusy(false);
+    }
+  };
 
   const toggleTag = (tag: string) => {
     setSelectedTags((prev) =>
@@ -200,16 +421,12 @@ export function CreateOrderModal({
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/45 p-0 backdrop-blur-xs sm:items-center sm:p-4">
       <div className="max-h-[92vh] w-full max-w-2xl overflow-y-auto rounded-t-3xl border border-black/[0.08] bg-white p-5 shadow-2xl sm:rounded-3xl sm:p-6 dark:border-white/[0.1] dark:bg-[#15171C]">
-        <div className="mb-4 flex items-center justify-between">
-          <div>
-            <h2 className="font-display text-xl font-bold">Новый заказ</h2>
-            <p className="text-xs text-zinc-500 dark:text-zinc-400">
-              Можно создать быстрый черновик — необязательные поля легко заполнить позже
-            </p>
-          </div>
+        <div className="sticky top-0 z-10 -mx-5 -mt-5 mb-4 flex items-center justify-between border-b border-black/[0.06] bg-white/95 px-5 py-4 backdrop-blur-md sm:-mx-6 sm:-mt-6 sm:px-6 dark:border-white/[0.08] dark:bg-[#15171C]/95">
+          <h2 className="font-display text-xl font-bold">Новый заказ</h2>
           <button
             type="button"
             onClick={onClose}
+            aria-label="Закрыть создание заказа"
             className="flex h-9 w-9 items-center justify-center rounded-xl bg-black/[0.05] text-zinc-500 hover:text-zinc-800 dark:bg-white/[0.06] dark:text-zinc-300"
           >
             <X className="h-5 w-5" />
@@ -280,29 +497,160 @@ export function CreateOrderModal({
 
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div>
-              <label className="mb-1 block text-xs font-semibold text-zinc-600 dark:text-zinc-300">
-                Компания
-              </label>
+              <div className="mb-1 flex items-center justify-between gap-2">
+                <label className="text-xs font-semibold text-zinc-600 dark:text-zinc-300">
+                  Компания
+                </label>
+                {canCreateClient && (
+                  <button
+                    type="button"
+                    aria-label="Добавить компанию"
+                    title="Создать новую компанию"
+                    onClick={() => setQuickAdd((prev) => (prev === 'company' ? null : 'company'))}
+                    className="inline-flex items-center gap-1 text-xs font-semibold text-[#0071E3] hover:underline dark:text-[#2997FF]"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    <span>Новая</span>
+                  </button>
+                )}
+              </div>
+              <input
+                type="text"
+                value={companyQuery}
+                onChange={(e) => setCompanyQuery(e.target.value)}
+                placeholder="Поиск компании по части названия..."
+                className="mb-1.5 w-full rounded-xl border border-black/[0.08] bg-white px-3 py-1.5 text-xs outline-none focus:border-[#0071E3] dark:border-white/[0.1] dark:bg-[#0B0C10]"
+              />
+              {matchingCompanies.length > 0 && (
+                <div className="mb-1.5 max-h-28 overflow-y-auto rounded-xl border border-black/[0.08] bg-white p-1 dark:border-white/[0.1] dark:bg-[#0B0C10]">
+                  {matchingCompanies.map((c) => (
+                    <button
+                      key={c.id}
+                      type="button"
+                      onClick={() => {
+                        setCompanyId(c.id);
+                        setClientContactId('');
+                        setCompanyQuery('');
+                        if (!address.trim() && c.address) setAddress(c.address);
+                      }}
+                      className="flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-xs hover:bg-[#0071E3]/10 hover:text-[#0071E3]"
+                    >
+                      <span className="truncate font-medium">{c.name}</span>
+                      {c.phone && <span className="ml-2 shrink-0 text-[11px] text-zinc-400">{c.phone}</span>}
+                    </button>
+                  ))}
+                </div>
+              )}
               <select
                 value={companyId}
                 onChange={(e) => {
-                  setCompanyId(e.target.value);
+                  const nextId = e.target.value;
+                  setCompanyId(nextId);
                   setClientContactId('');
+                  const selected = localCompanies.find((c) => c.id === nextId);
+                  if (selected && !address.trim() && selected.address) {
+                    setAddress(selected.address);
+                  }
                 }}
                 className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3.5 py-2.5 text-sm outline-none dark:border-white/[0.12] dark:bg-[#0B0C10]"
               >
                 <option value="">— Не выбрана —</option>
-                {companies.map((c) => (
+                {localCompanies.map((c) => (
                   <option key={c.id} value={c.id}>
                     {c.name}
                   </option>
                 ))}
               </select>
+              {quickAdd === 'company' && (
+                <div className="mt-2 space-y-2 rounded-xl border border-[#0071E3]/30 bg-[#0071E3]/[0.04] p-3">
+                  <div className="text-[11px] font-semibold text-[#0071E3] dark:text-[#2997FF]">Новая компания</div>
+                  <input
+                    type="text"
+                    value={qcName}
+                    onChange={(e) => setQcName(e.target.value)}
+                    placeholder="Название компании *"
+                    className="w-full rounded-lg border border-black/[0.1] bg-white px-2.5 py-1.5 text-xs dark:border-white/[0.1] dark:bg-[#0B0C10]"
+                  />
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <input
+                      type="tel"
+                      value={qcPhone}
+                      onChange={(e) => setQcPhone(e.target.value)}
+                      placeholder="Телефон"
+                      className="rounded-lg border border-black/[0.1] bg-white px-2.5 py-1.5 text-xs dark:border-white/[0.1] dark:bg-[#0B0C10]"
+                    />
+                    <input
+                      type="text"
+                      value={qcAddress}
+                      onChange={(e) => setQcAddress(e.target.value)}
+                      placeholder="Адрес"
+                      className="rounded-lg border border-black/[0.1] bg-white px-2.5 py-1.5 text-xs dark:border-white/[0.1] dark:bg-[#0B0C10]"
+                    />
+                  </div>
+                  <div className="flex gap-1.5">
+                    <button
+                      type="button"
+                      disabled={quickBusy}
+                      onClick={() => void handleQuickCreateCompany()}
+                      className="rounded-lg bg-[#0071E3] px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50"
+                    >
+                      Сохранить и выбрать
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setQuickAdd(null)}
+                      className="rounded-lg border border-black/[0.1] px-2.5 py-1.5 text-xs dark:border-white/[0.1]"
+                    >
+                      Отмена
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
+
             <div>
-              <label className="mb-1 block text-xs font-semibold text-zinc-600 dark:text-zinc-300">
-                Контакт клиента
-              </label>
+              <div className="mb-1 flex items-center justify-between gap-2">
+                <label className="text-xs font-semibold text-zinc-600 dark:text-zinc-300">
+                  Контакт клиента
+                </label>
+                {canCreateClient && (
+                  <button
+                    type="button"
+                    aria-label="Добавить контакт"
+                    title="Создать новый контакт"
+                    onClick={() => setQuickAdd((prev) => (prev === 'contact' ? null : 'contact'))}
+                    className="inline-flex items-center gap-1 text-xs font-semibold text-[#0071E3] hover:underline dark:text-[#2997FF]"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    <span>Новый</span>
+                  </button>
+                )}
+              </div>
+              <input
+                type="text"
+                value={contactQuery}
+                onChange={(e) => setContactQuery(e.target.value)}
+                placeholder="Поиск контакта по имени или телефону..."
+                className="mb-1.5 w-full rounded-xl border border-black/[0.08] bg-white px-3 py-1.5 text-xs outline-none focus:border-[#0071E3] dark:border-white/[0.1] dark:bg-[#0B0C10]"
+              />
+              {matchingContacts.length > 0 && (
+                <div className="mb-1.5 max-h-28 overflow-y-auto rounded-xl border border-black/[0.08] bg-white p-1 dark:border-white/[0.1] dark:bg-[#0B0C10]">
+                  {matchingContacts.map((ct) => (
+                    <button
+                      key={ct.id}
+                      type="button"
+                      onClick={() => {
+                        setClientContactId(ct.id);
+                        setContactQuery('');
+                      }}
+                      className="flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-xs hover:bg-[#0071E3]/10 hover:text-[#0071E3]"
+                    >
+                      <span className="truncate font-medium">{ct.full_name}</span>
+                      {ct.phone && <span className="ml-2 shrink-0 text-[11px] text-zinc-400">{ct.phone}</span>}
+                    </button>
+                  ))}
+                </div>
+              )}
               <select
                 value={clientContactId}
                 onChange={(e) => setClientContactId(e.target.value)}
@@ -315,6 +663,51 @@ export function CreateOrderModal({
                   </option>
                 ))}
               </select>
+              {quickAdd === 'contact' && (
+                <div className="mt-2 space-y-2 rounded-xl border border-[#0071E3]/30 bg-[#0071E3]/[0.04] p-3">
+                  <div className="text-[11px] font-semibold text-[#0071E3] dark:text-[#2997FF]">Новый контакт</div>
+                  <input
+                    type="text"
+                    value={qctName}
+                    onChange={(e) => setQctName(e.target.value)}
+                    placeholder="ФИО *"
+                    className="w-full rounded-lg border border-black/[0.1] bg-white px-2.5 py-1.5 text-xs dark:border-white/[0.1] dark:bg-[#0B0C10]"
+                  />
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <input
+                      type="tel"
+                      value={qctPhone}
+                      onChange={(e) => setQctPhone(e.target.value)}
+                      placeholder="Телефон"
+                      className="rounded-lg border border-black/[0.1] bg-white px-2.5 py-1.5 text-xs dark:border-white/[0.1] dark:bg-[#0B0C10]"
+                    />
+                    <input
+                      type="text"
+                      value={qctPos}
+                      onChange={(e) => setQctPos(e.target.value)}
+                      placeholder="Должность"
+                      className="rounded-lg border border-black/[0.1] bg-white px-2.5 py-1.5 text-xs dark:border-white/[0.1] dark:bg-[#0B0C10]"
+                    />
+                  </div>
+                  <div className="flex gap-1.5">
+                    <button
+                      type="button"
+                      disabled={quickBusy}
+                      onClick={() => void handleQuickCreateContact()}
+                      className="rounded-lg bg-[#0071E3] px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50"
+                    >
+                      Сохранить и выбрать
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setQuickAdd(null)}
+                      className="rounded-lg border border-black/[0.1] px-2.5 py-1.5 text-xs dark:border-white/[0.1]"
+                    >
+                      Отмена
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 
@@ -512,30 +905,223 @@ export function CreateOrderModal({
           <div className="rounded-2xl border border-black/[0.06] bg-[#F5F5F7]/60 p-3.5 dark:border-white/[0.08] dark:bg-[#0B0C10]">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <span className="text-xs font-semibold text-zinc-700 dark:text-zinc-200">
-                План материалов и инструментов (Сценарий А)
+                Материалы и инструменты для заказа
               </span>
-              <div className="flex items-center gap-3">
+              <div className="flex flex-wrap items-center gap-3">
                 <button
                   type="button"
-                  disabled={!materials.some(m => !plannedMaterials.some(p => p.materialId === m.id))}
+                  disabled={!localMaterials.some(m => !plannedMaterials.some(p => p.materialId === m.id))}
                   onClick={() =>
-                    setPlannedMaterials((p) => [...p, { materialId: materials.find(m => !p.some(item => item.materialId === m.id))?.id || '', qty: '1' }])
+                    setPlannedMaterials((p) => [...p, { materialId: localMaterials.find(m => !p.some(item => item.materialId === m.id))?.id || '', qty: '1' }])
                   }
-                  className="text-xs font-semibold text-[#0071E3] hover:underline dark:text-[#2997FF]"
+                  className="text-xs font-semibold text-[#0071E3] hover:underline disabled:opacity-40 dark:text-[#2997FF]"
                 >
-                  + Материал
+                  Выбрать материал
                 </button>
+                {canCreateWarehouseItem && (
+                  <button
+                    type="button"
+                    onClick={() => setQuickAdd((prev) => (prev === 'material' ? null : 'material'))}
+                    className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-600 hover:underline dark:text-emerald-400"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    <span>Новый материал</span>
+                  </button>
+                )}
                 <button
                   type="button"
+                  disabled={localTools.length === 0}
                   onClick={() =>
-                    setPlannedTools((p) => [...p, { toolId: tools[0]?.id || '', qty: '1' }])
+                    setPlannedTools((p) => [...p, { toolId: localTools[0]?.id || '', qty: '1' }])
                   }
-                  className="text-xs font-semibold text-[#0071E3] hover:underline dark:text-[#2997FF]"
+                  className="text-xs font-semibold text-[#0071E3] hover:underline disabled:opacity-40 dark:text-[#2997FF]"
                 >
-                  + Инструмент
+                  Выбрать инструмент
                 </button>
+                {canCreateWarehouseItem && (
+                  <button
+                    type="button"
+                    onClick={() => setQuickAdd((prev) => (prev === 'tool' ? null : 'tool'))}
+                    className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-600 hover:underline dark:text-emerald-400"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    <span>Новый инструмент</span>
+                  </button>
+                )}
               </div>
             </div>
+
+            {/* Substring search inputs for materials & tools */}
+            <div className="mt-2.5 grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <div>
+                <input
+                  type="text"
+                  value={materialQuery}
+                  onChange={(e) => setMaterialQuery(e.target.value)}
+                  placeholder="Быстрый поиск материала по названию..."
+                  className="w-full rounded-xl border border-black/[0.08] bg-white px-3 py-1.5 text-xs outline-none focus:border-[#0071E3] dark:border-white/[0.1] dark:bg-[#15171C]"
+                />
+                {matchingMaterials.length > 0 && (
+                  <div className="mt-1 max-h-28 overflow-y-auto rounded-xl border border-black/[0.08] bg-white p-1 dark:border-white/[0.1] dark:bg-[#15171C]">
+                    {matchingMaterials.map((m) => (
+                      <button
+                        key={m.id}
+                        type="button"
+                        onClick={() => {
+                          setPlannedMaterials((prev) => [...prev, { materialId: m.id, qty: '1' }]);
+                          setMaterialQuery('');
+                        }}
+                        className="flex w-full items-center justify-between rounded-lg px-2.5 py-1 text-left text-xs hover:bg-[#0071E3]/10 hover:text-[#0071E3]"
+                      >
+                        <span className="truncate font-medium">{m.name}</span>
+                        <span className="ml-2 shrink-0 text-[11px] text-zinc-400">
+                          {formatQty(Math.max(0, m.quantity_milli - (m.reserved_milli || 0)))} {m.unit}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div>
+                <input
+                  type="text"
+                  value={toolQuery}
+                  onChange={(e) => setToolQuery(e.target.value)}
+                  placeholder="Быстрый поиск инструмента по названию..."
+                  className="w-full rounded-xl border border-black/[0.08] bg-white px-3 py-1.5 text-xs outline-none focus:border-[#0071E3] dark:border-white/[0.1] dark:bg-[#15171C]"
+                />
+                {matchingTools.length > 0 && (
+                  <div className="mt-1 max-h-28 overflow-y-auto rounded-xl border border-black/[0.08] bg-white p-1 dark:border-white/[0.1] dark:bg-[#15171C]">
+                    {matchingTools.map((t) => (
+                      <button
+                        key={t.id}
+                        type="button"
+                        onClick={() => {
+                          setPlannedTools((prev) => [...prev, { toolId: t.id, qty: '1' }]);
+                          setToolQuery('');
+                        }}
+                        className="flex w-full items-center justify-between rounded-lg px-2.5 py-1 text-left text-xs hover:bg-[#0071E3]/10 hover:text-[#0071E3]"
+                      >
+                        <span className="truncate font-medium">{t.icon_emoji} {t.name}</span>
+                        <span className="ml-2 shrink-0 text-[11px] text-zinc-400">
+                          {t.available_qty}/{t.total_qty}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {quickAdd === 'material' && (
+              <div className="mt-2.5 space-y-2 rounded-xl border border-emerald-500/30 bg-emerald-500/[0.05] p-3">
+                <div className="text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">
+                  Добавить новый материал на склад и в заказ
+                </div>
+                <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-4">
+                  <input
+                    type="text"
+                    value={qmName}
+                    onChange={(e) => setQmName(e.target.value)}
+                    placeholder="Название материала *"
+                    className="rounded-lg border border-black/[0.1] bg-white px-2.5 py-1.5 text-xs sm:col-span-2 dark:border-white/[0.1] dark:bg-[#15171C]"
+                  />
+                  <input
+                    type="text"
+                    value={qmUnit}
+                    onChange={(e) => setQmUnit(e.target.value)}
+                    placeholder="Ед. (шт, м)"
+                    className="rounded-lg border border-black/[0.1] bg-white px-2.5 py-1.5 text-xs dark:border-white/[0.1] dark:bg-[#15171C]"
+                  />
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.1"
+                    value={qmQty}
+                    onChange={(e) => setQmQty(e.target.value)}
+                    placeholder="Остаток"
+                    className="rounded-lg border border-black/[0.1] bg-white px-2.5 py-1.5 text-xs tabular-nums dark:border-white/[0.1] dark:bg-[#15171C]"
+                  />
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={qmPriceRub}
+                    onChange={(e) => setQmPriceRub(e.target.value)}
+                    placeholder="Цена закупки, ₽"
+                    className="w-36 rounded-lg border border-black/[0.1] bg-white px-2.5 py-1.5 text-xs tabular-nums dark:border-white/[0.1] dark:bg-[#15171C]"
+                  />
+                  <button
+                    type="button"
+                    disabled={quickBusy}
+                    onClick={() => void handleQuickCreateMaterial()}
+                    className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50"
+                  >
+                    Сохранить и добавить
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setQuickAdd(null)}
+                    className="rounded-lg border border-black/[0.1] px-2.5 py-1.5 text-xs dark:border-white/[0.1]"
+                  >
+                    Отмена
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {quickAdd === 'tool' && (
+              <div className="mt-2.5 space-y-2 rounded-xl border border-emerald-500/30 bg-emerald-500/[0.05] p-3">
+                <div className="text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">
+                  Добавить новый инструмент на склад и в заказ
+                </div>
+                <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-3">
+                  <input
+                    type="text"
+                    value={qtName}
+                    onChange={(e) => setQtName(e.target.value)}
+                    placeholder="Название инструмента *"
+                    className="rounded-lg border border-black/[0.1] bg-white px-2.5 py-1.5 text-xs dark:border-white/[0.1] dark:bg-[#15171C]"
+                  />
+                  <select
+                    value={qtMode}
+                    onChange={(e) => setQtMode(e.target.value as 'quantity' | 'individual')}
+                    className="rounded-lg border border-black/[0.1] bg-white px-2.5 py-1.5 text-xs dark:border-white/[0.1] dark:bg-[#15171C]"
+                  >
+                    <option value="quantity">Количественный</option>
+                    <option value="individual">Поштучный (инв. №)</option>
+                  </select>
+                  <input
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={qtQty}
+                    onChange={(e) => setQtQty(e.target.value)}
+                    placeholder="Кол-во"
+                    className="rounded-lg border border-black/[0.1] bg-white px-2.5 py-1.5 text-xs tabular-nums dark:border-white/[0.1] dark:bg-[#15171C]"
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={quickBusy}
+                    onClick={() => void handleQuickCreateTool()}
+                    className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50"
+                  >
+                    Сохранить и добавить
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setQuickAdd(null)}
+                    className="rounded-lg border border-black/[0.1] px-2.5 py-1.5 text-xs dark:border-white/[0.1]"
+                  >
+                    Отмена
+                  </button>
+                </div>
+              </div>
+            )}
 
             {(plannedMaterials.length > 0 || plannedTools.length > 0) && (
               <div className="mt-2.5 space-y-2">
@@ -550,7 +1136,7 @@ export function CreateOrderModal({
                       }}
                       className="flex-1 rounded-xl border border-black/[0.08] bg-white px-3 py-2 text-xs dark:border-white/[0.1] dark:bg-[#15171C]"
                     >
-                      {materials.map((m) => (
+                      {localMaterials.map((m) => (
                         <option key={m.id} value={m.id} disabled={m.id !== pm.materialId && plannedMaterials.some(item => item.materialId === m.id)}>
                           {m.name} (свободно {formatQty(Math.max(0,m.quantity_milli-(m.reserved_milli||0)))} {m.unit})
                         </option>
@@ -591,7 +1177,7 @@ export function CreateOrderModal({
                       }}
                       className="flex-1 rounded-xl border border-black/[0.08] bg-white px-3 py-2 text-xs dark:border-white/[0.1] dark:bg-[#15171C]"
                     >
-                      {tools.map((t) => (
+                      {localTools.map((t) => (
                         <option key={t.id} value={t.id}>
                           {t.icon_emoji} {t.name} (свободно {formatQty(Math.max(0,t.available_qty*1000-(t.reserved_milli||0)))})
                         </option>
@@ -732,7 +1318,7 @@ export function OrderDetailModal({
   const [moneyBusy, setMoneyBusy] = useState(false);
   const [priceRub, setPriceRub] = useState('');
   const [payAmountRub, setPayAmountRub] = useState('');
-  const [payType, setPayType] = useState<'advance' | 'partial' | 'full'>('partial');
+  const [payType, setPayType] = useState<'advance' | 'partial' | 'full' | 'refund'>('partial');
   const [payDate, setPayDate] = useState('');
   const [payComment, setPayComment] = useState('');
   const [editingPaymentId, setEditingPaymentId] = useState<string | null>(null);
@@ -819,9 +1405,25 @@ export function OrderDetailModal({
     if (!whToolId && tools[0]) setWhToolId(tools[0].id);
   }, [materials, tools, whMatId, whToolId]);
 
+  useEffect(() => {
+    if (!order) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (previewImage) {
+        setPreviewImage(null);
+        return;
+      }
+      onClose();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [order, previewImage, onClose]);
+
   if (!order) return null;
 
   const isAdmin = user.role === 'admin';
+  const isClosedOrder = order.status === 'completed' || order.status === 'cancelled';
+  const isClosedLocked = isClosedOrder && !isAdmin;
   const canTakeWarehouse = isAdmin || user.permissions['warehouse.take'];
   const canEditOrder = isAdmin || user.permissions['orders.edit_assigned'];
   const statusMeta = ORDER_STATUS_META[order.status] || ORDER_STATUS_META.new;
@@ -910,8 +1512,8 @@ export function OrderDetailModal({
     setError('');
     if (payment) {
       setEditingPaymentId(payment.id);
-      setPayAmountRub(String(Math.round(payment.amount_kopecks / 100)));
-      setPayType(payment.payment_type || 'partial');
+      setPayAmountRub(String(Math.round(Math.abs(payment.amount_kopecks) / 100)));
+      setPayType((payment.payment_type || (payment.amount_kopecks < 0 ? 'refund' : 'partial')) as 'advance' | 'partial' | 'full' | 'refund');
       setPayDate((payment.paid_at || '').slice(0, 10));
       setPayComment(payment.comment || '');
       return;
@@ -1188,11 +1790,11 @@ export function OrderDetailModal({
         {
           method: 'POST',
           body: {
-            startTime: repStart,
-            endTime: repEnd,
+            ...(isAdmin ? { startTime: repStart, endTime: repEnd } : {}),
             workDone: repWork,
             notes: repNotes,
             completeVisit,
+            tzOffsetMinutes: new Date().getTimezoneOffset(),
           },
           offlineLabel: `Отчёт по выезду ${order.order_number}`,
         }
@@ -1204,6 +1806,7 @@ export function OrderDetailModal({
         setOfflineNotice('Отчёт сохранён в офлайн-очередь и отправится при появлении сети.');
       } else if (res.order) {
         onOrderUpdated(res.order);
+        onWarehouseRefresh();
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Ошибка отправки отчёта');
@@ -1223,8 +1826,7 @@ export function OrderDetailModal({
         {
           method: 'PATCH',
           body: {
-            startTime: editRepStart,
-            endTime: editRepEnd,
+            ...(isAdmin ? { startTime: editRepStart, endTime: editRepEnd } : {}),
             workDone: editRepWork,
             notes: editRepNotes,
           },
@@ -1638,19 +2240,19 @@ export function OrderDetailModal({
             <button
               type="button"
               onClick={() => onDiscussOrder(order)}
-              className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-black/[0.08] bg-[#F5F5F7] px-3 text-xs font-semibold text-[#0071E3] hover:bg-black/[0.06] dark:border-white/[0.1] dark:bg-[#0B0C10] dark:text-[#71b5ff]"
+              className="inline-flex h-9 shrink-0 whitespace-nowrap items-center gap-1.5 rounded-xl border border-black/[0.08] bg-[#F5F5F7] px-3 text-xs font-semibold text-[#0071E3] hover:bg-black/[0.06] dark:border-white/[0.1] dark:bg-[#0B0C10] dark:text-[#71b5ff]"
             >
               <MessageSquare className="h-3.5 w-3.5" />
               <span>Перейти в чат</span>
             </button>
-            {canEditOrder && (
+            {canEditOrder && !isClosedLocked && (
               <button
                 type="button"
                 onClick={() => {
                   setTab('info');
                   setEditOpen((prev) => !prev);
                 }}
-                className={`inline-flex h-9 items-center gap-1.5 rounded-xl border px-3 text-xs font-semibold transition ${
+                className={`inline-flex h-9 shrink-0 whitespace-nowrap items-center gap-1.5 rounded-xl border px-3 text-xs font-semibold transition ${
                   editOpen
                     ? 'border-[#0071E3] bg-[#0071E3] text-white dark:border-[#2997FF] dark:bg-[#2997FF] dark:text-[#0B0C10]'
                     : 'border-black/[0.08] bg-[#F5F5F7] text-[#0071E3] hover:bg-black/[0.06] dark:border-white/[0.1] dark:bg-[#0B0C10] dark:text-[#71b5ff]'
@@ -1792,76 +2394,118 @@ export function OrderDetailModal({
 
           {tab === 'info' && (
             <div className="space-y-4">
+              {isClosedLocked && (
+                <div className="rounded-xl border border-amber-500/25 bg-amber-500/10 px-3.5 py-2.5 text-xs text-amber-800 dark:text-amber-300">
+                  Заказ закрыт. Редактирование, отчёты, складские операции и загрузка документов заблокированы — разрешена только загрузка фотографий.
+                </div>
+              )}
               <div className="flex items-center gap-2 text-sm text-zinc-700 dark:text-zinc-200">
                 <Calendar className="h-4 w-4 text-[#0071E3] dark:text-[#71b5ff]" />
                 <span>{order.scheduled_at ? formatDateTimeRu(order.scheduled_at) : 'Дата не запланирована'}</span>
               </div>
               {isAdmin && (
                 <div className="space-y-3">
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                    <div className="rounded-2xl border border-black/[0.06] bg-[#F5F5F7] p-3 dark:border-white/[0.08] dark:bg-[#0B0C10]">
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="text-[11px] text-zinc-500">Сумма заказа</div>
-                        <button
-                          type="button"
-                          onClick={openPriceEditor}
-                          aria-label="Изменить сумму заказа"
-                          title="Изменить сумму заказа"
-                          className="rounded-lg p-1 text-zinc-400 hover:bg-black/[0.05] hover:text-[#0071E3] dark:hover:bg-white/[0.08]"
-                        >
-                          <Pencil className="h-3.5 w-3.5" />
-                        </button>
+                  {(() => {
+                    const orderOverpaidKopecks = Math.max(
+                      0,
+                      order.overpaid_kopecks ?? orderPaidKopecks - orderPriceKopecks
+                    );
+                    const orderSalaryKopecks = Number(order.salary_cost_kopecks || 0);
+                    const orderProfitKopecks =
+                      order.profit_kopecks ??
+                      orderPriceKopecks - Number(order.material_cost_kopecks || 0) - orderSalaryKopecks;
+                    const refundedKopecks = orderPayments
+                      .filter((p) => Number(p.amount_kopecks || 0) < 0 || p.payment_type === 'refund')
+                      .reduce((sum, p) => sum + Math.abs(Number(p.amount_kopecks || 0)), 0);
+                    return (
+                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                        <div className="rounded-2xl border border-black/[0.06] bg-[#F5F5F7] p-3 dark:border-white/[0.08] dark:bg-[#0B0C10]">
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="text-[11px] text-zinc-500">Сумма заказа</div>
+                            <button
+                              type="button"
+                              onClick={openPriceEditor}
+                              aria-label="Изменить сумму заказа"
+                              title="Изменить сумму заказа"
+                              className="rounded-lg p-1 text-zinc-400 hover:bg-black/[0.05] hover:text-[#0071E3] dark:hover:bg-white/[0.08]"
+                            >
+                              <Pencil className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                          <div className="mt-0.5 text-base font-bold tabular-nums">
+                            {formatRub(order.price_kopecks)}
+                          </div>
+                          <div className="text-[10px] text-zinc-400">
+                            Долг клиента: {formatRub(orderDebtKopecks)}
+                          </div>
+                          {orderOverpaidKopecks > 0 && (
+                            <div className="text-[10px] font-semibold text-emerald-600 dark:text-emerald-400">
+                              Переплата: +{formatRub(orderOverpaidKopecks)}
+                            </div>
+                          )}
+                        </div>
+                        <div className="rounded-2xl border border-black/[0.06] bg-[#F5F5F7] p-3 dark:border-white/[0.08] dark:bg-[#0B0C10]">
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="text-[11px] text-zinc-500">Оплачено</div>
+                            <button
+                              type="button"
+                              onClick={() => openPaymentEditor()}
+                              aria-label="Добавить оплату"
+                              title="Добавить или изменить оплату"
+                              className="rounded-lg p-1 text-zinc-400 hover:bg-black/[0.05] hover:text-[#0071E3] dark:hover:bg-white/[0.08]"
+                            >
+                              <Pencil className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                          <div className="mt-0.5 text-base font-bold text-emerald-600 tabular-nums dark:text-emerald-400">
+                            {formatRub(order.paid_kopecks)}
+                          </div>
+                          <div className="text-[10px] text-zinc-400">
+                            Аванс {formatRub(advanceKopecks)} · Доплаты {formatRub(otherPaymentsKopecks)}
+                            {refundedKopecks > 0 ? ` · Возврат −${formatRub(refundedKopecks)}` : ''}
+                          </div>
+                        </div>
+                        <div className="rounded-2xl border border-black/[0.06] bg-[#F5F5F7] p-3 dark:border-white/[0.08] dark:bg-[#0B0C10]">
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="text-[11px] text-zinc-500">Материалы (списано)</div>
+                            <button
+                              type="button"
+                              onClick={openMaterialEditor}
+                              aria-label="Изменить себестоимость материалов"
+                              title="Изменить себестоимость материалов"
+                              className="rounded-lg p-1 text-zinc-400 hover:bg-black/[0.05] hover:text-[#0071E3] dark:hover:bg-white/[0.08]"
+                            >
+                              <Pencil className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                          <div className="mt-0.5 text-base font-bold tabular-nums">
+                            {formatRub(order.material_cost_kopecks)}
+                          </div>
+                          <div className="text-[10px] text-zinc-400">
+                            {hasMaterialOverride
+                              ? `Ручная сумма · по списаниям ${formatRub(autoMaterialKopecks)}`
+                              : 'Средневзвешенный расчёт'}
+                          </div>
+                        </div>
+                        <div className="rounded-2xl border border-black/[0.06] bg-[#F5F5F7] p-3 dark:border-white/[0.08] dark:bg-[#0B0C10]">
+                          <div className="text-[11px] text-zinc-500">Прибыль по заказу</div>
+                          <div
+                            className={`mt-0.5 text-base font-bold tabular-nums ${
+                              orderProfitKopecks >= 0
+                                ? 'text-emerald-600 dark:text-emerald-400'
+                                : 'text-red-600 dark:text-red-400'
+                            }`}
+                          >
+                            {orderProfitKopecks < 0 ? '−' : ''}
+                            {formatRub(Math.abs(orderProfitKopecks))}
+                          </div>
+                          <div className="text-[10px] text-zinc-400">
+                            Зарплата: {formatRub(orderSalaryKopecks)}
+                          </div>
+                        </div>
                       </div>
-                      <div className="mt-0.5 text-base font-bold tabular-nums">
-                        {formatRub(order.price_kopecks)}
-                      </div>
-                      <div className="text-[10px] text-zinc-400">
-                        Долг клиента: {formatRub(orderDebtKopecks)}
-                      </div>
-                    </div>
-                    <div className="rounded-2xl border border-black/[0.06] bg-[#F5F5F7] p-3 dark:border-white/[0.08] dark:bg-[#0B0C10]">
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="text-[11px] text-zinc-500">Оплачено</div>
-                        <button
-                          type="button"
-                          onClick={() => openPaymentEditor()}
-                          aria-label="Добавить оплату"
-                          title="Добавить или изменить оплату"
-                          className="rounded-lg p-1 text-zinc-400 hover:bg-black/[0.05] hover:text-[#0071E3] dark:hover:bg-white/[0.08]"
-                        >
-                          <Pencil className="h-3.5 w-3.5" />
-                        </button>
-                      </div>
-                      <div className="mt-0.5 text-base font-bold text-emerald-600 tabular-nums dark:text-emerald-400">
-                        {formatRub(order.paid_kopecks)}
-                      </div>
-                      <div className="text-[10px] text-zinc-400">
-                        Аванс {formatRub(advanceKopecks)} · Доплаты {formatRub(otherPaymentsKopecks)}
-                      </div>
-                    </div>
-                    <div className="rounded-2xl border border-black/[0.06] bg-[#F5F5F7] p-3 dark:border-white/[0.08] dark:bg-[#0B0C10]">
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="text-[11px] text-zinc-500">Материалы (списано)</div>
-                        <button
-                          type="button"
-                          onClick={openMaterialEditor}
-                          aria-label="Изменить себестоимость материалов"
-                          title="Изменить себестоимость материалов"
-                          className="rounded-lg p-1 text-zinc-400 hover:bg-black/[0.05] hover:text-[#0071E3] dark:hover:bg-white/[0.08]"
-                        >
-                          <Pencil className="h-3.5 w-3.5" />
-                        </button>
-                      </div>
-                      <div className="mt-0.5 text-base font-bold tabular-nums">
-                        {formatRub(order.material_cost_kopecks)}
-                      </div>
-                      <div className="text-[10px] text-zinc-400">
-                        {hasMaterialOverride
-                          ? `Ручная сумма · по списаниям ${formatRub(autoMaterialKopecks)}`
-                          : 'Расчёт по списаниям со склада'}
-                      </div>
-                    </div>
-                  </div>
+                    );
+                  })()}
 
                   {moneyEditor === 'price' && (
                     <div className="rounded-2xl border border-black/[0.06] bg-white p-4 dark:border-white/[0.08] dark:bg-[#15171C]">
@@ -1902,7 +2546,11 @@ export function OrderDetailModal({
                     <div className="rounded-2xl border border-black/[0.06] bg-white p-4 dark:border-white/[0.08] dark:bg-[#15171C]">
                       <div className="mb-3 flex items-center justify-between gap-2">
                         <div className="text-xs font-semibold">
-                          {editingPaymentId ? 'Изменить оплату' : 'Добавить оплату'}
+                          {editingPaymentId
+                            ? 'Изменить операцию'
+                            : payType === 'refund'
+                              ? 'Возврат клиенту'
+                              : 'Добавить оплату'}
                         </div>
                         <button
                           type="button"
@@ -1929,12 +2577,13 @@ export function OrderDetailModal({
                         />
                         <select
                           value={payType}
-                          onChange={(e) => setPayType(e.target.value as 'advance' | 'partial' | 'full')}
+                          onChange={(e) => setPayType(e.target.value as 'advance' | 'partial' | 'full' | 'refund')}
                           className="w-full rounded-xl border border-black/[0.08] bg-white px-3 py-2 text-sm dark:border-white/[0.1] dark:bg-[#0B0C10]"
                         >
                           <option value="advance">Аванс</option>
                           <option value="partial">Доплата</option>
                           <option value="full">Полный расчёт</option>
+                          <option value="refund">Возврат клиенту</option>
                         </select>
                         <input
                           type="date"
@@ -1956,9 +2605,15 @@ export function OrderDetailModal({
                           type="button"
                           onClick={() => void handleSavePayment()}
                           disabled={moneyBusy}
-                          className="rounded-xl bg-[#0071E3] px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
+                          className={`rounded-xl px-4 py-2 text-xs font-semibold text-white disabled:opacity-50 ${
+                            payType === 'refund' ? 'bg-amber-600' : 'bg-[#0071E3]'
+                          }`}
                         >
-                          {editingPaymentId ? 'Сохранить оплату' : 'Добавить оплату'}
+                          {editingPaymentId
+                            ? 'Сохранить изменения'
+                            : payType === 'refund'
+                              ? 'Провести возврат'
+                              : 'Добавить оплату'}
                         </button>
                         <button
                           type="button"
@@ -1971,7 +2626,9 @@ export function OrderDetailModal({
                           Отмена
                         </button>
                         <span className="text-[11px] text-zinc-500">
-                          Платёж привязывается к заказу и попадает в финансы.
+                          {payType === 'refund'
+                            ? 'Возврат уменьшает кассу и сумму оплат по заказу.'
+                            : 'Платёж привязывается к заказу и попадает в финансы.'}
                         </span>
                       </div>
                     </div>
@@ -2071,7 +2728,9 @@ export function OrderDetailModal({
                       </div>
                     ) : paymentsExpanded ? (
                       <div className="mt-3 space-y-1.5">
-                        {orderPayments.map((payment) => (
+                        {orderPayments.map((payment) => {
+                          const isRefund = payment.payment_type === 'refund' || Number(payment.amount_kopecks || 0) < 0;
+                          return (
                           <div
                             key={payment.id}
                             className="flex items-center justify-between gap-2 rounded-xl border border-black/[0.06] px-3 py-2 dark:border-white/[0.08]"
@@ -2080,15 +2739,24 @@ export function OrderDetailModal({
                               <div className="flex flex-wrap items-center gap-1.5 text-xs">
                                 <span
                                   className={`rounded-md px-1.5 py-0.5 text-[10px] font-semibold ${
-                                    payment.payment_type === 'advance'
-                                      ? 'bg-sky-500/10 text-sky-600 dark:text-sky-400'
-                                      : 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+                                    isRefund
+                                      ? 'bg-amber-500/12 text-amber-700 dark:text-amber-300'
+                                      : payment.payment_type === 'advance'
+                                        ? 'bg-sky-500/10 text-sky-600 dark:text-sky-400'
+                                        : 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
                                   }`}
                                 >
                                   {PAYMENT_TYPE_LABELS[payment.payment_type] || payment.payment_type}
                                 </span>
-                                <span className="font-bold text-emerald-600 tabular-nums dark:text-emerald-400">
-                                  {formatRub(payment.amount_kopecks)}
+                                <span
+                                  className={`font-bold tabular-nums ${
+                                    isRefund
+                                      ? 'text-amber-700 dark:text-amber-300'
+                                      : 'text-emerald-600 dark:text-emerald-400'
+                                  }`}
+                                >
+                                  {isRefund ? '−' : ''}
+                                  {formatRub(Math.abs(payment.amount_kopecks))}
                                 </span>
                               </div>
                               <div className="truncate text-[11px] text-zinc-500">
@@ -2137,7 +2805,8 @@ export function OrderDetailModal({
                               )}
                             </div>
                           </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     ) : null}
                   </div>
@@ -2229,7 +2898,7 @@ export function OrderDetailModal({
                   </p>
                 </div>
               )}
-              {canEditOrder && editOpen && (
+              {canEditOrder && !isClosedLocked && editOpen && (
                 <div className="rounded-2xl border border-black/[0.06] bg-[#F5F5F7]/70 p-4 dark:border-white/[0.08] dark:bg-[#0B0C10]">
                   <div className="mb-3 text-xs font-semibold text-zinc-600 dark:text-zinc-300">
                     Редактирование заказа
@@ -2609,31 +3278,47 @@ export function OrderDetailModal({
 
                         {isAssignedHere && (
                           <div className="flex flex-wrap items-center gap-2">
-                            <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-xl border border-black/[0.1] bg-white px-3 py-2 text-xs font-semibold text-zinc-700 hover:bg-black/[0.03] dark:border-white/[0.1] dark:bg-[#15171C] dark:text-zinc-200">
-                              <Upload className="h-3.5 w-3.5" />
-                              <span>Фото / видео</span>
-                              <input
-                                type="file"
-                                accept="image/*,video/*"
-                                multiple
-                                className="hidden"
-                                onChange={(e) => void handleFileUpload(e, 'photo', v.id)}
-                              />
-                            </label>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setReportingVisitId(isReporting ? null : v.id)
-                              }
-                              className="inline-flex items-center gap-1.5 rounded-xl bg-[#0071E3] px-3 py-2 text-xs font-semibold text-white transition hover:bg-[#0077ED] dark:bg-[#2997FF] dark:text-[#0B0C10]"
-                            >
-                              <CheckCircle2 className="h-3.5 w-3.5" />
-                              <span>
-                                {v.status === 'completed'
-                                  ? 'Добавить доп. отчёт'
-                                  : 'Завершить и сдать отчёт'}
-                              </span>
-                            </button>
+                            {isClosedLocked ? (
+                              <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-xl border border-black/[0.1] bg-white px-3 py-2 text-xs font-semibold text-zinc-700 hover:bg-black/[0.03] dark:border-white/[0.1] dark:bg-[#15171C] dark:text-zinc-200">
+                                <Upload className="h-3.5 w-3.5" />
+                                <span>Добавить фото</span>
+                                <input
+                                  type="file"
+                                  accept="image/*"
+                                  multiple
+                                  className="hidden"
+                                  onChange={(e) => void handleFileUpload(e, 'photo', v.id)}
+                                />
+                              </label>
+                            ) : (
+                              <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-xl border border-black/[0.1] bg-white px-3 py-2 text-xs font-semibold text-zinc-700 hover:bg-black/[0.03] dark:border-white/[0.1] dark:bg-[#15171C] dark:text-zinc-200">
+                                <Upload className="h-3.5 w-3.5" />
+                                <span>Фото / видео</span>
+                                <input
+                                  type="file"
+                                  accept="image/*,video/*"
+                                  multiple
+                                  className="hidden"
+                                  onChange={(e) => void handleFileUpload(e, 'photo', v.id)}
+                                />
+                              </label>
+                            )}
+                            {!isClosedLocked && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setReportingVisitId(isReporting ? null : v.id)
+                                }
+                                className="inline-flex items-center gap-1.5 rounded-xl bg-[#0071E3] px-3 py-2 text-xs font-semibold text-white transition hover:bg-[#0077ED] dark:bg-[#2997FF] dark:text-[#0B0C10]"
+                              >
+                                <CheckCircle2 className="h-3.5 w-3.5" />
+                                <span>
+                                  {v.status === 'completed'
+                                    ? 'Добавить доп. отчёт'
+                                    : 'Завершить и сдать отчёт'}
+                                </span>
+                              </button>
+                            )}
                           </div>
                         )}
                       </div>
@@ -2706,38 +3391,45 @@ export function OrderDetailModal({
                           defaultDate={v.scheduled_at.slice(0, 10)}
                           isAdmin={isAdmin}
                           reports={v.reports}
+                          shifts={v.shifts}
                           currentUserId={user.id}
                         />
                       )}
 
                       {/* Visit Report Form */}
-                      {isReporting && (
+                      {isReporting && !isClosedLocked && (
                         <form
                           onSubmit={(e) =>
                             void handleSubmitReport(e, v.id, v.status !== 'completed')
                           }
                           className="mt-3 space-y-2.5 rounded-xl border border-[#0071E3]/25 bg-white p-3.5 dark:bg-[#15171C]"
                         >
-                          <div className="grid grid-cols-2 gap-2">
-                            <div>
-                              <label className="mb-1 block text-[11px] text-zinc-500">Начало</label>
-                              <input
-                                type="time"
-                                value={repStart}
-                                onChange={(e) => setRepStart(e.target.value)}
-                                className="w-full rounded-lg border border-black/[0.1] px-2.5 py-1.5 text-xs dark:border-white/[0.1] dark:bg-[#0B0C10]"
-                              />
+                          {isAdmin ? (
+                            <div className="grid grid-cols-2 gap-2">
+                              <div>
+                                <label className="mb-1 block text-[11px] text-zinc-500">Начало</label>
+                                <input
+                                  type="time"
+                                  value={repStart}
+                                  onChange={(e) => setRepStart(e.target.value)}
+                                  className="w-full rounded-lg border border-black/[0.1] px-2.5 py-1.5 text-xs dark:border-white/[0.1] dark:bg-[#0B0C10]"
+                                />
+                              </div>
+                              <div>
+                                <label className="mb-1 block text-[11px] text-zinc-500">Завершение</label>
+                                <input
+                                  type="time"
+                                  value={repEnd}
+                                  onChange={(e) => setRepEnd(e.target.value)}
+                                  className="w-full rounded-lg border border-black/[0.1] px-2.5 py-1.5 text-xs dark:border-white/[0.1] dark:bg-[#0B0C10]"
+                                />
+                              </div>
                             </div>
-                            <div>
-                              <label className="mb-1 block text-[11px] text-zinc-500">Завершение</label>
-                              <input
-                                type="time"
-                                value={repEnd}
-                                onChange={(e) => setRepEnd(e.target.value)}
-                                className="w-full rounded-lg border border-black/[0.1] px-2.5 py-1.5 text-xs dark:border-white/[0.1] dark:bg-[#0B0C10]"
-                              />
+                          ) : (
+                            <div className="rounded-lg bg-[#F5F5F7] px-3 py-2 text-[11px] text-zinc-500 dark:bg-[#0B0C10]">
+                              Время работы по выезду подтягивается из таймера «Начать смену»
                             </div>
-                          </div>
+                          )}
                           <div>
                             <label className="mb-1 block text-[11px] text-zinc-500">
                               Что сделано *
@@ -2790,7 +3482,7 @@ export function OrderDetailModal({
                       {v.reports.length > 0 && (
                         <div className="mt-3 space-y-2">
                           {v.reports.map((rep) => {
-                            const canModRep = isAdmin || rep.user_id === user.id;
+                            const canModRep = isAdmin || (rep.user_id === user.id && !isClosedLocked);
                             const isEdRep = editingReportId === rep.id;
                             const isDelRep = confirmDeleteReportId === rep.id;
                             return (
@@ -2862,20 +3554,22 @@ export function OrderDetailModal({
                                     onSubmit={(e) => void handleEditReportSubmit(e, v.id, rep.id)}
                                     className="mt-2 space-y-2 border-t border-black/[0.06] pt-2 dark:border-white/[0.06]"
                                   >
-                                    <div className="grid grid-cols-2 gap-2">
-                                      <input
-                                        type="time"
-                                        value={editRepStart}
-                                        onChange={(e) => setEditRepStart(e.target.value)}
-                                        className="rounded-lg border border-black/[0.1] px-2 py-1 text-xs dark:border-white/[0.1] dark:bg-[#0B0C10]"
-                                      />
-                                      <input
-                                        type="time"
-                                        value={editRepEnd}
-                                        onChange={(e) => setEditRepEnd(e.target.value)}
-                                        className="rounded-lg border border-black/[0.1] px-2 py-1 text-xs dark:border-white/[0.1] dark:bg-[#0B0C10]"
-                                      />
-                                    </div>
+                                    {isAdmin && (
+                                      <div className="grid grid-cols-2 gap-2">
+                                        <input
+                                          type="time"
+                                          value={editRepStart}
+                                          onChange={(e) => setEditRepStart(e.target.value)}
+                                          className="rounded-lg border border-black/[0.1] px-2 py-1 text-xs dark:border-white/[0.1] dark:bg-[#0B0C10]"
+                                        />
+                                        <input
+                                          type="time"
+                                          value={editRepEnd}
+                                          onChange={(e) => setEditRepEnd(e.target.value)}
+                                          className="rounded-lg border border-black/[0.1] px-2 py-1 text-xs dark:border-white/[0.1] dark:bg-[#0B0C10]"
+                                        />
+                                      </div>
+                                    )}
                                     <textarea
                                       required
                                       rows={2}
@@ -2967,7 +3661,7 @@ export function OrderDetailModal({
                                   </span>
                                 </a>
                               )}
-                              {canEditOrder && (
+                              {canEditOrder && !isClosedLocked && (
                                 <button
                                   type="button"
                                   disabled={busy}
@@ -2987,7 +3681,7 @@ export function OrderDetailModal({
                 })
               )}
 
-              {canEditOrder && (
+              {canEditOrder && !isClosedLocked && (
                 <form
                   onSubmit={handleAddVisit}
                   className="rounded-2xl border border-black/[0.06] bg-white p-4 dark:border-white/[0.08] dark:bg-[#0B0C10]"
@@ -3049,6 +3743,53 @@ export function OrderDetailModal({
 
           {tab === 'warehouse' && (
             <div className="space-y-4">
+              {canTakeWarehouse && !isClosedLocked && (() => {
+                const qtyNet = new Map<string, number>();
+                for (const op of order.warehouseOps) {
+                  if (op.item_type === 'tool' && op.tool_id && !op.tool_instance_id) {
+                    const prev = qtyNet.get(op.tool_id) || 0;
+                    if (op.op_type === 'issue') qtyNet.set(op.tool_id, prev + Number(op.qty_milli || 0));
+                    else if (op.op_type === 'return') qtyNet.set(op.tool_id, prev - Number(op.qty_milli || 0));
+                  }
+                }
+                const hasQtyOpen = [...qtyNet.values()].some((v) => v > 0);
+                const hasIndOpen = tools.some((t) =>
+                  t.instances.some((inst) => inst.status === 'issued' && inst.current_order_id === order.id)
+                );
+                if (!hasQtyOpen && !hasIndOpen) return null;
+                return (
+                  <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-emerald-500/25 bg-emerald-500/[0.06] px-4 py-3">
+                    <span className="text-xs font-semibold text-emerald-800 dark:text-emerald-300">
+                      На объекте числится невозвращённый инструмент
+                    </span>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={async () => {
+                        setBusy(true);
+                        setError('');
+                        try {
+                          const res = await apiRequest<{ order?: Order; returnedCount?: number }>(
+                            `/api/orders/${order.id}/tools/return-all`,
+                            { method: 'POST', body: {}, skipOfflineQueue: true }
+                          );
+                          if (res.order) onOrderUpdated(res.order);
+                          onWarehouseRefresh();
+                        } catch (err) {
+                          setError(err instanceof Error ? err.message : 'Ошибка возврата инструментов');
+                        } finally {
+                          setBusy(false);
+                        }
+                      }}
+                      className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3.5 py-2 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+                    >
+                      <RotateCcw className="h-3.5 w-3.5" />
+                      <span>Вернуть все инструменты с объекта</span>
+                    </button>
+                  </div>
+                );
+              })()}
+
               {order.plannedResources.length > 0 && (
                 <div className="rounded-2xl border border-black/[0.06] bg-[#F5F5F7]/70 p-4 dark:border-white/[0.08] dark:bg-[#0B0C10]">
                   <div className="mb-2 text-xs font-semibold text-zinc-500">
@@ -3072,7 +3813,7 @@ export function OrderDetailModal({
                             </span>
                           )}
                         </div>
-                        {canTakeWarehouse && (
+                        {canTakeWarehouse && !isClosedLocked && (
                           <div className="flex flex-wrap items-center gap-1.5">
                             <button
                               type="button"
@@ -3114,7 +3855,7 @@ export function OrderDetailModal({
                 </div>
               )}
 
-              {canTakeWarehouse && (
+              {canTakeWarehouse && !isClosedLocked && (
                 <form
                   onSubmit={handleWarehouseAction}
                   className="rounded-2xl border border-black/[0.06] p-4 dark:border-white/[0.08]"
@@ -3320,28 +4061,44 @@ export function OrderDetailModal({
                 </div>
               )}
               <div className="flex flex-wrap gap-2">
-                <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl bg-[#0071E3] px-4 py-2.5 text-xs font-semibold text-white dark:bg-[#2997FF] dark:text-[#0B0C10]">
-                  <ImageIcon className="h-4 w-4" />
-                  <span>Фото / видео</span>
-                  <input
-                    type="file"
-                    accept="image/*,video/*"
-                    multiple
-                    className="hidden"
-                    onChange={(e) => void handleFileUpload(e, 'photo')}
-                  />
-                </label>
-                <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-black/[0.1] px-4 py-2.5 text-xs font-semibold hover:bg-black/[0.03] dark:border-white/[0.1]">
-                  <FileText className="h-4 w-4" />
-                  <span>Прикрепить документ (PDF / DOCX / XLSX)</span>
-                  <input
-                    type="file"
-                    accept=".pdf,.doc,.docx,.xls,.xlsx,.txt"
-                    multiple
-                    className="hidden"
-                    onChange={(e) => void handleFileUpload(e, 'document')}
-                  />
-                </label>
+                {isClosedLocked ? (
+                  <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl bg-[#0071E3] px-4 py-2.5 text-xs font-semibold text-white dark:bg-[#2997FF] dark:text-[#0B0C10]">
+                    <ImageIcon className="h-4 w-4" />
+                    <span>Фото</span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      className="hidden"
+                      onChange={(e) => void handleFileUpload(e, 'photo')}
+                    />
+                  </label>
+                ) : (
+                  <>
+                    <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl bg-[#0071E3] px-4 py-2.5 text-xs font-semibold text-white dark:bg-[#2997FF] dark:text-[#0B0C10]">
+                      <ImageIcon className="h-4 w-4" />
+                      <span>Фото / видео</span>
+                      <input
+                        type="file"
+                        accept="image/*,video/*"
+                        multiple
+                        className="hidden"
+                        onChange={(e) => void handleFileUpload(e, 'photo')}
+                      />
+                    </label>
+                    <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-black/[0.1] px-4 py-2.5 text-xs font-semibold hover:bg-black/[0.03] dark:border-white/[0.1]">
+                      <FileText className="h-4 w-4" />
+                      <span>Прикрепить документ (PDF / DOCX / XLSX)</span>
+                      <input
+                        type="file"
+                        accept=".pdf,.doc,.docx,.xls,.xlsx,.txt"
+                        multiple
+                        className="hidden"
+                        onChange={(e) => void handleFileUpload(e, 'document')}
+                      />
+                    </label>
+                  </>
+                )}
               </div>
 
               {order.attachments.length === 0 ? (
@@ -3392,7 +4149,7 @@ export function OrderDetailModal({
                           <div className="truncate p-2.5 text-xs font-medium">{att.original_name}</div>
                         </a>
                       )}
-                      {canEditOrder && (
+                      {canEditOrder && !isClosedLocked && (
                         <button
                           type="button"
                           disabled={busy}
@@ -3448,6 +4205,7 @@ function VisitWorkTime({
   defaultDate,
   isAdmin,
   reports,
+  shifts,
   currentUserId,
 }: {
   orderId: string;
@@ -3455,6 +4213,17 @@ function VisitWorkTime({
   defaultDate: string;
   isAdmin: boolean;
   reports?: Array<{ user_id: string; is_primary?: number; start_time?: string | null; end_time?: string | null }>;
+  shifts?: Array<{
+    id: string;
+    user_id: string;
+    employee_name: string;
+    started_at: string;
+    ended_at: string | null;
+    work_date: string;
+    status: 'active' | 'completed';
+    work_done?: string;
+    is_manual_entry?: number;
+  }>;
   currentUserId?: string;
 }) {
   const [items, setItems] = useState<Array<{user_id:string;full_name:string;work_date:string;start_time:string;end_time:string}>>([]);
@@ -3480,42 +4249,70 @@ function VisitWorkTime({
     } catch (err) { setError(err instanceof Error ? err.message : 'Не удалось сохранить время.'); }
     finally { setBusy(false); }
   };
+
+  const visibleShifts = (shifts || []).filter((s) => isAdmin || s.user_id === currentUserId);
+
   return <div className="mt-3 rounded-xl border border-black/10 p-3 dark:border-white/10">
     <div className="flex flex-wrap items-center justify-between gap-2">
-      <h4 className="text-xs font-semibold">Моё время работы</h4>
-      <div className="flex flex-wrap items-center gap-1.5">
-        {reportMatch?.start_time && reportMatch?.end_time && (
+      <h4 className="text-xs font-semibold">{isAdmin ? 'Время работы по выезду' : 'Моё время работы'}</h4>
+      {isAdmin && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          {reportMatch?.start_time && reportMatch?.end_time && (
+            <button
+              type="button"
+              onClick={() => {
+                setStart(reportMatch.start_time || '');
+                setEnd(reportMatch.end_time || '');
+              }}
+              className="rounded-lg bg-[#0071E3]/10 px-2.5 py-1 text-[11px] font-semibold text-[#0071E3] hover:bg-[#0071E3]/15 dark:text-[#71b5ff]"
+            >
+              По времени отчёта ({reportMatch.start_time}–{reportMatch.end_time})
+            </button>
+          )}
           <button
             type="button"
             onClick={() => {
-              setStart(reportMatch.start_time || '');
-              setEnd(reportMatch.end_time || '');
+              setStart('09:00');
+              setEnd('18:00');
             }}
-            className="rounded-lg bg-[#0071E3]/10 px-2.5 py-1 text-[11px] font-semibold text-[#0071E3] hover:bg-[#0071E3]/15 dark:text-[#71b5ff]"
+            className="rounded-lg bg-black/[0.05] px-2.5 py-1 text-[11px] font-semibold text-zinc-600 hover:bg-black/[0.1] dark:bg-white/[0.08] dark:text-zinc-300"
           >
-            По времени отчёта ({reportMatch.start_time}–{reportMatch.end_time})
+            09:00–18:00
           </button>
-        )}
-        <button
-          type="button"
-          onClick={() => {
-            setStart('09:00');
-            setEnd('18:00');
-          }}
-          className="rounded-lg bg-black/[0.05] px-2.5 py-1 text-[11px] font-semibold text-zinc-600 hover:bg-black/[0.1] dark:bg-white/[0.08] dark:text-zinc-300"
-        >
-          09:00–18:00
-        </button>
-      </div>
+        </div>
+      )}
     </div>
-    <form onSubmit={save} className="mt-2 flex flex-wrap items-end gap-2">
-      <label className="text-xs">Дата<input required type="date" value={date} onChange={e => setDate(e.target.value)} className="mt-0.5 block rounded-lg border border-black/[0.1] bg-white p-2 text-xs dark:border-white/[0.1] dark:bg-[#0B0C10]" /></label>
-      <label className="text-xs">Начало<input required type="time" value={start} onChange={e => setStart(e.target.value)} className="mt-0.5 block rounded-lg border border-black/[0.1] bg-white p-2 text-xs dark:border-white/[0.1] dark:bg-[#0B0C10]" /></label>
-      <label className="text-xs">Окончание<input required type="time" value={end} onChange={e => setEnd(e.target.value)} className="mt-0.5 block rounded-lg border border-black/[0.1] bg-white p-2 text-xs dark:border-white/[0.1] dark:bg-[#0B0C10]" /></label>
-      <button disabled={busy} className="rounded-lg bg-[#0071E3] px-3 py-2 text-xs text-white disabled:opacity-50">Сохранить</button>
-    </form>
-    <p className="mt-1 text-[11px] text-zinc-500">Если окончание раньше начала, работа завершилась на следующий день. Повторное сохранение за дату обновит запись.</p>
+    {isAdmin ? (
+      <>
+        <form onSubmit={save} className="mt-2 flex flex-wrap items-end gap-2">
+          <label className="text-xs">Дата<input required type="date" value={date} onChange={e => setDate(e.target.value)} className="mt-0.5 block rounded-lg border border-black/[0.1] bg-white p-2 text-xs dark:border-white/[0.1] dark:bg-[#0B0C10]" /></label>
+          <label className="text-xs">Начало<input required type="time" value={start} onChange={e => setStart(e.target.value)} className="mt-0.5 block rounded-lg border border-black/[0.1] bg-white p-2 text-xs dark:border-white/[0.1] dark:bg-[#0B0C10]" /></label>
+          <label className="text-xs">Окончание<input required type="time" value={end} onChange={e => setEnd(e.target.value)} className="mt-0.5 block rounded-lg border border-black/[0.1] bg-white p-2 text-xs dark:border-white/[0.1] dark:bg-[#0B0C10]" /></label>
+          <button disabled={busy} className="rounded-lg bg-[#0071E3] px-3 py-2 text-xs text-white disabled:opacity-50">Сохранить</button>
+        </form>
+        <p className="mt-1 text-[11px] text-zinc-500">Если окончание раньше начала, работа завершилась на следующий день. Повторное сохранение за дату обновит запись.</p>
+      </>
+    ) : (
+      <p className="mt-1 text-[11px] text-zinc-500">
+        Время работы фиксируется таймером «Начать смену» и правится через вкладку «Смены» или администратором.
+      </p>
+    )}
     {error && <p role="alert" className="mt-1 text-xs text-red-600">{error}</p>}
+    {visibleShifts.map((sh) => {
+      const mins = sh.ended_at
+        ? Math.max(0, Math.round((Date.parse(sh.ended_at) - Date.parse(sh.started_at)) / 60_000))
+        : null;
+      return (
+        <div key={sh.id} className="mt-1 text-xs text-zinc-600 dark:text-zinc-300 tabular-nums">
+          {isAdmin && `${sh.employee_name} · `}
+          {sh.work_date || sh.started_at.slice(0, 10)} ·{' '}
+          {new Date(sh.started_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}
+          {sh.ended_at
+            ? `–${new Date(sh.ended_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })} · ${formatDuration(mins)}`
+            : ' · идёт смена'}
+        </div>
+      );
+    })}
     {items.map(item => { const mins = (s:string) => Number(s.slice(0,2))*60+Number(s.slice(3)); const duration=(mins(item.end_time)-mins(item.start_time)+1440)%1440; return <div key={`${item.user_id}:${item.work_date}`} className="mt-1 text-xs text-zinc-500">{isAdmin && `${item.full_name} · `}{item.work_date} · {item.start_time}–{item.end_time} · {Math.floor(duration/60)} ч {duration%60} мин</div>; })}
   </div>;
 }

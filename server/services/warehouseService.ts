@@ -73,24 +73,36 @@ export function applyMaterialOperationTx(
     throw new Error('Материал не найден на складе.');
   }
 
-  const qty = Math.round(Number(input.qtyMilli || 0));
+  const rawQty = Number(input.qtyMilli);
+  if (!Number.isSafeInteger(rawQty) || rawQty < 0) {
+    throw new Error('Количество должно быть целым неотрицательным числом миллиединиц.');
+  }
+  const qty = rawQty;
   if (qty <= 0 && input.opType !== 'adjust') {
     throw new Error('Количество должно быть больше нуля.');
+  }
+  if (
+    input.unitCostKopecks !== undefined &&
+    (!Number.isSafeInteger(Number(input.unitCostKopecks)) || Number(input.unitCostKopecks) < 0)
+  ) {
+    throw new Error('Цена закупки должна быть целым неотрицательным числом копеек.');
   }
 
   let stockDelta = 0;
   let issuedToSettle = 0;
   let outstandingBefore = 0;
   const costPerUnit =
-    input.unitCostKopecks !== undefined ? Math.max(0, Math.round(input.unitCostKopecks)) : mat.purchase_price_kopecks;
+    input.unitCostKopecks !== undefined ? Number(input.unitCostKopecks) : mat.purchase_price_kopecks;
 
   if (input.opType === 'receipt') {
     stockDelta = qty;
     if (input.unitCostKopecks !== undefined && input.unitCostKopecks >= 0) {
-      db.prepare('UPDATE materials SET purchase_price_kopecks = ? WHERE id = ?').run(
-        Math.round(input.unitCostKopecks),
-        mat.id
-      );
+      const currentStock = Number(mat.quantity_milli || 0);
+      const nextAvg =
+        currentStock <= 0
+          ? Math.round(costPerUnit)
+          : Math.round((currentStock * mat.purchase_price_kopecks + qty * costPerUnit) / (currentStock + qty));
+      db.prepare('UPDATE materials SET purchase_price_kopecks = ? WHERE id = ?').run(nextAvg, mat.id);
     }
   } else if (input.opType === 'issue') {
     stockDelta = -qty;
@@ -131,6 +143,14 @@ export function applyMaterialOperationTx(
   } else if (input.opType === 'adjust') {
     // Set new absolute quantity via qtyMilli
     stockDelta = qty - mat.quantity_milli;
+    if (stockDelta > 0 && input.unitCostKopecks !== undefined && input.unitCostKopecks >= 0) {
+      const currentStock = Number(mat.quantity_milli || 0);
+      const nextAvg =
+        currentStock <= 0
+          ? Math.round(costPerUnit)
+          : Math.round((currentStock * mat.purchase_price_kopecks + stockDelta * costPerUnit) / (currentStock + stockDelta));
+      db.prepare('UPDATE materials SET purchase_price_kopecks = ? WHERE id = ?').run(nextAvg, mat.id);
+    }
   }
 
   const newStockMilli = mat.quantity_milli + stockDelta;
@@ -140,6 +160,10 @@ export function applyMaterialOperationTx(
   if (stockDelta < 0) ensureReservationAcknowledged(db,'material',mat.id,newStockMilli,input.orderId,input.confirmReserved);
   db.prepare('UPDATE materials SET quantity_milli = ? WHERE id = ?').run(newStockMilli, mat.id);
 
+  const opUnitCost =
+    input.opType === 'receipt' || (input.opType === 'adjust' && stockDelta > 0)
+      ? costPerUnit
+      : mat.purchase_price_kopecks;
   const opId = crypto.randomUUID();
   const now = new Date().toISOString();
   db.prepare(
@@ -151,7 +175,7 @@ export function applyMaterialOperationTx(
     mat.id,
     input.opType,
     qty,
-    costPerUnit,
+    opUnitCost,
     input.orderId || null,
     input.visitId || null,
     input.shiftId || null,
@@ -162,18 +186,15 @@ export function applyMaterialOperationTx(
   );
   db.prepare('UPDATE warehouse_operations SET stock_delta_milli=? WHERE id=?').run(stockDelta,opId);
 
-  let totalValue = 0;
   if (input.opType === 'receipt' || (input.opType === 'adjust' && stockDelta > 0)) {
     const available = Math.max(0,newStockMilli) - Math.max(0,mat.quantity_milli);
     createBatch(db,mat.id,opId,input.opType === 'receipt' ? qty : stockDelta,available,costPerUnit,input.opType === 'adjust',now);
   } else {
     if (issuedToSettle) {
       const legacy = legacyOutstanding(db,mat.id,input.orderId || null);
-      totalValue += settleIssued(db,mat.id,opId,input.orderId || null,issuedToSettle,input.opType === 'return',legacy,mat.purchase_price_kopecks,now);
+      settleIssued(db,mat.id,opId,input.orderId || null,issuedToSettle,input.opType === 'return',legacy,mat.purchase_price_kopecks,now);
     }
-    if (stockDelta < 0) totalValue += takeStock(db,mat.id,opId,-stockDelta,input.opType === 'issue');
-    const pricedQty = issuedToSettle + Math.max(0,-stockDelta);
-    if (pricedQty) db.prepare('UPDATE warehouse_operations SET unit_cost_kopecks=? WHERE id=?').run(Math.round(totalValue/pricedQty),opId);
+    if (stockDelta < 0) takeStock(db,mat.id,opId,-stockDelta,input.opType === 'issue');
   }
 
   const negativeStockWarning = newStockMilli < 0;
@@ -272,7 +293,10 @@ export function issueToolTx(
     | undefined;
   if (!tool) throw new Error('Инструмент не найден.');
 
-  ensureReservationAcknowledged(db,'tool',tool.id,Math.max(0,(tool.available_qty-(tool.tracking_mode==='individual'?1:Math.max(1,Math.round(params.qty||1))))*1000),params.orderId,params.confirmReserved);
+  const requestedQty = Number(params.qty ?? 1);
+  if (!Number.isSafeInteger(requestedQty) || requestedQty < 1) {
+    throw new Error('Количество инструмента должно быть целым положительным числом.');
+  }
 
   const now = new Date().toISOString();
   const opId = crypto.randomUUID();
@@ -294,6 +318,15 @@ export function issueToolTx(
     if (inst.status !== 'available') {
       throw new Error(`Экземпляр #${inst.serial_number} уже выдан или недоступен.`);
     }
+
+    ensureReservationAcknowledged(
+      db,
+      'tool',
+      tool.id,
+      Math.max(0, (tool.available_qty - 1) * 1000),
+      params.orderId,
+      params.confirmReserved
+    );
 
     db.prepare(
       `UPDATE tool_instances SET status = 'issued', holder_user_id = ?, current_order_id = ?, issued_at = ? WHERE id = ?`
@@ -318,10 +351,19 @@ export function issueToolTx(
     return opId;
   }
 
-  const qty = Math.max(1, Math.round(params.qty || 1));
+  const qty = requestedQty;
   if (tool.available_qty < qty) {
     throw new Error(`Недостаточно инструмента «${tool.name}» на складе (доступно: ${tool.available_qty}).`);
   }
+
+  ensureReservationAcknowledged(
+    db,
+    'tool',
+    tool.id,
+    Math.max(0, (tool.available_qty - qty) * 1000),
+    params.orderId,
+    params.confirmReserved
+  );
 
   db.prepare(
     `INSERT INTO warehouse_operations
@@ -403,7 +445,10 @@ export function returnToolTx(
     return opId;
   }
 
-  const qty = Math.max(1, Math.round(params.qty || 1));
+  const qty = Number(params.qty ?? 1);
+  if (!Number.isSafeInteger(qty) || qty < 1) {
+    throw new Error('Количество инструмента должно быть целым положительным числом.');
+  }
   const issuedTotal = (
     db
       .prepare(
@@ -432,11 +477,71 @@ export function returnToolTx(
     }
   }
 
-  db.prepare(
+  const insertToolReturn = db.prepare(
     `INSERT INTO warehouse_operations
      (id, item_type, material_id, tool_id, tool_instance_id, op_type, qty_milli, unit_cost_kopecks, order_id, visit_id, shift_id, user_id, created_by, note, created_at)
      VALUES (?, 'tool', NULL, ?, NULL, 'return', ?, 0, ?, ?, NULL, ?, ?, ?, ?)`
-  ).run(
+  );
+
+  if (!params.orderId) {
+    // FIFO allocate returned quantity across holder's oldest open orders so debt closes automatically.
+    const openOrderBalances = db
+      .prepare(
+        `SELECT order_id,
+                SUM(CASE WHEN op_type = 'issue' THEN qty_milli ELSE 0 END) -
+                SUM(CASE WHEN op_type = 'return' THEN qty_milli ELSE 0 END) AS held_milli,
+                MIN(created_at) AS first_issued_at
+         FROM warehouse_operations
+         WHERE item_type = 'tool' AND tool_id = ? AND user_id = ? AND order_id IS NOT NULL
+         GROUP BY order_id
+         HAVING held_milli > 0
+         ORDER BY first_issued_at ASC, MIN(rowid) ASC`
+      )
+      .all(tool.id, params.holderUserId) as Array<{ order_id: string; held_milli: number }>;
+
+    let remainingMilli = qty * 1000;
+    let firstOpId: string | null = null;
+    for (const row of openOrderBalances) {
+      if (remainingMilli <= 0) break;
+      const allocMilli = Math.min(remainingMilli, Number(row.held_milli));
+      if (allocMilli <= 0) continue;
+      const chunkId: string = firstOpId ? crypto.randomUUID() : opId;
+      if (!firstOpId) firstOpId = chunkId;
+      insertToolReturn.run(
+        chunkId,
+        tool.id,
+        allocMilli,
+        row.order_id,
+        params.visitId || null,
+        params.holderUserId,
+        params.actorUserId,
+        params.note || '',
+        now
+      );
+      remainingMilli -= allocMilli;
+    }
+
+    if (remainingMilli > 0) {
+      const chunkId: string = firstOpId ? crypto.randomUUID() : opId;
+      if (!firstOpId) firstOpId = chunkId;
+      insertToolReturn.run(
+        chunkId,
+        tool.id,
+        remainingMilli,
+        null,
+        params.visitId || null,
+        params.holderUserId,
+        params.actorUserId,
+        params.note || '',
+        now
+      );
+    }
+
+    recalcAvailableQty(db, tool.id);
+    return firstOpId || opId;
+  }
+
+  insertToolReturn.run(
     opId,
     tool.id,
     qty * 1000,

@@ -11,6 +11,9 @@ import { scheduleFileDeletion } from '../services/fileCleanup.ts';
 import { requireAdmin, requireAuth, type AuthedRequest } from '../middleware.ts';
 import { hasPermission, notifyAdmins, notifyUser, writeAuditLog } from '../security.ts';
 import { applyMaterialOperationTx, getOrderMaterialBalance, issueToolTx, returnToolTx } from '../services/warehouseService.ts';
+import { clampTzOffset, formatIsoToHm, syncVisitWorkTimeFromShifts } from './shifts.ts';
+
+const isOrderClosed = (status: unknown): boolean => status === 'completed' || status === 'cancelled';
 
 const ALLOWED_MIME = new Set([
   'image/jpeg',
@@ -152,11 +155,23 @@ function enrichOrder(db: DatabaseSync, orderRow: Record<string, unknown>, isAdmi
       .prepare("SELECT id, kind, original_name, mime_type, size_bytes, created_at FROM attachments WHERE entity_type = 'visit' AND entity_id = ? ORDER BY created_at ASC")
       .all(vId);
 
+    const visitShifts = db
+      .prepare(
+        `SELECT ws.id, ws.user_id, u.full_name as employee_name, ws.started_at, ws.ended_at,
+                ws.work_date, ws.status, ws.work_done, ws.is_manual_entry
+         FROM workshop_shifts ws
+         JOIN users u ON u.id = ws.user_id
+         WHERE ws.visit_id = ?
+         ORDER BY ws.started_at DESC`
+      )
+      .all(vId);
+
     return {
       ...v,
       assignees: visibleAssignees,
       reports,
       attachments: visitAttachments,
+      shifts: visitShifts,
     };
   });
 
@@ -217,6 +232,7 @@ function enrichOrder(db: DatabaseSync, orderRow: Record<string, unknown>, isAdmi
 
   let paidKopecks: number | undefined;
   let materialCostKopecks: number | undefined;
+  let salaryCostKopecks: number | undefined;
   let payments: Array<Record<string, unknown>> = [];
   if (isAdmin) {
     const payRow = db
@@ -235,13 +251,34 @@ function enrichOrder(db: DatabaseSync, orderRow: Record<string, unknown>, isAdmi
 
     const matRow = db
       .prepare(
-        `SELECT COALESCE(SUM(COALESCE((SELECT CAST(ROUND(SUM(a.qty_milli * b.unit_cost_kopecks) / 1000.0) AS INTEGER) FROM material_batch_allocations a JOIN material_batches b ON b.id=a.batch_id WHERE a.operation_id=wo.id), CAST(ROUND(wo.qty_milli * wo.unit_cost_kopecks / 1000.0) AS INTEGER))), 0) as mat_cost
+        `SELECT COALESCE(SUM(CAST(ROUND(wo.qty_milli * wo.unit_cost_kopecks / 1000.0) AS INTEGER)), 0) as mat_cost
          FROM warehouse_operations wo
          WHERE wo.order_id = ? AND wo.item_type = 'material' AND wo.op_type = 'consume'`
       )
       .get(orderId) as { mat_cost: number };
     materialCostKopecks = Number(matRow.mat_cost || 0);
+
+    const salRow = db
+      .prepare(
+        `SELECT COALESCE(SUM(amount_kopecks), 0) AS total
+         FROM salary_accruals
+         WHERE (source_type = 'visit' AND source_id IN (SELECT id FROM order_visits WHERE order_id = ?))
+            OR (source_type = 'shift' AND source_id IN (SELECT id FROM workshop_shifts WHERE order_id = ?))`
+      )
+      .get(orderId, orderId) as { total: number };
+    salaryCostKopecks = Number(salRow.total || 0);
   }
+
+  const orderShifts = db
+    .prepare(
+      `SELECT ws.id, ws.user_id, u.full_name as employee_name, ws.started_at, ws.ended_at,
+              ws.work_date, ws.status, ws.work_done, ws.shift_type, ws.visit_id, ws.quick_task_id, ws.is_manual_entry
+       FROM workshop_shifts ws
+       JOIN users u ON u.id = ws.user_id
+       WHERE ws.order_id = ?
+       ORDER BY ws.started_at DESC`
+    )
+    .all(orderId);
 
   const base: Record<string, unknown> = {
     ...orderRow,
@@ -253,21 +290,28 @@ function enrichOrder(db: DatabaseSync, orderRow: Record<string, unknown>, isAdmi
     attachments,
     plannedResources,
     warehouseOps,
+    orderShifts,
   };
 
   if (isAdmin) {
-    base.payments = payments;
-    base.paid_kopecks = paidKopecks;
-    base.auto_material_cost_kopecks = materialCostKopecks;
-    base.material_cost_kopecks =
+    const effectiveMat =
       orderRow.cost_override_kopecks !== null && orderRow.cost_override_kopecks !== undefined
         ? Number(orderRow.cost_override_kopecks)
-        : materialCostKopecks;
+        : Number(materialCostKopecks || 0);
+    const priceK = Number(orderRow.price_kopecks || 0);
+    const paidK = Number(paidKopecks || 0);
+    base.payments = payments;
+    base.paid_kopecks = paidK;
+    base.overpaid_kopecks = Math.max(0, paidK - priceK);
+    base.auto_material_cost_kopecks = materialCostKopecks;
+    base.material_cost_kopecks = effectiveMat;
+    base.salary_cost_kopecks = salaryCostKopecks;
+    base.profit_kopecks = priceK - effectiveMat - Number(salaryCostKopecks || 0);
     if(orderRow.status==='cancelled') {
       const ids=db.prepare("SELECT DISTINCT material_id FROM warehouse_operations WHERE order_id=? AND item_type='material' AND material_id IS NOT NULL").all(orderId) as Array<{material_id:string}>;
       const materials=ids.map(row=>({id:row.material_id,...getOrderMaterialBalance(db,orderId,row.material_id),...db.prepare('SELECT name,unit FROM materials WHERE id=?').get(row.material_id)})).filter(row=>row.unconsumedIssuedMilli>0);
       const tools=db.prepare(`SELECT t.name,t.id, SUM(CASE WHEN w.op_type='issue' THEN w.qty_milli WHEN w.op_type='return' THEN -w.qty_milli ELSE 0 END) AS qty_milli FROM warehouse_operations w JOIN tools t ON t.id=w.tool_id WHERE w.order_id=? AND w.item_type='tool' GROUP BY t.id HAVING qty_milli>0`).all(orderId);
-      const accrued=(db.prepare("SELECT COALESCE(SUM(amount_kopecks),0) AS total FROM salary_accruals WHERE source_type='visit' AND source_id IN (SELECT id FROM order_visits WHERE order_id=?)").get(orderId) as {total:number}).total;
+      const accrued=(db.prepare(`SELECT COALESCE(SUM(amount_kopecks),0) AS total FROM salary_accruals WHERE (source_type='visit' AND source_id IN (SELECT id FROM order_visits WHERE order_id=?)) OR (source_type='shift' AND source_id IN (SELECT id FROM workshop_shifts WHERE order_id=?))`).get(orderId,orderId) as {total:number}).total;
       const reviews=(db.prepare('SELECT issue_key,reviewed_at,note,subject_total_kopecks FROM order_cancel_reviews WHERE order_id=?').all(orderId) as Array<{issue_key:string;subject_total_kopecks:number}>).filter(review=>review.subject_total_kopecks===(review.issue_key==='payments'?paidKopecks:accrued));
       base.cancellationIssues={materials,tools,paymentsKopecks:paidKopecks,accrualsKopecks:accrued,reviews};
     }
@@ -387,6 +431,22 @@ export function createOrdersRouter(db: DatabaseSync): express.Router {
 
     if (Array.isArray(b.plannedMaterials) && new Set(b.plannedMaterials.map(item => item.materialId)).size !== b.plannedMaterials.length) {
       res.status(400).json({ error: 'Каждый материал можно добавить в план только один раз.' }); return;
+    }
+    if (b.companyId && !db.prepare('SELECT 1 FROM companies WHERE id = ?').get(b.companyId)) {
+      res.status(404).json({ error: 'Компания не найдена.' }); return;
+    }
+    if (b.clientContactId && !db.prepare('SELECT 1 FROM contacts WHERE id = ?').get(b.clientContactId)) {
+      res.status(404).json({ error: 'Контакт клиента не найден.' }); return;
+    }
+    if (user.role === 'admin' && b.priceKopecks !== undefined && (!Number.isSafeInteger(Number(b.priceKopecks)) || Number(b.priceKopecks) < 0)) {
+      res.status(400).json({ error: 'Сумма заказа должна быть целым неотрицательным числом копеек.' }); return;
+    }
+    if (Array.isArray(b.assigneeIds)) {
+      for (const uid of b.assigneeIds) {
+        if (!db.prepare('SELECT 1 FROM users WHERE id = ?').get(uid)) {
+          res.status(404).json({ error: 'Назначенный сотрудник не найден.' }); return;
+        }
+      }
     }
 
     const orderId = crypto.randomUUID();
@@ -513,12 +573,16 @@ export function createOrdersRouter(db: DatabaseSync): express.Router {
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : '';
-      if (message === 'ORDER_NUMBER_EXISTS' || message.includes('SQLITE_CONSTRAINT')) {
+      if (message === 'ORDER_NUMBER_EXISTS' || message.includes('orders.order_number')) {
         res.status(409).json({ error: 'Заказ с таким номером уже существует. Укажите другой номер.' });
         return;
       }
       if (message === 'ORDER_NUMBER_INVALID') {
         res.status(400).json({ error: 'Номер заказа слишком длинный (максимум 40 символов).' });
+        return;
+      }
+      if (message.includes('SQLITE_CONSTRAINT')) {
+        res.status(400).json({ error: 'Некорректные ссылки или данные при создании заказа.' });
         return;
       }
       throw err;
@@ -541,6 +605,10 @@ export function createOrdersRouter(db: DatabaseSync): express.Router {
     }
 
     const isAdmin = user.role === 'admin';
+    if (!isAdmin && isOrderClosed(existing.status)) {
+      res.status(403).json({ error: 'Заказ закрыт. Редактировать закрытый заказ может только администратор.' });
+      return;
+    }
     const canEdit =
       isAdmin ||
       (hasPermission(user, 'orders.edit_assigned') && isUserAssignedToOrder(db, orderId, user.id));
@@ -577,8 +645,22 @@ export function createOrdersRouter(db: DatabaseSync): express.Router {
       res.status(400).json({ error: 'Каждый материал можно добавить в план только один раз.' }); return;
     }
     if(b.plannedTools!==undefined && (!Array.isArray(b.plannedTools) || b.plannedTools.some((tool:any)=>
-      !tool || typeof tool.toolId!=='string' || !Number.isSafeInteger(tool.qty) || tool.qty<1 || tool.qty>Math.floor(Number.MAX_SAFE_INTEGER/1000)))) {
-      res.status(400).json({error:'Укажите инструмент и целое положительное количество.'});return;
+      !tool || typeof tool.toolId!=='string' || !Number.isSafeInteger(tool.qty) || tool.qty<1 || tool.qty>Math.floor(Number.MAX_SAFE_INTEGER/1000) ||
+      !db.prepare('SELECT 1 FROM tools WHERE id = ?').get(tool.toolId)))) {
+      res.status(400).json({error:'Укажите существующий инструмент и целое положительное количество.'});return;
+    }
+    if (b.companyId && !db.prepare('SELECT 1 FROM companies WHERE id = ?').get(String(b.companyId))) {
+      res.status(404).json({ error: 'Компания не найдена.' }); return;
+    }
+    if (b.clientContactId && !db.prepare('SELECT 1 FROM contacts WHERE id = ?').get(String(b.clientContactId))) {
+      res.status(404).json({ error: 'Контакт клиента не найден.' }); return;
+    }
+    if (isAdmin && Array.isArray(b.assigneeIds)) {
+      for (const uid of b.assigneeIds) {
+        if (typeof uid !== 'string' || !db.prepare('SELECT 1 FROM users WHERE id = ?').get(uid)) {
+          res.status(404).json({ error: 'Назначенный сотрудник не найден.' }); return;
+        }
+      }
     }
 
     withTransaction(db, () => {
@@ -670,7 +752,7 @@ export function createOrdersRouter(db: DatabaseSync): express.Router {
     if(!order){res.status(404).json({error:'Отменённый заказ не найден.'});return;}
     const total=key==='payments'
       ? (db.prepare('SELECT COALESCE(SUM(amount_kopecks),0) AS total FROM client_payments WHERE order_id=?').get(id) as {total:number}).total
-      : (db.prepare("SELECT COALESCE(SUM(amount_kopecks),0) AS total FROM salary_accruals WHERE source_type='visit' AND source_id IN (SELECT id FROM order_visits WHERE order_id=?)").get(id) as {total:number}).total;
+      : (db.prepare(`SELECT COALESCE(SUM(amount_kopecks),0) AS total FROM salary_accruals WHERE (source_type='visit' AND source_id IN (SELECT id FROM order_visits WHERE order_id=?)) OR (source_type='shift' AND source_id IN (SELECT id FROM workshop_shifts WHERE order_id=?))`).get(id,id) as {total:number}).total;
     withTransaction(db,()=>{
       db.prepare('INSERT INTO order_cancel_reviews(order_id,issue_key,reviewed_by,reviewed_at,note,subject_total_kopecks) VALUES (?,?,?,?,?,?) ON CONFLICT(order_id,issue_key) DO UPDATE SET reviewed_by=excluded.reviewed_by,reviewed_at=excluded.reviewed_at,note=excluded.note,subject_total_kopecks=excluded.subject_total_kopecks').run(id,key,req.authUser!.id,new Date().toISOString(),note,total);
       writeAuditLog(db,req.authUser!.id,'order',id,'cancellation_reviewed',{issueKey:key,note});
@@ -712,13 +794,22 @@ export function createOrdersRouter(db: DatabaseSync): express.Router {
       return;
     }
 
-    const hasHistory = [
-      "SELECT 1 FROM client_payments WHERE order_id = ? LIMIT 1",
-      "SELECT 1 FROM expenses WHERE order_id = ? LIMIT 1",
-      "SELECT 1 FROM warehouse_operations WHERE order_id = ? LIMIT 1",
-      "SELECT 1 FROM visit_reports WHERE order_id = ? LIMIT 1",
-      "SELECT 1 FROM salary_accruals WHERE source_type = 'visit' AND source_id IN (SELECT id FROM order_visits WHERE order_id = ?) LIMIT 1",
-    ].some(sql => Boolean(db.prepare(sql).get(orderId)));
+    const hasHistory =
+      Boolean(db.prepare('SELECT 1 FROM client_payments WHERE order_id = ? LIMIT 1').get(orderId)) ||
+      Boolean(db.prepare('SELECT 1 FROM expenses WHERE order_id = ? LIMIT 1').get(orderId)) ||
+      Boolean(db.prepare('SELECT 1 FROM warehouse_operations WHERE order_id = ? LIMIT 1').get(orderId)) ||
+      Boolean(db.prepare('SELECT 1 FROM visit_reports WHERE order_id = ? LIMIT 1').get(orderId)) ||
+      Boolean(db.prepare('SELECT 1 FROM workshop_shifts WHERE order_id = ? LIMIT 1').get(orderId)) ||
+      Boolean(
+        db
+          .prepare(
+            `SELECT 1 FROM salary_accruals
+             WHERE (source_type = 'visit' AND source_id IN (SELECT id FROM order_visits WHERE order_id = ?))
+                OR (source_type = 'shift' AND source_id IN (SELECT id FROM workshop_shifts WHERE order_id = ?))
+             LIMIT 1`
+          )
+          .get(orderId, orderId)
+      );
     if (hasHistory) {
       res.status(409).json({ error: 'У заказа есть учётная история. Используйте отмену заказа.' });
       return;
@@ -762,6 +853,11 @@ export function createOrdersRouter(db: DatabaseSync): express.Router {
     const order = db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId) as Record<string, unknown> | undefined;
     if (!order) {
       res.status(404).json({ error: 'Заказ не найден.' });
+      return;
+    }
+
+    if (user.role !== 'admin' && isOrderClosed(order.status)) {
+      res.status(403).json({ error: 'Заказ закрыт. Добавлять выезды может только администратор.' });
       return;
     }
 
@@ -826,10 +922,12 @@ export function createOrdersRouter(db: DatabaseSync): express.Router {
   router.put('/:orderId/visits/:visitId/work-time', requireAuth, (req: AuthedRequest, res) => {
     const { orderId, visitId } = req.params;
     const user = req.authUser!;
+    if (user.role !== 'admin') {
+      res.status(403).json({ error: 'Время работы фиксируется автоматически таймером смены. Ручной ввод доступен только администратору.' });
+      return;
+    }
     const visit = db.prepare('SELECT id FROM order_visits WHERE id=? AND order_id=?').get(visitId, orderId);
     if (!visit) { res.sendStatus(404); return; }
-    const assigned = db.prepare('SELECT 1 FROM visit_assignees WHERE visit_id=? AND user_id=? UNION ALL SELECT 1 FROM order_assignees WHERE order_id=? AND user_id=?').get(visitId,user.id,orderId,user.id);
-    if (user.role !== 'admin' && !assigned) { res.sendStatus(403); return; }
     const { workDate, startTime, endTime } = req.body;
     if (typeof workDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(workDate) ||
         !Number.isFinite(Date.parse(`${workDate}T00:00:00Z`)) || new Date(`${workDate}T00:00:00Z`).toISOString().slice(0, 10) !== workDate ||
@@ -870,6 +968,18 @@ export function createOrdersRouter(db: DatabaseSync): express.Router {
       return;
     }
 
+    const parentOrder = db.prepare('SELECT id, status, order_number, title FROM orders WHERE id = ?').get(orderId) as
+      | { id: string; status: string; order_number: string; title: string }
+      | undefined;
+    if (!parentOrder) {
+      res.status(404).json({ error: 'Заказ не найден.' });
+      return;
+    }
+    if (user.role !== 'admin' && isOrderClosed(parentOrder.status)) {
+      res.status(403).json({ error: 'Заказ закрыт. Добавлять отчёты может только администратор.' });
+      return;
+    }
+
     const assignedRow = db
       .prepare('SELECT id FROM visit_assignees WHERE visit_id = ? AND user_id = ?')
       .get(visitId, user.id);
@@ -878,12 +988,14 @@ export function createOrdersRouter(db: DatabaseSync): express.Router {
       return;
     }
 
-    const { startTime, endTime, workDone, notes, completeVisit } = req.body as {
+    const { startTime, endTime, workDone, notes, completeVisit, stopActiveShift, tzOffsetMinutes } = req.body as {
       startTime?: string;
       endTime?: string;
       workDone?: string;
       notes?: string;
       completeVisit?: boolean;
+      stopActiveShift?: boolean;
+      tzOffsetMinutes?: number;
     };
 
     if (!workDone || !workDone.trim()) {
@@ -891,10 +1003,56 @@ export function createOrdersRouter(db: DatabaseSync): express.Router {
       return;
     }
 
+    const tzOffset = clampTzOffset(tzOffsetMinutes);
     const now = new Date().toISOString();
     const reportId = crypto.randomUUID();
 
     withTransaction(db, () => {
+      let resolvedStartTime = user.role === 'admin' ? (startTime || '').trim() : '';
+      let resolvedEndTime = user.role === 'admin' ? (endTime || '').trim() : '';
+
+      // If caller has an active shift bound to this visit (or order), close it and derive times unless explicitly skipped
+      const activeShift = db
+        .prepare(
+          `SELECT id, started_at, work_date
+           FROM workshop_shifts
+           WHERE user_id = ? AND status = 'active' AND (visit_id = ? OR (visit_id IS NULL AND order_id = ?))
+           LIMIT 1`
+        )
+        .get(user.id, visitId, orderId) as
+        | { id: string; started_at: string; work_date: string }
+        | undefined;
+
+      if (activeShift && stopActiveShift !== false) {
+        const workDate = activeShift.work_date || activeShift.started_at.slice(0, 10);
+        db.prepare(
+          "UPDATE workshop_shifts SET ended_at = ?, work_done = ?, status = 'completed', work_date = ?, visit_id = COALESCE(visit_id, ?) WHERE id = ?"
+        ).run(now, workDone.trim(), workDate, visitId, activeShift.id);
+        syncVisitWorkTimeFromShifts(db, visitId, user.id, workDate, tzOffset);
+        if (!resolvedStartTime) resolvedStartTime = formatIsoToHm(activeShift.started_at, tzOffset);
+        if (!resolvedEndTime) resolvedEndTime = formatIsoToHm(now, tzOffset);
+        writeAuditLog(db, user.id, 'shift', activeShift.id, 'shift_completed', {
+          shiftType: 'visit',
+          orderId,
+          visitId,
+          closedViaVisitReport: true,
+        });
+      } else if (!resolvedStartTime && !resolvedEndTime) {
+        const latestShift = db
+          .prepare(
+            `SELECT started_at, ended_at
+             FROM workshop_shifts
+             WHERE user_id = ? AND status = 'completed' AND (visit_id = ? OR (visit_id IS NULL AND order_id = ?))
+             ORDER BY started_at DESC
+             LIMIT 1`
+          )
+          .get(user.id, visitId, orderId) as { started_at: string; ended_at: string | null } | undefined;
+        if (latestShift) {
+          resolvedStartTime = formatIsoToHm(latestShift.started_at, tzOffset);
+          resolvedEndTime = latestShift.ended_at ? formatIsoToHm(latestShift.ended_at, tzOffset) : '';
+        }
+      }
+
       const existingPrimary = db
         .prepare('SELECT id FROM visit_reports WHERE visit_id = ? AND is_primary = 1')
         .get(visitId);
@@ -910,8 +1068,8 @@ export function createOrdersRouter(db: DatabaseSync): express.Router {
         orderId,
         user.id,
         isPrimary,
-        (startTime || '').trim(),
-        (endTime || '').trim(),
+        resolvedStartTime,
+        resolvedEndTime,
         workDone.trim(),
         (notes || '').trim(),
         now
@@ -923,7 +1081,7 @@ export function createOrdersRouter(db: DatabaseSync): express.Router {
           `UPDATE order_visits
            SET status = 'completed', actual_start_at = ?, actual_end_at = ?, completed_by = ?, completed_at = ?
            WHERE id = ?`
-        ).run(startTime || null, endTime || null, user.id, now, visitId);
+        ).run(resolvedStartTime || null, resolvedEndTime || null, user.id, now, visitId);
 
         // Check if ALL planned/active visits of this order are completed (and at least 1 visit exists)
         const allVisits = db
@@ -939,14 +1097,10 @@ export function createOrdersRouter(db: DatabaseSync): express.Router {
           );
         }
 
-        const orderRow = db.prepare('SELECT order_number, title FROM orders WHERE id = ?').get(orderId) as {
-          order_number: string;
-          title: string;
-        };
         notifyAdmins(
           db,
           'visit_completed',
-          `Монтаж завершён: ${orderRow.order_number}`,
+          `Монтаж завершён: ${parentOrder.order_number}`,
           `${user.fullName} отправил отчёт по выезду «${String(visit.title)}»`,
           'order',
           orderId,
@@ -979,6 +1133,14 @@ export function createOrdersRouter(db: DatabaseSync): express.Router {
       return;
     }
 
+    const orderRow = db.prepare('SELECT status FROM orders WHERE id = ?').get(orderId) as
+      | { status: string }
+      | undefined;
+    if (user.role !== 'admin' && orderRow && isOrderClosed(orderRow.status)) {
+      res.status(403).json({ error: 'Заказ закрыт. Редактировать отчёты в закрытом заказе может только администратор.' });
+      return;
+    }
+
     if (user.role !== 'admin' && existing.user_id !== user.id) {
       res.status(403).json({ error: 'Редактировать можно только свой отчёт.' });
       return;
@@ -1002,8 +1164,8 @@ export function createOrdersRouter(db: DatabaseSync): express.Router {
          SET start_time = ?, end_time = ?, work_done = ?, notes = ?
          WHERE id = ?`
       ).run(
-        startTime !== undefined ? startTime.trim() : existing.start_time,
-        endTime !== undefined ? endTime.trim() : existing.end_time,
+        user.role === 'admin' && startTime !== undefined ? startTime.trim() : existing.start_time,
+        user.role === 'admin' && endTime !== undefined ? endTime.trim() : existing.end_time,
         workDone !== undefined ? workDone.trim() : existing.work_done,
         notes !== undefined ? notes.trim() : existing.notes,
         reportId
@@ -1035,6 +1197,14 @@ export function createOrdersRouter(db: DatabaseSync): express.Router {
       .get(reportId, visitId, orderId) as Record<string, unknown> | undefined;
     if (!existing) {
       res.status(404).json({ error: 'Отчёт не найден.' });
+      return;
+    }
+
+    const orderRow = db.prepare('SELECT status FROM orders WHERE id = ?').get(orderId) as
+      | { status: string }
+      | undefined;
+    if (user.role !== 'admin' && orderRow && isOrderClosed(orderRow.status)) {
+      res.status(403).json({ error: 'Заказ закрыт. Удалять отчёты может только администратор.' });
       return;
     }
 
@@ -1074,9 +1244,15 @@ export function createOrdersRouter(db: DatabaseSync): express.Router {
   router.post('/:id/resources', requireAuth, (req: AuthedRequest, res) => {
     const user = req.authUser!;
     const orderId = String(req.params.id);
-    const order = db.prepare('SELECT id FROM orders WHERE id = ?').get(orderId);
+    const order = db.prepare('SELECT id, status FROM orders WHERE id = ?').get(orderId) as
+      | { id: string; status: string }
+      | undefined;
     if (!order) {
       res.status(404).json({ error: 'Заказ не найден.' });
+      return;
+    }
+    if (user.role !== 'admin' && isOrderClosed(order.status)) {
+      res.status(403).json({ error: 'Заказ закрыт. Операции со складом по закрытому заказу доступны только администратору.' });
       return;
     }
 
@@ -1161,6 +1337,99 @@ export function createOrdersRouter(db: DatabaseSync): express.Router {
     }
   });
 
+  // One-click return all outstanding tools bound to an order
+  router.post('/:orderId/tools/return-all', requireAuth, (req: AuthedRequest, res) => {
+    const user = req.authUser!;
+    const orderId = String(req.params.orderId);
+    const order = db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId) as Record<string, unknown> | undefined;
+    if (!order) {
+      res.status(404).json({ error: 'Заказ не найден.' });
+      return;
+    }
+
+    const isAdmin = user.role === 'admin';
+    if (!isAdmin && isOrderClosed(order.status)) {
+      res.status(403).json({ error: 'Заказ закрыт. Возвращать инструмент может только администратор.' });
+      return;
+    }
+    const canReturn =
+      isAdmin || (hasPermission(user, 'warehouse.take') && isUserAssignedToOrder(db, orderId, user.id));
+    if (!canReturn) {
+      res.status(403).json({ error: 'Нет прав на возврат инструмента по этому заказу.' });
+      return;
+    }
+
+    try {
+      const returnedCount = withTransaction(db, () => {
+        let count = 0;
+
+        const openInstances = db
+          .prepare(
+            `SELECT id, tool_id, holder_user_id
+             FROM tool_instances
+             WHERE current_order_id = ? AND status = 'issued'`
+          )
+          .all(orderId) as Array<{ id: string; tool_id: string; holder_user_id: string | null }>;
+
+        for (const inst of openInstances) {
+          if (!isAdmin && inst.holder_user_id && inst.holder_user_id !== user.id) continue;
+          returnToolTx(db, {
+            toolId: inst.tool_id,
+            toolInstanceId: inst.id,
+            qty: 1,
+            orderId,
+            holderUserId: inst.holder_user_id || user.id,
+            actorUserId: user.id,
+            note: 'Массовый возврат с объекта',
+            force: isAdmin,
+          });
+          count += 1;
+        }
+
+        const openQtyTools = db
+          .prepare(
+            `SELECT wo.tool_id, wo.user_id,
+                    SUM(CASE WHEN wo.op_type = 'issue' THEN wo.qty_milli ELSE 0 END) -
+                    SUM(CASE WHEN wo.op_type = 'return' THEN wo.qty_milli ELSE 0 END) AS held_milli
+             FROM warehouse_operations wo
+             JOIN tools t ON t.id = wo.tool_id
+             WHERE wo.item_type = 'tool' AND t.tracking_mode = 'quantity' AND wo.order_id = ?
+             GROUP BY wo.tool_id, wo.user_id
+             HAVING held_milli > 0`
+          )
+          .all(orderId) as Array<{ tool_id: string; user_id: string | null; held_milli: number }>;
+
+        for (const row of openQtyTools) {
+          if (!isAdmin && row.user_id && row.user_id !== user.id) continue;
+          const wholeQty = Math.round(Number(row.held_milli || 0) / 1000);
+          if (wholeQty <= 0) continue;
+          returnToolTx(db, {
+            toolId: row.tool_id,
+            qty: wholeQty,
+            orderId,
+            holderUserId: row.user_id || user.id,
+            actorUserId: user.id,
+            note: 'Массовый возврат с объекта',
+            force: isAdmin,
+          });
+          count += 1;
+        }
+
+        writeAuditLog(db, user.id, 'order', orderId, 'order_tools_returned_all', { returnedCount: count });
+        return count;
+      });
+
+      const updated = db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId) as Record<string, unknown>;
+      res.json({
+        ok: true,
+        returnedCount,
+        order: enrichOrder(db, updated, isAdmin, user.id, true),
+      });
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : 'Не удалось вернуть инструмент.' });
+    }
+  });
+
   // Upload photo / document attachment to order or visit
   router.post('/:orderId/attachments', requireAuth, (req: AuthedRequest,res,next) => {
     const orderId=String(req.params.orderId);
@@ -1178,6 +1447,13 @@ export function createOrdersRouter(db: DatabaseSync): express.Router {
     const orderId = String(req.params.orderId);
     const visitId = req.body.visitId ? String(req.body.visitId) : null;
     const kind = req.body.kind === 'document' ? 'document' : 'photo';
+    const orderStatusRow = db.prepare('SELECT status FROM orders WHERE id = ?').get(orderId) as
+      | { status: string }
+      | undefined;
+    if (!orderStatusRow) {
+      res.status(404).json({ error: 'Заказ удалён.' });
+      return;
+    }
     if(visitId && !db.prepare('SELECT 1 FROM order_visits WHERE id = ? AND order_id = ?').get(visitId,orderId)) {
       res.status(404).json({error:'Выезд не найден в этом заказе.'});return;
     }
@@ -1194,6 +1470,12 @@ export function createOrdersRouter(db: DatabaseSync): express.Router {
     if (!req.file) {
       res.status(400).json({ error: 'Файл не передан.' });
       return;
+    }
+    if (user.role !== 'admin' && isOrderClosed(orderStatusRow.status)) {
+      if (kind !== 'photo' || !req.file.mimetype.startsWith('image/')) {
+        res.status(403).json({ error: 'В закрытом заказе монтажник может загружать только фотографии.' });
+        return;
+      }
     }
 
     const entityType = visitId ? 'visit' : 'order';
@@ -1308,6 +1590,14 @@ export function createOrdersRouter(db: DatabaseSync): express.Router {
         | { order_id: string }
         | undefined;
       orderId = v?.order_id || null;
+    }
+
+    const orderRow = orderId
+      ? (db.prepare('SELECT status FROM orders WHERE id = ?').get(orderId) as { status: string } | undefined)
+      : undefined;
+    if (user.role !== 'admin' && orderRow && isOrderClosed(orderRow.status)) {
+      res.status(403).json({ error: 'Заказ закрыт. Удалять файлы из закрытого заказа может только администратор.' });
+      return;
     }
 
     const canDelete =

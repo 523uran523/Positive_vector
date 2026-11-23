@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Building2, MapPin, Pencil, Phone, Plus, Search, Trash2, User, X } from 'lucide-react';
 import { SectionHeader } from '../components/SectionHeader';
 import { apiRequest, formatDateRu, formatRub } from '../lib/api';
@@ -29,6 +29,8 @@ export function ClientsView({
 
   const [mode, setMode] = useState<'companies' | 'contacts'>('companies');
   const [search, setSearch] = useState('');
+  const [debtOnly, setDebtOnly] = useState(false);
+  const [expandedOrdersKeys, setExpandedOrdersKeys] = useState<Record<string, boolean>>({});
   const [modal, setModal] = useState<'company' | 'contact' | null>(null);
   const [editingCompanyId, setEditingCompanyId] = useState<string | null>(null);
   const [editingContactId, setEditingContactId] = useState<string | null>(null);
@@ -52,21 +54,36 @@ export function ClientsView({
   const [ctPosition, setCtPosition] = useState('');
   const [ctNotes, setCtNotes] = useState('');
 
+  useEffect(() => {
+    if (!modal) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setModal(null);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [modal]);
+
   const q = search.trim().toLowerCase();
+  const debtorCompaniesCount = companies.filter((c) => (c.debt_kopecks || 0) > 0).length;
+  const debtorContactsCount = contacts.filter((ct) => (ct.debt_kopecks || 0) > 0).length;
+  const activeDebtorCount = mode === 'companies' ? debtorCompaniesCount : debtorContactsCount;
+
   const filteredCompanies = companies.filter(
     (c) =>
-      !q ||
-      c.name.toLowerCase().includes(q) ||
-      c.phone.toLowerCase().includes(q) ||
-      c.email.toLowerCase().includes(q) ||
-      c.address.toLowerCase().includes(q)
+      (!debtOnly || !isAdmin || (c.debt_kopecks || 0) > 0) &&
+      (!q ||
+        c.name.toLowerCase().includes(q) ||
+        c.phone.toLowerCase().includes(q) ||
+        c.email.toLowerCase().includes(q) ||
+        c.address.toLowerCase().includes(q))
   );
   const filteredContacts = contacts.filter(
     (ct) =>
-      !q ||
-      ct.full_name.toLowerCase().includes(q) ||
-      ct.phone.toLowerCase().includes(q) ||
-      (ct.company_name || '').toLowerCase().includes(q)
+      (!debtOnly || !isAdmin || (ct.debt_kopecks || 0) > 0) &&
+      (!q ||
+        ct.full_name.toLowerCase().includes(q) ||
+        ct.phone.toLowerCase().includes(q) ||
+        (ct.company_name || '').toLowerCase().includes(q))
   );
 
   const openCreateCompany = () => {
@@ -250,16 +267,14 @@ export function ClientsView({
       )}
 
       <SectionHeader<'companies' | 'contacts'>
-        title="Клиенты"
-        description="Компании, контактные лица и связанные заказы"
         actions={
           canCreate ? (
             <button
               type="button"
               onClick={() => (mode === 'companies' ? openCreateCompany() : openCreateContact())}
-              className="inline-flex min-h-[40px] shrink-0 items-center gap-1.5 rounded-xl bg-[#0071E3] px-4 py-2 text-xs font-semibold text-white dark:bg-[#2997FF] dark:text-[#0B0C10]"
+              className="inline-flex min-h-[36px] shrink-0 whitespace-nowrap items-center gap-1.5 rounded-xl bg-[#0071E3] px-3 py-1.5 text-xs font-semibold text-white dark:bg-[#2997FF] dark:text-[#0B0C10]"
             >
-              <Plus className="h-4 w-4" />
+              <Plus className="h-3.5 w-3.5" />
               <span>{mode === 'companies' ? 'Добавить компанию' : 'Добавить контакт'}</span>
             </button>
           ) : undefined
@@ -271,15 +286,42 @@ export function ClientsView({
         activeTab={mode}
         onSelectTab={setMode}
         filters={
-          <div className="relative max-w-md">
-            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400" />
-            <input
-              type="text"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Поиск по названию, телефону, адресу..."
-              className="w-full rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 py-2 pl-9 pr-3 text-sm outline-none focus:border-[#0071E3] focus:bg-white dark:border-white/[0.1] dark:bg-[#0B0C10] dark:focus:bg-[#0B0C10]"
-            />
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="relative min-w-[220px] flex-1 sm:max-w-md">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400" />
+              <input
+                type="text"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Поиск по названию, телефону, адресу..."
+                className={`w-full rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 py-2 pl-9 text-sm outline-none focus:border-[#0071E3] focus:bg-white dark:border-white/[0.1] dark:bg-[#0B0C10] dark:focus:bg-[#0B0C10] ${
+                  search ? 'pr-9' : 'pr-3'
+                }`}
+              />
+              {search && (
+                <button
+                  type="button"
+                  aria-label="Очистить поиск"
+                  onClick={() => setSearch('')}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded-md p-0.5 text-zinc-400 transition hover:bg-black/[0.06] hover:text-zinc-700 dark:hover:bg-white/[0.08] dark:hover:text-zinc-200"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              )}
+            </div>
+            {isAdmin && (activeDebtorCount > 0 || debtOnly) && (
+              <button
+                type="button"
+                onClick={() => setDebtOnly((prev) => !prev)}
+                className={`inline-flex min-h-[36px] shrink-0 whitespace-nowrap items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-semibold transition ${
+                  debtOnly
+                    ? 'bg-amber-600 text-white dark:bg-amber-500 dark:text-[#0B0C10]'
+                    : 'border border-amber-500/35 bg-amber-500/10 text-amber-700 hover:bg-amber-500/15 dark:text-amber-300'
+                }`}
+              >
+                <span>С долгом ({activeDebtorCount})</span>
+              </button>
+            )}
           </div>
         }
       />
@@ -331,12 +373,21 @@ export function ClientsView({
                     </div>
                   </div>
                   <div className="flex items-start gap-2">
-                    {isAdmin && comp.debt_kopecks !== undefined && comp.debt_kopecks > 0 && (
+                    {isAdmin && ((comp.debt_kopecks || 0) > 0 || (comp.overpaid_kopecks || 0) > 0) && (
                       <div className="text-right">
-                        <div className="text-[11px] text-zinc-400">Долг</div>
-                        <div className="text-sm font-bold text-amber-600 tabular-nums dark:text-amber-400">
-                          {formatRub(comp.debt_kopecks)}
-                        </div>
+                        {(comp.debt_kopecks || 0) > 0 && (
+                          <>
+                            <div className="text-[11px] text-zinc-400">Долг</div>
+                            <div className="text-sm font-bold text-amber-600 tabular-nums dark:text-amber-400">
+                              {formatRub(comp.debt_kopecks)}
+                            </div>
+                          </>
+                        )}
+                        {(comp.overpaid_kopecks || 0) > 0 && (
+                          <div className="text-[11px] font-semibold text-emerald-600 tabular-nums dark:text-emerald-400">
+                            Переплата +{formatRub(comp.overpaid_kopecks)}
+                          </div>
+                        )}
                       </div>
                     )}
                     {canEdit && (
@@ -476,33 +527,66 @@ export function ClientsView({
                   </div>
                 )}
 
-                {comp.orders && comp.orders.length > 0 && (
-                  <div className="mt-3 border-t border-black/[0.05] pt-2.5 dark:border-white/[0.06]">
-                    <div className="mb-1.5 text-[11px] font-semibold text-zinc-400">
-                      Заказы ({comp.orders.length})
+                {comp.orders && comp.orders.length > 0 && (() => {
+                  const ordersKey = `comp:${comp.id}`;
+                  const isExpanded = Boolean(expandedOrdersKeys[ordersKey]);
+                  const visibleOrders = isExpanded ? comp.orders : comp.orders.slice(0, 4);
+                  return (
+                    <div className="mt-3 border-t border-black/[0.05] pt-2.5 dark:border-white/[0.06]">
+                      <div className="mb-1.5 flex items-center justify-between gap-2 text-[11px] font-semibold text-zinc-400">
+                        <span>Заказы ({comp.orders.length})</span>
+                        {comp.orders.length > 4 && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setExpandedOrdersKeys((prev) => ({
+                                ...prev,
+                                [ordersKey]: !prev[ordersKey],
+                              }))
+                            }
+                            className="font-semibold text-[#0071E3] hover:underline dark:text-[#2997FF]"
+                          >
+                            {isExpanded ? 'Свернуть' : `Показать все (${comp.orders.length})`}
+                          </button>
+                        )}
+                      </div>
+                      <div className="space-y-1">
+                        {visibleOrders.map((o) => (
+                          <button
+                            key={o.id}
+                            type="button"
+                            onClick={() => onOpenOrderById(o.id)}
+                            className="flex w-full items-center justify-between rounded-lg px-2 py-1 text-left text-xs hover:bg-black/[0.03] dark:hover:bg-white/[0.04]"
+                          >
+                            <span className="truncate">
+                              <span className="font-mono text-zinc-400">{o.order_number}</span>{' '}
+                              <span className="font-medium">{o.title}</span>
+                            </span>
+                            <span className="ml-2 shrink-0 text-right text-zinc-400 tabular-nums">
+                              {isAdmin && o.price_kopecks !== undefined ? (
+                                <>
+                                  <span>{formatRub(o.price_kopecks)}</span>
+                                  {(o.debt_kopecks || 0) > 0 && (
+                                    <span className="ml-1.5 font-semibold text-amber-600 dark:text-amber-400">
+                                      · долг {formatRub(o.debt_kopecks)}
+                                    </span>
+                                  )}
+                                  {(o.overpaid_kopecks || 0) > 0 && (
+                                    <span className="ml-1.5 font-semibold text-emerald-600 dark:text-emerald-400">
+                                      · переплата +{formatRub(o.overpaid_kopecks)}
+                                    </span>
+                                  )}
+                                </>
+                              ) : (
+                                formatDateRu(o.scheduled_at)
+                              )}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
                     </div>
-                    <div className="space-y-1">
-                      {comp.orders.slice(0, 4).map((o) => (
-                        <button
-                          key={o.id}
-                          type="button"
-                          onClick={() => onOpenOrderById(o.id)}
-                          className="flex w-full items-center justify-between rounded-lg px-2 py-1 text-left text-xs hover:bg-black/[0.03] dark:hover:bg-white/[0.04]"
-                        >
-                          <span className="truncate">
-                            <span className="font-mono text-zinc-400">{o.order_number}</span>{' '}
-                            <span className="font-medium">{o.title}</span>
-                          </span>
-                          <span className="ml-2 shrink-0 text-zinc-400 tabular-nums">
-                            {isAdmin && o.price_kopecks !== undefined
-                              ? formatRub(o.price_kopecks)
-                              : formatDateRu(o.scheduled_at)}
-                          </span>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
+                  );
+                })()}
               </div>
               );
             })
@@ -533,10 +617,19 @@ export function ClientsView({
                     )}
                   </div>
                   <div className="flex items-start gap-2">
-                    {isAdmin && ct.debt_kopecks !== undefined && ct.debt_kopecks > 0 && (
-                      <span className="text-xs font-bold text-amber-600 tabular-nums dark:text-amber-400">
-                        Долг {formatRub(ct.debt_kopecks)}
-                      </span>
+                    {isAdmin && ((ct.debt_kopecks || 0) > 0 || (ct.overpaid_kopecks || 0) > 0) && (
+                      <div className="text-right tabular-nums">
+                        {(ct.debt_kopecks || 0) > 0 && (
+                          <div className="text-xs font-bold text-amber-600 dark:text-amber-400">
+                            Долг {formatRub(ct.debt_kopecks)}
+                          </div>
+                        )}
+                        {(ct.overpaid_kopecks || 0) > 0 && (
+                          <div className="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">
+                            Переплата +{formatRub(ct.overpaid_kopecks)}
+                          </div>
+                        )}
+                      </div>
                     )}
                     {canEdit && (
                       <div className="flex items-center gap-1">
@@ -607,33 +700,66 @@ export function ClientsView({
                     <span>Новый заказ</span>
                   </button>
                 )}
-                {ct.orders && ct.orders.length > 0 && (
-                  <div className="mt-3 border-t border-black/[0.05] pt-2 dark:border-white/[0.06]">
-                    <div className="mb-1 text-[11px] font-semibold text-zinc-400">
-                      Заказы ({ct.orders.length})
+                {ct.orders && ct.orders.length > 0 && (() => {
+                  const ordersKey = `ct:${ct.id}`;
+                  const isExpanded = Boolean(expandedOrdersKeys[ordersKey]);
+                  const visibleOrders = isExpanded ? ct.orders : ct.orders.slice(0, 3);
+                  return (
+                    <div className="mt-3 border-t border-black/[0.05] pt-2 dark:border-white/[0.06]">
+                      <div className="mb-1 flex items-center justify-between gap-2 text-[11px] font-semibold text-zinc-400">
+                        <span>Заказы ({ct.orders.length})</span>
+                        {ct.orders.length > 3 && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setExpandedOrdersKeys((prev) => ({
+                                ...prev,
+                                [ordersKey]: !prev[ordersKey],
+                              }))
+                            }
+                            className="font-semibold text-[#0071E3] hover:underline dark:text-[#2997FF]"
+                          >
+                            {isExpanded ? 'Свернуть' : `Показать все (${ct.orders.length})`}
+                          </button>
+                        )}
+                      </div>
+                      <div className="space-y-1">
+                        {visibleOrders.map((o) => (
+                          <button
+                            key={o.id}
+                            type="button"
+                            onClick={() => onOpenOrderById(o.id)}
+                            className="flex w-full items-center justify-between rounded-lg px-1.5 py-1 text-left text-xs hover:bg-black/[0.03] dark:hover:bg-white/[0.04]"
+                          >
+                            <span className="truncate">
+                              <span className="font-mono text-zinc-400">{o.order_number}</span>{' '}
+                              <span>{o.title}</span>
+                            </span>
+                            <span className="ml-2 shrink-0 text-zinc-400 tabular-nums">
+                              {isAdmin && o.price_kopecks !== undefined ? (
+                                <>
+                                  <span>{formatRub(o.price_kopecks)}</span>
+                                  {(o.debt_kopecks || 0) > 0 && (
+                                    <span className="ml-1.5 font-semibold text-amber-600 dark:text-amber-400">
+                                      · долг {formatRub(o.debt_kopecks)}
+                                    </span>
+                                  )}
+                                  {(o.overpaid_kopecks || 0) > 0 && (
+                                    <span className="ml-1.5 font-semibold text-emerald-600 dark:text-emerald-400">
+                                      · переплата +{formatRub(o.overpaid_kopecks)}
+                                    </span>
+                                  )}
+                                </>
+                              ) : (
+                                formatDateRu(o.scheduled_at)
+                              )}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
                     </div>
-                    <div className="space-y-1">
-                      {ct.orders.slice(0, 3).map((o) => (
-                        <button
-                          key={o.id}
-                          type="button"
-                          onClick={() => onOpenOrderById(o.id)}
-                          className="flex w-full items-center justify-between rounded-lg px-1.5 py-1 text-left text-xs hover:bg-black/[0.03] dark:hover:bg-white/[0.04]"
-                        >
-                          <span className="truncate">
-                            <span className="font-mono text-zinc-400">{o.order_number}</span>{' '}
-                            <span>{o.title}</span>
-                          </span>
-                          <span className="ml-2 shrink-0 text-zinc-400 tabular-nums">
-                            {isAdmin && o.price_kopecks !== undefined
-                              ? formatRub(o.price_kopecks)
-                              : formatDateRu(o.scheduled_at)}
-                          </span>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
+                  );
+                })()}
               </div>
             ))
           )}

@@ -5,7 +5,7 @@ import { applyMaterialOperationTx } from '../server/services/warehouseService.ts
 import fs from 'node:fs';
 import path from 'node:path';
 
-test('FIFO purchases, issue, consumption, return and insufficient stock', () => {
+test('Weighted-average costing with batch quantity tracking, issue, consumption, return and insufficient stock', () => {
   const db=openDatabase(':memory:'); runMigrations(db);
   try {
     const now=new Date().toISOString();
@@ -14,22 +14,25 @@ test('FIFO purchases, issue, consumption, return and insufficient stock', () => 
     db.prepare("INSERT INTO orders(id,order_number,title,created_by,created_at,updated_at) VALUES ('o','1','Order','u',?,?)").run(now,now);
     const move=(opType:'receipt'|'issue'|'consume'|'return',qty:number,cost?:number,orderId?:string) => withTransaction(db,()=>applyMaterialOperationTx(db,{materialId:'m',opType,qtyMilli:qty*1000,unitCostKopecks:cost,orderId,actorUserId:'u'}));
     move('receipt',100,1000); move('receipt',20,500);
+    // Weighted avg = round((100*1000 + 20*500) / 120) = 917 kop
+    assert.equal((db.prepare("SELECT purchase_price_kopecks FROM materials WHERE id='m'").get() as any).purchase_price_kopecks,917);
     const issue=move('issue',100,undefined,'o');
     let lots=db.prepare('SELECT remaining_qty_milli,unit_cost_kopecks FROM material_batches ORDER BY seq').all();
     assert.deepEqual(lots.map(x=>[x.remaining_qty_milli,x.unit_cost_kopecks]),[[0,1000],[20000,500]]);
-    assert.equal((db.prepare('SELECT unit_cost_kopecks FROM warehouse_operations WHERE id=?').get(issue.operationId) as any).unit_cost_kopecks,1000);
+    assert.equal((db.prepare('SELECT unit_cost_kopecks FROM warehouse_operations WHERE id=?').get(issue.operationId) as any).unit_cost_kopecks,917);
     const returned=move('return',30,undefined,'o');
-    assert.equal((db.prepare('SELECT unit_cost_kopecks FROM warehouse_operations WHERE id=?').get(returned.operationId) as any).unit_cost_kopecks,1000);
+    assert.equal((db.prepare('SELECT unit_cost_kopecks FROM warehouse_operations WHERE id=?').get(returned.operationId) as any).unit_cost_kopecks,917);
     const consumed=move('consume',70,undefined,'o');
-    assert.equal((db.prepare('SELECT unit_cost_kopecks FROM warehouse_operations WHERE id=?').get(consumed.operationId) as any).unit_cost_kopecks,1000);
+    assert.equal((db.prepare('SELECT unit_cost_kopecks FROM warehouse_operations WHERE id=?').get(consumed.operationId) as any).unit_cost_kopecks,917);
     lots=db.prepare('SELECT remaining_qty_milli,unit_cost_kopecks FROM material_batches ORDER BY seq').all();
     assert.deepEqual(lots.map(x=>[x.remaining_qty_milli,x.unit_cost_kopecks]),[[30000,1000],[20000,500]]);
     assert.throws(()=>move('consume',51),/Недостаточно/);
     assert.equal((db.prepare("SELECT quantity_milli FROM materials WHERE id='m'").get() as any).quantity_milli,50000);
     const mixed=move('consume',40);
-    const value=db.prepare('SELECT SUM(a.qty_milli*b.unit_cost_kopecks)/1000 AS cost FROM material_batch_allocations a JOIN material_batches b ON b.id=a.batch_id WHERE a.operation_id=?').get(mixed.operationId) as {cost:number};
-    assert.equal(value.cost,35000);
+    assert.equal((db.prepare('SELECT unit_cost_kopecks FROM warehouse_operations WHERE id=?').get(mixed.operationId) as any).unit_cost_kopecks,917);
     move('receipt',20,750);
+    // Weighted avg = round((10*917 + 20*750) / 30) = 806 kop
+    assert.equal((db.prepare("SELECT purchase_price_kopecks FROM materials WHERE id='m'").get() as any).purchase_price_kopecks,806);
     move('consume',5,undefined,'o'); // direct consumption after the previous issue was exhausted
     move('issue',10,undefined,'o');
     const laterReturn=move('return',10,undefined,'o');

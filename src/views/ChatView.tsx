@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Bell, ChevronLeft, ChevronRight, FileText, Mic, Paperclip, Pencil, Plus, Reply, Send, Square, Trash2, Users, X } from 'lucide-react';
+import { Bell, BellOff, ChevronDown, ChevronLeft, ChevronRight, FileText, MessageSquare, Mic, Paperclip, Pencil, Plus, Reply, Send, Square, Trash2, Users, X } from 'lucide-react';
 import { SectionHeader } from '../components/SectionHeader';
 import { apiRequest, formatDateTimeRu } from '../lib/api';
-import { enablePushNotifications } from '../lib/push';
+import { disablePushNotifications, enablePushNotifications, isPushNotificationsEnabled } from '../lib/push';
 import { uploadWithRetry } from '../lib/upload';
 import type { AuthUser, DirectoryUser } from '../types/crm';
 
@@ -85,6 +85,29 @@ export function ChatView({
   const [confirmRemoveMemberId, setConfirmRemoveMemberId] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [pushEnabled, setPushEnabled] = useState(false);
+  const [pushBusy, setPushBusy] = useState(false);
+  const [pushMessage, setPushMessage] = useState('');
+  const [roomsMenuOpen, setRoomsMenuOpen] = useState(false);
+  const roomsMenuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!roomsMenuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (roomsMenuRef.current && !roomsMenuRef.current.contains(e.target as Node | null)) {
+        setRoomsMenuOpen(false);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setRoomsMenuOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [roomsMenuOpen]);
 
   const refresh = async () => {
     const data = await apiRequest<{ rooms: Room[] }>('/api/chat/rooms', { useCache: false });
@@ -93,9 +116,31 @@ export function ChatView({
 
   useEffect(() => {
     void refresh().catch((e) => setError(e.message));
+    void isPushNotificationsEnabled().then(setPushEnabled).catch(() => {});
     const timer = window.setInterval(() => void refresh().catch(() => {}), 10000);
     return () => clearInterval(timer);
   }, []);
+
+  const togglePush = async () => {
+    if (pushBusy) return;
+    setPushBusy(true);
+    setPushMessage('');
+    try {
+      if (pushEnabled) {
+        await disablePushNotifications();
+        setPushEnabled(false);
+        setPushMessage('Уведомления на этом устройстве отключены.');
+      } else {
+        await enablePushNotifications();
+        setPushEnabled(true);
+        setPushMessage('Уведомления на этом устройстве включены.');
+      }
+    } catch (e) {
+      setPushMessage(e instanceof Error ? e.message : 'Не удалось изменить настройки уведомлений.');
+    } finally {
+      setPushBusy(false);
+    }
+  };
 
   const open = async (next: 'create' | 'members') => {
     setBusy(true);
@@ -186,86 +231,148 @@ export function ChatView({
   };
 
   const room = rooms.find((item) => item.id === selected);
+  const totalRoomUnread = rooms.reduce((sum, item) => sum + Number(item.unreadCount || 0), 0);
 
   return (
     <div className="mx-auto max-w-5xl space-y-4">
       <SectionHeader
-        title="Чат"
-        description="Общение сотрудников, голосовые сообщения, файлы и обсуждение заказов"
+        title={room?.name || 'Общий чат'}
         actions={
-          user.role === 'admin' ? (
-            <div className="flex flex-wrap items-center gap-2">
+          <>
+            <div ref={roomsMenuRef} className="relative inline-block">
               <button
                 type="button"
-                disabled={busy}
-                onClick={() => void open('create')}
-                className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl bg-[#0071E3] px-3.5 py-2 text-xs font-semibold text-white dark:bg-[#2997FF] dark:text-[#0B0C10]"
+                onClick={() => setRoomsMenuOpen((prev) => !prev)}
+                aria-expanded={roomsMenuOpen}
+                aria-haspopup="true"
+                aria-label="Чаты"
+                className="inline-flex min-h-[36px] shrink-0 whitespace-nowrap items-center gap-1.5 rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 px-3 py-1.5 text-xs font-semibold hover:bg-black/[0.04] dark:border-white/[0.1] dark:bg-[#0B0C10] dark:hover:bg-white/[0.06]"
               >
-                <Plus className="h-4 w-4" />
-                <span>Создать чат</span>
+                <MessageSquare className="h-3.5 w-3.5" />
+                <span>Чаты</span>
+                {totalRoomUnread > 0 && (
+                  <span className="rounded-md bg-[#0071E3] px-1.5 py-0.5 text-[10px] font-bold text-white tabular-nums dark:bg-[#2997FF] dark:text-[#0B0C10]">
+                    {totalRoomUnread}
+                  </span>
+                )}
+                <ChevronDown
+                  className={`h-3.5 w-3.5 transition-transform ${roomsMenuOpen ? 'rotate-180' : ''}`}
+                />
               </button>
-              {selected !== 'general' && room && (
-                <>
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => void open('members')}
-                    className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-black/[0.08] px-3 py-2 text-xs font-semibold hover:bg-black/[0.03] dark:border-white/[0.1]"
-                  >
-                    <Users className="h-3.5 w-3.5" />
-                    <span>Участники</span>
-                  </button>
-                  {!confirmDeleteRoom ? (
+              {roomsMenuOpen && (
+                <div
+                  className="absolute top-[calc(100%+8px)] left-0 z-50 w-60 max-w-[calc(100vw-3rem)] rounded-xl border border-black/[0.08] bg-white p-1 shadow-xl dark:border-white/[0.1] dark:bg-[#15171C]"
+                  role="menu"
+                  aria-label="Чаты"
+                >
+                  {rooms.map((item) => {
+                    const active = item.id === selected;
+                    return (
+                      <button
+                        key={item.id}
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          setMode(null);
+                          setConfirmDeleteRoom(false);
+                          setSelected(item.id);
+                          setRoomsMenuOpen(false);
+                        }}
+                        className={`flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-xs font-semibold hover:bg-black/[0.04] dark:hover:bg-white/[0.06] ${
+                          active ? 'bg-[#0071E3]/10 text-[#0071E3] dark:text-[#2997FF]' : ''
+                        }`}
+                      >
+                        <span className="truncate">{item.name}</span>
+                        {item.unreadCount > 0 && (
+                          <span className="shrink-0 rounded-md bg-[#0071E3] px-1.5 py-0.5 text-[10px] font-bold text-white tabular-nums dark:bg-[#2997FF] dark:text-[#0B0C10]">
+                            {item.unreadCount}
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            <button
+              type="button"
+              disabled={pushBusy}
+              aria-label={pushEnabled ? 'Отключить уведомления' : 'Включить уведомления'}
+              aria-pressed={pushEnabled}
+              title={pushEnabled ? 'Отключить уведомления' : 'Включить уведомления'}
+              onClick={() => void togglePush()}
+              className={`inline-flex h-[36px] w-[36px] shrink-0 items-center justify-center rounded-xl border transition disabled:opacity-50 ${
+                pushEnabled
+                  ? 'border-[#0071E3]/30 bg-[#0071E3]/10 text-[#0071E3] hover:bg-[#0071E3]/15 dark:border-[#2997FF]/35 dark:bg-[#2997FF]/15 dark:text-[#2997FF]'
+                  : 'border-black/[0.08] text-zinc-500 hover:bg-black/[0.03] hover:text-[#1D1D1F] dark:border-white/[0.1] dark:text-zinc-400 dark:hover:text-white'
+              }`}
+            >
+              {pushEnabled ? <Bell className="h-4 w-4" /> : <BellOff className="h-4 w-4" />}
+            </button>
+            {user.role === 'admin' && (
+              <>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void open('create')}
+                  className="inline-flex min-h-[36px] shrink-0 whitespace-nowrap items-center gap-1.5 rounded-xl bg-[#0071E3] px-3 py-1.5 text-xs font-semibold text-white dark:bg-[#2997FF] dark:text-[#0B0C10]"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  <span>Создать чат</span>
+                </button>
+                {selected !== 'general' && room && (
+                  <>
                     <button
                       type="button"
                       disabled={busy}
-                      onClick={() => setConfirmDeleteRoom(true)}
-                      className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-red-500/30 px-3 py-2 text-xs font-semibold text-red-600 hover:bg-red-500/10 dark:text-red-400"
+                      onClick={() => void open('members')}
+                      className="inline-flex min-h-[36px] shrink-0 whitespace-nowrap items-center gap-1.5 rounded-xl border border-black/[0.08] px-3 py-1.5 text-xs font-semibold hover:bg-black/[0.03] dark:border-white/[0.1]"
                     >
-                      <Trash2 className="h-3.5 w-3.5" />
-                      <span>Удалить чат</span>
+                      <Users className="h-3.5 w-3.5" />
+                      <span>Участники</span>
                     </button>
-                  ) : (
-                    <div className="inline-flex items-center gap-1.5 rounded-xl border border-red-500/30 bg-red-500/10 px-2.5 py-1.5 text-xs">
-                      <span className="font-semibold text-red-600 dark:text-red-400">
-                        Удалить «{room.name}»?
-                      </span>
+                    {!confirmDeleteRoom ? (
                       <button
                         type="button"
                         disabled={busy}
-                        onClick={() => void deleteRoom()}
-                        className="rounded-lg bg-red-600 px-2 py-1 font-semibold text-white"
+                        onClick={() => setConfirmDeleteRoom(true)}
+                        className="inline-flex min-h-[36px] shrink-0 whitespace-nowrap items-center gap-1.5 rounded-xl border border-red-500/30 px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-500/10 dark:text-red-400"
                       >
-                        Да
+                        <Trash2 className="h-3.5 w-3.5" />
+                        <span>Удалить чат</span>
                       </button>
-                      <button
-                        type="button"
-                        onClick={() => setConfirmDeleteRoom(false)}
-                        className="px-1.5 text-zinc-600 dark:text-zinc-300"
-                      >
-                        Нет
-                      </button>
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
-          ) : undefined
+                    ) : (
+                      <div className="inline-flex max-w-full flex-wrap items-center gap-1.5 rounded-xl border border-red-500/30 bg-red-500/10 px-2.5 py-1.5 text-xs">
+                        <span className="truncate font-semibold text-red-600 dark:text-red-400">
+                          Удалить «{room.name}»?
+                        </span>
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => void deleteRoom()}
+                          className="shrink-0 rounded-lg bg-red-600 px-2 py-1 font-semibold text-white"
+                        >
+                          Да
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmDeleteRoom(false)}
+                          className="shrink-0 px-1.5 text-zinc-600 dark:text-zinc-300"
+                        >
+                          Нет
+                        </button>
+                      </div>
+                    )}
+                  </>
+                )}
+              </>
+            )}
+          </>
         }
-        tabs={rooms.map((item) => ({
-          id: item.id,
-          label: item.name,
-          count: item.unreadCount > 0 ? item.unreadCount : undefined,
-        }))}
-        activeTab={selected}
-        onSelectTab={(id) => {
-          setMode(null);
-          setConfirmDeleteRoom(false);
-          setSelected(id);
-        }}
-        tabsAriaLabel="Чаты"
       />
 
+      {pushMessage && <p className="text-xs text-zinc-500 dark:text-zinc-400">{pushMessage}</p>}
       {error && (
         <p role="alert" className="rounded-xl bg-red-500/10 px-3.5 py-2.5 text-sm text-red-600 dark:text-red-400">
           {error}
@@ -448,8 +555,6 @@ function ChatRoom({
   const [editing, setEditing] = useState<string | null>(null);
   const [replying, setReplying] = useState<Message | null>(null);
   const [confirmDeleteMsgId, setConfirmDeleteMsgId] = useState<string | null>(null);
-  const [pushMessage, setPushMessage] = useState('');
-  const [pushBusy, setPushBusy] = useState(false);
   const [viewer, setViewer] = useState<{ items: ViewerItem[]; index: number } | null>(null);
   const recorder = useRef<MediaRecorder | null>(null);
   const stream = useRef<MediaStream | null>(null);
@@ -652,42 +757,8 @@ function ChatRoom({
     }
   };
 
-  const enablePush = async () => {
-    if (pushBusy) return;
-    setPushBusy(true);
-    try {
-      await enablePushNotifications();
-      setPushMessage('Уведомления на этом устройстве включены.');
-    } catch (e) {
-      setPushMessage(e instanceof Error ? e.message : 'Не удалось включить уведомления.');
-    } finally {
-      setPushBusy(false);
-    }
-  };
-
   return (
     <div className="flex flex-col gap-3">
-      <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-black/[0.06] bg-white px-4 py-3 dark:border-white/[0.08] dark:bg-[#15171C]">
-        <div>
-          <h3 className="font-display text-base font-bold">{room.name}</h3>
-          <p className="text-xs text-zinc-500 dark:text-zinc-400">
-            {room.id === 'general'
-              ? 'Доступен всем сотрудникам с учётной записью'
-              : 'Доступен выбранным участникам'}
-          </p>
-        </div>
-        <button
-          type="button"
-          disabled={pushBusy}
-          onClick={() => void enablePush()}
-          className="inline-flex items-center gap-1.5 rounded-xl border border-black/[0.08] px-3 py-2 text-xs font-semibold hover:bg-black/[0.03] disabled:opacity-50 dark:border-white/[0.1]"
-        >
-          <Bell className="h-3.5 w-3.5" />
-          <span>{pushBusy ? 'Подключаем...' : 'Включить уведомления'}</span>
-        </button>
-      </div>
-
-      {pushMessage && <p className="text-xs text-zinc-500 dark:text-zinc-400">{pushMessage}</p>}
       {error && (
         <p role="alert" className="rounded-xl bg-red-500/10 px-3 py-2 text-sm text-red-600 dark:text-red-400">
           {error}

@@ -263,7 +263,7 @@ describe('Позитив Вектор CRM/ERP — бизнес-логика и �
     assert.equal(mySal.data.pendingVisits[0].visit_id, visit2Id);
   });
 
-  it('3. Смена в цеху: запрет второй активной смены и сохранение снимка ставки при изменении тарифа', async () => {
+  it('3. Смена: учёт времени без автоначисления, запрет второй активной смены и ручная оплата администратором', async () => {
     const start1 = await reqJson(baseUrl, 'POST', '/api/shifts/start', {}, empClient);
     assert.equal(start1.status, 201);
 
@@ -279,10 +279,16 @@ describe('Позитив Вектор CRM/ERP — бизнес-логика и �
       empClient
     );
     assert.equal(finish.status, 200);
-    assert.equal(finish.data.accruedKopecks, 300000);
+    assert.equal(finish.data.accruedKopecks, 0);
     assert.equal(finish.data.shift.rate_snapshot_kopecks, 300000);
 
-    // Admin raises employee shift rate to 4500 RUB -> historical shift accrual stays 3000 RUB
+    // Shift appears in pendingShifts until admin assigns wage
+    const mySalBefore = await reqJson(baseUrl, 'GET', '/api/salaries/my', undefined, empClient);
+    assert.equal(mySalBefore.status, 200);
+    assert.equal(mySalBefore.data.pendingShifts.length, 1);
+    assert.equal(mySalBefore.data.totalAccruedKopecks, 420000);
+
+    // Admin raises employee shift rate and manually assigns 3000 RUB for completed shift
     const updRate = await reqJson(
       baseUrl,
       'PATCH',
@@ -292,8 +298,18 @@ describe('Позитив Вектор CRM/ERP — бизнес-логика и �
     );
     assert.equal(updRate.status, 200);
 
+    const shiftWage = await reqJson(
+      baseUrl,
+      'POST',
+      '/api/salaries/shift-wage',
+      { shiftId: finish.data.shift.id, amountKopecks: 300000 },
+      adminClient
+    );
+    assert.equal(shiftWage.status, 200);
+
     const mySal = await reqJson(baseUrl, 'GET', '/api/salaries/my', undefined, empClient);
     // 420000 (visit 1) + 300000 (shift 1) = 720000
+    assert.equal(mySal.data.pendingShifts.length, 0);
     assert.equal(mySal.data.totalAccruedKopecks, 720000);
   });
 

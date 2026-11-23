@@ -37,7 +37,7 @@ export function DatePresets({ from, to, onChange }: DatePresetsProps) {
             key={p.id}
             type="button"
             onClick={() => (active ? onChange('', '') : onChange(p.from, p.to))}
-            className={`min-h-[32px] rounded-xl px-2.5 py-1 text-[11px] font-semibold transition ${
+            className={`min-h-[32px] shrink-0 whitespace-nowrap rounded-xl px-2.5 py-1 text-[11px] font-semibold transition ${
               active
                 ? 'bg-[#0071E3] text-white dark:bg-[#2997FF] dark:text-[#0B0C10]'
                 : 'bg-[#F5F5F7] text-zinc-600 hover:bg-black/[0.06] dark:bg-[#0B0C10] dark:text-zinc-300 dark:hover:bg-white/[0.08]'

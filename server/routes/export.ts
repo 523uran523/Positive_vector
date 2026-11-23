@@ -150,21 +150,46 @@ export function createExportRouter(db: DatabaseSync): express.Router {
     const shifts = (
       db
         .prepare(
-          `SELECT ws.*, u.full_name as employee_name
-           FROM workshop_shifts ws JOIN users u ON u.id = ws.user_id
+          `SELECT ws.*, u.full_name as employee_name,
+                  o.order_number, o.title as order_title,
+                  ov.title as visit_title, qt.title as quick_task_title,
+                  sa.amount_kopecks as wage_kopecks
+           FROM workshop_shifts ws
+           JOIN users u ON u.id = ws.user_id
+           LEFT JOIN orders o ON o.id = ws.order_id
+           LEFT JOIN order_visits ov ON ov.id = ws.visit_id
+           LEFT JOIN quick_tasks qt ON qt.id = ws.quick_task_id
+           LEFT JOIN salary_accruals sa ON sa.source_type = 'shift' AND sa.source_id = ws.id AND sa.user_id = ws.user_id
            ORDER BY ws.started_at DESC`
         )
         .all() as Array<Record<string, unknown>>
     )
       .filter((s) => inPeriod(String(s.started_at), from, to))
-      .map((s) => ({
-        'Сотрудник': s.employee_name,
-        'Начало': s.started_at,
-        'Завершение': s.ended_at || '',
-        'Статус': s.status === 'active' ? 'Активна' : 'Завершена',
-        'Ставка (снимок), ₽': toRub(Number(s.rate_snapshot_kopecks)),
-        'Выполненная работа': s.work_done,
-      }));
+      .map((s) => {
+        const startedMs = Date.parse(String(s.started_at || ''));
+        const endedMs = s.ended_at ? Date.parse(String(s.ended_at)) : NaN;
+        const durationMin = Number.isFinite(startedMs) && Number.isFinite(endedMs)
+          ? Math.max(0, Math.round((endedMs - startedMs) / 60_000))
+          : '';
+        const typeLabel = s.shift_type === 'visit' ? 'Монтаж' : s.shift_type === 'quick_task' ? 'Быстрая задача' : 'Цех';
+        const objectLabel =
+          s.shift_type === 'visit'
+            ? `${s.order_number || ''} ${s.visit_title || s.order_title || ''}`.trim()
+            : s.shift_type === 'quick_task'
+              ? String(s.quick_task_title || '')
+              : 'Цех';
+        return {
+          'Сотрудник': s.employee_name,
+          'Тип': typeLabel,
+          'Объект / Задача': objectLabel,
+          'Начало': s.started_at,
+          'Завершение': s.ended_at || '',
+          'Длительность, мин': durationMin,
+          'Статус': s.status === 'active' ? 'Активна' : 'Завершена',
+          'Начислено, ₽': s.wage_kopecks !== null && s.wage_kopecks !== undefined ? toRub(Number(s.wage_kopecks)) : '',
+          'Выполненная работа': s.work_done,
+        };
+      });
     addSheet(wb, 'Смены в цеху', shifts);
 
     const accruals = (
@@ -220,7 +245,7 @@ export function createExportRouter(db: DatabaseSync): express.Router {
         'Дата': p.paid_at,
         'Заказ': p.order_number || '',
         'Компания': p.company_name || '',
-        'Тип': p.payment_type,
+        'Тип': p.payment_type === 'refund' ? 'Возврат клиенту' : p.payment_type === 'advance' ? 'Аванс' : p.payment_type === 'full' ? 'Полный расчёт' : p.payment_type === 'partial' ? 'Доплата' : p.payment_type,
         'Сумма, ₽': toRub(Number(p.amount_kopecks)),
         'Комментарий': p.comment,
       }));
@@ -439,7 +464,7 @@ export function createExportRouter(db: DatabaseSync): express.Router {
           'Заказ': p.order_number || '',
           'Компания': p.company_name || '',
           'Сумма, ₽': toRub(Number(p.amount_kopecks)),
-          'Тип': p.payment_type,
+          'Тип': p.payment_type === 'refund' ? 'Возврат клиенту' : p.payment_type === 'advance' ? 'Аванс' : p.payment_type === 'full' ? 'Полный расчёт' : p.payment_type === 'partial' ? 'Доплата' : p.payment_type,
           'Комментарий': p.comment,
         }));
       const expenses = (

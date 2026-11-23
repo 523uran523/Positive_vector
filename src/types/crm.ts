@@ -48,6 +48,16 @@ export interface QuickTask {
   completion_comment: string;
   created_at: string;
   updated_at: string;
+  worked_minutes?: number;
+  shifts?: Array<{
+    id: string;
+    user_id: string;
+    employee_name: string;
+    started_at: string;
+    ended_at: string | null;
+    work_date: string;
+    status: 'active' | 'completed';
+  }>;
   assignees: Array<{id:string;full_name:string}>;
 }
 
@@ -69,8 +79,12 @@ export interface Company {
     status: string;
     scheduled_at: string | null;
     price_kopecks?: number;
+    paid_kopecks?: number;
+    debt_kopecks?: number;
+    overpaid_kopecks?: number;
   }>;
   debt_kopecks?: number;
+  overpaid_kopecks?: number;
   total_orders?: number;
 }
 
@@ -91,8 +105,12 @@ export interface Contact {
     status: string;
     scheduled_at: string | null;
     price_kopecks?: number;
+    paid_kopecks?: number;
+    debt_kopecks?: number;
+    overpaid_kopecks?: number;
   }>;
   debt_kopecks?: number;
+  overpaid_kopecks?: number;
   total_orders?: number;
 }
 
@@ -144,6 +162,17 @@ export interface OrderVisit {
   assignees: VisitAssignee[];
   reports: VisitReport[];
   attachments: AttachmentItem[];
+  shifts?: Array<{
+    id: string;
+    user_id: string;
+    employee_name: string;
+    started_at: string;
+    ended_at: string | null;
+    work_date: string;
+    status: 'active' | 'completed';
+    work_done?: string;
+    is_manual_entry?: number;
+  }>;
 }
 
 export interface PlannedResource {
@@ -189,7 +218,7 @@ export interface WarehouseOp {
 export interface OrderPayment {
   id: string;
   amount_kopecks: number;
-  payment_type: 'advance' | 'partial' | 'full';
+  payment_type: 'advance' | 'partial' | 'full' | 'refund';
   paid_at: string;
   comment: string;
   created_at?: string;
@@ -211,8 +240,11 @@ export interface Order {
   price_kopecks?: number;
   cost_override_kopecks?: number | null;
   paid_kopecks?: number;
+  overpaid_kopecks?: number;
   material_cost_kopecks?: number;
   auto_material_cost_kopecks?: number;
+  salary_cost_kopecks?: number;
+  profit_kopecks?: number;
   payments?: OrderPayment[];
   tags: string[];
   comments: string;
@@ -225,8 +257,21 @@ export interface Order {
   attachments: AttachmentItem[];
   plannedResources: PlannedResource[];
   warehouseOps: WarehouseOp[];
+  orderShifts?: Array<{
+    id: string;
+    user_id: string;
+    employee_name: string;
+    visit_id: string | null;
+    started_at: string;
+    ended_at: string | null;
+    work_date: string;
+    status: 'active' | 'completed';
+    work_done?: string;
+  }>;
   cancellationIssues?: {materials:Array<{id:string;name:string;unit:string;unconsumedIssuedMilli:number}>;tools:Array<{id:string;name:string;qty_milli:number}>;paymentsKopecks:number;accrualsKopecks:number;reviews:Array<{issue_key:string;reviewed_at:string;note:string}>};
 }
+
+export type ShiftTargetType = 'workshop' | 'visit' | 'quick_task';
 
 export interface WorkshopShift {
   id: string;
@@ -236,8 +281,90 @@ export interface WorkshopShift {
   ended_at: string | null;
   work_done: string;
   status: 'active' | 'completed';
-  rate_snapshot_kopecks: number;
+  rate_snapshot_kopecks?: number;
   created_at: string;
+  shift_type?: ShiftTargetType;
+  order_id?: string | null;
+  visit_id?: string | null;
+  quick_task_id?: string | null;
+  work_date?: string;
+  is_manual_entry?: number;
+  duration_minutes?: number | null;
+  order_number?: string | null;
+  order_title?: string | null;
+  order_address?: string | null;
+  order_status?: string | null;
+  visit_title?: string | null;
+  visit_scheduled_at?: string | null;
+  quick_task_title?: string | null;
+  quick_task_due_date?: string | null;
+  wage_kopecks?: number | null;
+  wage_assigned_at?: string | null;
+}
+
+export interface ShiftTargetVisitOption {
+  targetType: 'visit';
+  orderId: string;
+  visitId: string | null;
+  quickTaskId: null;
+  orderNumber: string;
+  orderTitle: string;
+  visitTitle: string | null;
+  address: string;
+  scheduledAt: string;
+  status: string;
+  hasLoggedShift: boolean;
+}
+
+export interface ShiftTargetQuickTaskOption {
+  targetType: 'quick_task';
+  orderId: string | null;
+  visitId: null;
+  quickTaskId: string;
+  title: string;
+  description: string;
+  dueDate: string;
+  orderNumber: string | null;
+  orderTitle: string | null;
+  hasLoggedShift: boolean;
+}
+
+export interface ShiftTodayOptions {
+  date: string;
+  visits: ShiftTargetVisitOption[];
+  orders: ShiftTargetVisitOption[];
+  quickTasks: ShiftTargetQuickTaskOption[];
+  totalTargets: number;
+  uncoveredCount: number;
+}
+
+export interface ShiftEditRequest {
+  id: string;
+  shift_id: string | null;
+  user_id: string;
+  employee_name?: string;
+  reviewer_name?: string | null;
+  target_type: ShiftTargetType;
+  order_id: string | null;
+  visit_id: string | null;
+  quick_task_id: string | null;
+  work_date: string;
+  requested_started_at: string;
+  requested_ended_at: string;
+  original_started_at?: string | null;
+  original_ended_at?: string | null;
+  original_work_done?: string | null;
+  work_done: string;
+  reason: string;
+  status: 'pending' | 'approved' | 'rejected';
+  admin_comment: string;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  created_at: string;
+  order_number?: string | null;
+  order_title?: string | null;
+  visit_title?: string | null;
+  quick_task_title?: string | null;
 }
 
 export interface MaterialItem {
@@ -275,8 +402,80 @@ export interface ToolItem {
   reserved_milli?: number;
   notes: string;
   instances: ToolInstance[];
-  activeHolders: Array<{ userId: string; holderName: string; qty: number }>;
+  activeHolders: Array<{
+    userId: string;
+    holderName: string;
+    qty: number;
+    orderBreakdown?: Array<{ orderId: string | null; orderNumber: string | null; qty: number }>;
+  }>;
 }
+
+export interface QuickTaskReport {
+  id: string;
+  title: string;
+  description: string;
+  due_date: string;
+  status: 'open' | 'completed' | 'cancelled';
+  order_id?: string | null;
+  order_number?: string | null;
+  order_title?: string | null;
+  completed_by_name?: string | null;
+  completed_at?: string | null;
+  completion_comment?: string;
+  created_at: string;
+  worked_minutes: number;
+  assignees: Array<{ id: string; full_name: string }>;
+}
+
+export interface QuickTasksSummary {
+  total: number;
+  open: number;
+  completed: number;
+  cancelled: number;
+  workedMinutes: number;
+}
+
+export interface MonthlyFinanceSummary {
+  month: string;
+  ordersPriceKopecks: number;
+  receivedCashKopecks: number;
+  refundedCashKopecks: number;
+  materialCostKopecks: number;
+  accruedSalariesKopecks: number;
+  operatingExpensesKopecks: number;
+  profitKopecks: number;
+  paidSalariesKopecks: number;
+  cashFlowKopecks: number;
+}
+
+export interface DismissalSummary {
+  autoClosedShift: {
+    id: string;
+    startedAt: string;
+    endedAt: string;
+    shiftType: string;
+    workDone?: string;
+    orderNumber?: string | null;
+  } | null;
+  unreturnedTools: Array<{
+    toolId: string;
+    toolName: string;
+    trackingMode: 'individual' | 'quantity';
+    qty: number;
+    serialNumber: string | null;
+    orderId: string | null;
+    orderNumber: string | null;
+  }>;
+  unpaidSalaryKopecks: number;
+  overpaidSalaryKopecks: number;
+  activeOrders: Array<{
+    orderId: string;
+    orderNumber: string;
+    title: string;
+  }>;
+}
+
+export type SalarySourceSubtype = 'visit' | 'order_shift' | 'workshop_shift' | 'task_shift' | 'manual' | 'payout';
 
 export interface NotificationItem {
   id: string;

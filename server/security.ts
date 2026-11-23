@@ -179,6 +179,12 @@ export function buildNotificationUrl(
       tag: linkEntityId ? `salary:${linkEntityId}` : `notif:${type}`,
     };
   }
+  if (linkEntityType === 'shift' || linkEntityType === 'shift_edit_request') {
+    return {
+      url: '/?shifts=1',
+      tag: linkEntityId ? `${linkEntityType}:${linkEntityId}` : `notif:${type}`,
+    };
+  }
   if (type === 'backup_error') {
     return { url: '/?settings=1', tag: 'backup_error' };
   }

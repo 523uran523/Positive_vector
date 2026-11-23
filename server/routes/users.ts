@@ -13,6 +13,7 @@ import {
   writeAuditLog,
   type PermissionKey,
 } from '../security.ts';
+import { syncVisitWorkTimeFromShifts } from './shifts.ts';
 
 export function createUsersRouter(db: DatabaseSync): express.Router {
   const router = express.Router();
@@ -102,6 +103,11 @@ export function createUsersRouter(db: DatabaseSync): express.Router {
       return;
     }
 
+    if (shiftRateKopecks !== undefined && (!Number.isSafeInteger(Number(shiftRateKopecks)) || Number(shiftRateKopecks) < 0)) {
+      res.status(400).json({ error: 'Ставка за смену должна быть целым неотрицательным числом копеек.' });
+      return;
+    }
+
     const tempPassword =
       password && password.trim().length >= MIN_PASSWORD_LENGTH
         ? password.trim()
@@ -109,7 +115,7 @@ export function createUsersRouter(db: DatabaseSync): express.Router {
     const userId = crypto.randomUUID();
     const now = new Date().toISOString();
     const targetRole = role === 'admin' ? 'admin' : 'employee';
-    const rate = Math.max(0, Math.round(Number(shiftRateKopecks ?? 300000)));
+    const rate = shiftRateKopecks !== undefined ? Number(shiftRateKopecks) : 300000;
 
     withTransaction(db, () => {
       db.prepare(
@@ -157,20 +163,149 @@ export function createUsersRouter(db: DatabaseSync): express.Router {
   router.post('/:id/dismiss', requireAdmin, (req: AuthedRequest, res) => {
     const targetId = String(req.params.id), existing = loadUserWithPermissions(db, targetId);
     if (!existing) { res.status(404).json({error:'Сотрудник не найден.'}); return; }
-    if (existing.dismissedAt) { res.json({user:existing}); return; }
+    if (existing.dismissedAt) { res.json({user:existing, activeShift:false}); return; }
     if (existing.role === 'admin' && existing.isActive) {
       const other = db.prepare("SELECT COUNT(*) AS n FROM users WHERE role='admin' AND is_active=1 AND id!=?").get(targetId) as {n:number};
       if (!other.n) { res.status(400).json({error:'Нельзя уволить единственного активного администратора.'}); return; }
     }
+    let autoClosedShift: {
+      id: string;
+      startedAt: string;
+      endedAt: string;
+      shiftType: string;
+      workDone: string;
+    } | null = null;
+
     withTransaction(db, () => {
       const now = new Date().toISOString();
+      const activeShiftRow = db
+        .prepare("SELECT id, started_at, shift_type, order_id, visit_id, quick_task_id, work_date, work_done FROM workshop_shifts WHERE user_id = ? AND status = 'active' LIMIT 1")
+        .get(targetId) as
+        | {
+            id: string;
+            started_at: string;
+            shift_type: string;
+            order_id: string | null;
+            visit_id: string | null;
+            quick_task_id: string | null;
+            work_date: string;
+            work_done: string;
+          }
+        | undefined;
+
+      if (activeShiftRow) {
+        const workDate = activeShiftRow.work_date || activeShiftRow.started_at.slice(0, 10);
+        const closedWorkDone = activeShiftRow.work_done?.trim() || 'Завершена автоматически при увольнении';
+        db.prepare(
+          `UPDATE workshop_shifts SET ended_at = ?, status = 'completed', work_done = ?, work_date = ? WHERE id = ?`
+        ).run(now, closedWorkDone, workDate, activeShiftRow.id);
+        if (activeShiftRow.visit_id) {
+          syncVisitWorkTimeFromShifts(db, activeShiftRow.visit_id, targetId, workDate, 0);
+        }
+        writeAuditLog(db, req.authUser!.id, 'shift', activeShiftRow.id, 'shift_completed', {
+          autoClosedOnDismissal: true,
+          userId: targetId,
+        });
+        autoClosedShift = {
+          id: activeShiftRow.id,
+          startedAt: activeShiftRow.started_at,
+          endedAt: now,
+          shiftType: activeShiftRow.shift_type || 'workshop',
+          workDone: closedWorkDone,
+        };
+      }
+
       db.prepare('UPDATE users SET is_active=0,dismissed_at=?,updated_at=? WHERE id=?').run(now,now,targetId);
       db.prepare('DELETE FROM push_subscriptions WHERE user_id=?').run(targetId);
       db.prepare('DELETE FROM sessions WHERE user_id=?').run(targetId);
-      writeAuditLog(db,req.authUser!.id,'user',targetId,'user_dismissed',{});
+      writeAuditLog(db,req.authUser!.id,'user',targetId,'user_dismissed',{ autoClosedShiftId: autoClosedShift?.id || null });
     });
-    const activeShift = Boolean(db.prepare("SELECT 1 FROM workshop_shifts WHERE user_id=? AND status='active'").get(targetId));
-    res.json({user:loadUserWithPermissions(db,targetId),activeShift});
+
+    const unreturnedIndividual = db
+      .prepare(
+        `SELECT ti.tool_id AS toolId, t.name AS toolName, 'individual' AS trackingMode,
+                1 AS qty, ti.serial_number AS serialNumber, ti.current_order_id AS orderId, o.order_number AS orderNumber
+         FROM tool_instances ti
+         JOIN tools t ON t.id = ti.tool_id
+         LEFT JOIN orders o ON o.id = ti.current_order_id
+         WHERE ti.holder_user_id = ? AND ti.status = 'issued'`
+      )
+      .all(targetId) as Array<{
+      toolId: string;
+      toolName: string;
+      trackingMode: 'individual' | 'quantity';
+      qty: number;
+      serialNumber: string | null;
+      orderId: string | null;
+      orderNumber: string | null;
+    }>;
+
+    const unreturnedQty = db
+      .prepare(
+        `SELECT wo.tool_id AS toolId, t.name AS toolName, 'quantity' AS trackingMode,
+                wo.order_id AS orderId, o.order_number AS orderNumber,
+                SUM(CASE WHEN wo.op_type = 'issue' THEN wo.qty_milli ELSE 0 END) -
+                SUM(CASE WHEN wo.op_type = 'return' THEN wo.qty_milli ELSE 0 END) AS held_milli
+         FROM warehouse_operations wo
+         JOIN tools t ON t.id = wo.tool_id
+         LEFT JOIN orders o ON o.id = wo.order_id
+         WHERE wo.item_type = 'tool' AND t.tracking_mode = 'quantity' AND wo.user_id = ?
+         GROUP BY wo.tool_id, wo.order_id
+         HAVING held_milli > 0`
+      )
+      .all(targetId) as Array<{
+      toolId: string;
+      toolName: string;
+      trackingMode: 'individual' | 'quantity';
+      orderId: string | null;
+      orderNumber: string | null;
+      held_milli: number;
+    }>;
+
+    const unreturnedTools = [
+      ...unreturnedIndividual,
+      ...unreturnedQty.map((r) => ({
+        toolId: r.toolId,
+        toolName: r.toolName,
+        trackingMode: r.trackingMode,
+        qty: Math.round(Number(r.held_milli || 0) / 1000),
+        serialNumber: null as string | null,
+        orderId: r.orderId,
+        orderNumber: r.orderNumber,
+      })),
+    ];
+
+    const accruedRow = db
+      .prepare('SELECT COALESCE(SUM(amount_kopecks), 0) AS total FROM salary_accruals WHERE user_id = ?')
+      .get(targetId) as { total: number };
+    const paidRow = db
+      .prepare('SELECT COALESCE(SUM(amount_kopecks), 0) AS total FROM salary_payouts WHERE user_id = ?')
+      .get(targetId) as { total: number };
+    const salaryDiff = Number(accruedRow.total || 0) - Number(paidRow.total || 0);
+
+    const activeOrders = db
+      .prepare(
+        `SELECT DISTINCT o.id AS orderId, o.order_number AS orderNumber, o.title
+         FROM orders o
+         LEFT JOIN order_assignees oa ON oa.order_id = o.id
+         LEFT JOIN order_visits ov ON ov.order_id = o.id
+         LEFT JOIN visit_assignees va ON va.visit_id = ov.id
+         WHERE (oa.user_id = ? OR va.user_id = ?) AND o.status NOT IN ('completed', 'cancelled')
+         ORDER BY o.created_at DESC`
+      )
+      .all(targetId, targetId) as Array<{ orderId: string; orderNumber: string; title: string }>;
+
+    res.json({
+      user: loadUserWithPermissions(db, targetId),
+      activeShift: false,
+      dismissalSummary: {
+        autoClosedShift,
+        unreturnedTools,
+        unpaidSalaryKopecks: Math.max(0, salaryDiff),
+        overpaidSalaryKopecks: Math.max(0, -salaryDiff),
+        activeOrders,
+      },
+    });
   });
   router.post('/:id/restore', requireAdmin, (req: AuthedRequest, res) => {
     const targetId = String(req.params.id), existing = loadUserWithPermissions(db,targetId);
@@ -248,10 +383,14 @@ export function createUsersRouter(db: DatabaseSync): express.Router {
     if (documentsAccess !== undefined && typeof documentsAccess !== 'boolean') {
       res.status(400).json({ error: 'Некорректное значение доступа к бухгалтерии.' }); return;
     }
+    if (shiftRateKopecks !== undefined && (!Number.isSafeInteger(Number(shiftRateKopecks)) || Number(shiftRateKopecks) < 0)) {
+      res.status(400).json({ error: 'Ставка за смену должна быть целым неотрицательным числом копеек.' });
+      return;
+    }
     const nextActive = isActive !== undefined ? (isActive ? 1 : 0) : existing.isActive ? 1 : 0;
     const nextRate =
       shiftRateKopecks !== undefined
-        ? Math.max(0, Math.round(Number(shiftRateKopecks)))
+        ? Number(shiftRateKopecks)
         : existing.shiftRateKopecks;
 
     withTransaction(db, () => {

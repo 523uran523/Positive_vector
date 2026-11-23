@@ -5,8 +5,10 @@ import {
   Inbox,
   MapPin,
   Phone,
+  Play,
 } from 'lucide-react';
 import {
+  formatDuration,
   formatRub,
   formatTimeRu,
   ORDER_STATUS_META,
@@ -53,6 +55,14 @@ interface CalendarViewProps {
   onOpenUnplannedOrders?: () => void;
   onOpenOrder: (order: Order) => void;
   onOpenOrderById?: (orderId: string) => void;
+  hasActiveShift?: boolean;
+  onStartShiftForTarget?: (target: {
+    targetType: 'workshop' | 'visit' | 'quick_task';
+    orderId?: string | null;
+    visitId?: string | null;
+    quickTaskId?: string | null;
+  }) => void;
+  onShiftChanged?: () => void;
 }
 
 export function CalendarView({
@@ -69,6 +79,9 @@ export function CalendarView({
   onOpenUnplannedOrders,
   onOpenOrder,
   onOpenOrderById,
+  hasActiveShift = false,
+  onStartShiftForTarget,
+  onShiftChanged,
 }: CalendarViewProps) {
   const isAdmin = user.role === 'admin';
 
@@ -137,6 +150,11 @@ export function CalendarView({
   const unplannedOrders = useMemo(
     () => orders.filter((o) => !o.scheduled_at && o.visits.length === 0 && o.status !== 'cancelled'),
     [orders]
+  );
+
+  const undatedOpenTasks = useMemo(
+    () => quickTasks.filter((t) => !t.due_date && t.status === 'open'),
+    [quickTasks]
   );
 
   const cancelledWithIssues = isAdmin
@@ -332,10 +350,12 @@ export function CalendarView({
           orders={orders}
           selectedDate={selectedDate}
           dayTasks={selectedDayData.tasks}
+          undatedTasks={undatedOpenTasks}
           openTaskId={openTaskId}
           onConsumeOpenTask={onConsumeOpenTask}
           onRefresh={onRefreshQuickTasks}
           onOpenOrderById={onOpenOrderById}
+          onShiftChanged={onShiftChanged}
         />
 
         {cancelledWithIssues.length > 0 && (
@@ -459,45 +479,87 @@ export function CalendarView({
                         </span>
                       )}
                     </div>
+                    {selectedDate === todayKey &&
+                      !hasActiveShift &&
+                      onStartShiftForTarget &&
+                      st !== 'completed' &&
+                      st !== 'cancelled' &&
+                      order.status !== 'completed' &&
+                      order.status !== 'cancelled' && (
+                        <div className="mt-2 pt-2 border-t border-black/[0.05] dark:border-white/[0.06]">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onStartShiftForTarget({
+                                targetType: 'visit',
+                                orderId: order.id,
+                                visitId: visit?.id || null,
+                              });
+                            }}
+                            className="inline-flex items-center gap-1 rounded-lg bg-emerald-600/12 px-2.5 py-1 text-[11px] font-semibold text-emerald-700 hover:bg-emerald-600/20 dark:text-emerald-300"
+                          >
+                            <Play className="h-3 w-3 fill-current" />
+                            <span>Начать смену по выезду</span>
+                          </button>
+                        </div>
+                      )}
                   </div>
                 );
               })}
 
-              {selectedDayData.shifts.map((sh) => (
-                <div
-                  key={sh.id}
-                  className="rounded-2xl border border-emerald-500/25 bg-emerald-500/[0.06] p-3.5 text-xs"
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-1.5">
-                      <span className="rounded-md bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-bold text-emerald-700 dark:text-emerald-300">
-                        Смена
-                      </span>
-                      <span className="font-semibold text-emerald-700 dark:text-emerald-300">
-                        {sh.employee_name || user.fullName}
+              {selectedDayData.shifts.map((sh) => {
+                const targetLabel =
+                  sh.shift_type === 'visit'
+                    ? `Монтаж ${sh.order_number || ''}${sh.visit_title ? ` · ${sh.visit_title}` : ''}`.trim()
+                    : sh.shift_type === 'quick_task'
+                      ? `Задача: ${sh.quick_task_title || 'Быстрая задача'}`
+                      : 'Цех';
+                const mins =
+                  sh.duration_minutes ??
+                  (sh.ended_at
+                    ? Math.max(0, Math.round((Date.parse(sh.ended_at) - Date.parse(sh.started_at)) / 60_000))
+                    : null);
+                return (
+                  <div
+                    key={sh.id}
+                    className="rounded-2xl border border-emerald-500/25 bg-emerald-500/[0.06] p-3.5 text-xs"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="rounded-md bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-bold text-emerald-700 dark:text-emerald-300">
+                          {targetLabel}
+                        </span>
+                        <span className="font-semibold text-emerald-700 dark:text-emerald-300">
+                          {sh.employee_name || user.fullName}
+                        </span>
+                      </div>
+                      <span className="font-semibold tabular-nums text-emerald-700 dark:text-emerald-300">
+                        {sh.wage_kopecks != null
+                          ? formatRub(sh.wage_kopecks)
+                          : mins != null
+                            ? formatDuration(mins)
+                            : 'Учёт времени'}
                       </span>
                     </div>
-                    <span className="font-semibold tabular-nums text-emerald-700 dark:text-emerald-300">
-                      {formatRub(sh.rate_snapshot_kopecks)}
-                    </span>
+                    {sh.work_done && (
+                      <p className="mt-1 text-zinc-700 dark:text-zinc-200">{sh.work_done}</p>
+                    )}
+                    <div className="mt-1 text-[11px] text-zinc-500 tabular-nums">
+                      {new Date(sh.started_at).toLocaleTimeString('ru-RU', {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      })}
+                      {sh.ended_at
+                        ? ` — ${new Date(sh.ended_at).toLocaleTimeString('ru-RU', {
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })}`
+                        : ' — идёт сейчас'}
+                    </div>
                   </div>
-                  {sh.work_done && (
-                    <p className="mt-1 text-zinc-700 dark:text-zinc-200">{sh.work_done}</p>
-                  )}
-                  <div className="mt-1 text-[11px] text-zinc-500 tabular-nums">
-                    {new Date(sh.started_at).toLocaleTimeString('ru-RU', {
-                      hour: '2-digit',
-                      minute: '2-digit',
-                    })}
-                    {sh.ended_at
-                      ? ` — ${new Date(sh.ended_at).toLocaleTimeString('ru-RU', {
-                          hour: '2-digit',
-                          minute: '2-digit',
-                        })}`
-                      : ' — идёт сейчас'}
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
       </div>

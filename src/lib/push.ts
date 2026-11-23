@@ -51,3 +51,39 @@ export async function enablePushNotifications(): Promise<{ ok: true }> {
 
   return { ok: true };
 }
+
+export async function isPushNotificationsEnabled(): Promise<boolean> {
+  if (
+    typeof window === 'undefined' ||
+    !window.isSecureContext ||
+    !('Notification' in window) ||
+    !('serviceWorker' in navigator) ||
+    !('PushManager' in window) ||
+    Notification.permission !== 'granted'
+  ) {
+    return false;
+  }
+  const registration = await navigator.serviceWorker.getRegistration();
+  if (!registration) return false;
+  const subscription = await registration.pushManager.getSubscription();
+  return Boolean(subscription);
+}
+
+export async function disablePushNotifications(): Promise<{ ok: true }> {
+  let endpoint: string | undefined;
+  if ('serviceWorker' in navigator) {
+    const registration = await navigator.serviceWorker.getRegistration();
+    const subscription = await registration?.pushManager.getSubscription();
+    if (subscription) {
+      endpoint = subscription.endpoint;
+      await subscription.unsubscribe().catch(() => false);
+    }
+  }
+  await apiRequest('/api/push/subscription', {
+    method: 'DELETE',
+    body: endpoint ? { endpoint } : {},
+    skipOfflineQueue: true,
+  });
+  return { ok: true };
+}
+

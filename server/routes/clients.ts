@@ -71,28 +71,36 @@ export function createClientsRouter(db: DatabaseSync): express.Router {
       .map((c) => {
         const compContacts = contacts.filter((ct) => ct.company_id === c.id);
         const compOrders = orders.filter((o) => o.company_id === c.id);
-        let totalPrice = 0;
-        let totalPaid = 0;
+        let totalDebt = 0;
+        let totalOverpaid = 0;
         if (user.role === 'admin') {
           for (const o of compOrders) {
             if (o.status !== 'cancelled') {
-              totalPrice += o.price_kopecks;
-              totalPaid += paymentsByOrder.get(o.id) || 0;
+              const paid = paymentsByOrder.get(o.id) || 0;
+              totalDebt += Math.max(0, o.price_kopecks - paid);
+              totalOverpaid += Math.max(0, paid - o.price_kopecks);
             }
           }
         }
         return {
           ...c,
           contacts: compContacts,
-          orders: compOrders.map((o) => ({
-            id: o.id,
-            order_number: o.order_number,
-            title: o.title,
-            status: o.status,
-            scheduled_at: o.scheduled_at,
-            price_kopecks: user.role === 'admin' ? o.price_kopecks : undefined,
-          })),
-          debt_kopecks: user.role === 'admin' ? Math.max(0, totalPrice - totalPaid) : undefined,
+          orders: compOrders.map((o) => {
+            const paid = paymentsByOrder.get(o.id) || 0;
+            return {
+              id: o.id,
+              order_number: o.order_number,
+              title: o.title,
+              status: o.status,
+              scheduled_at: o.scheduled_at,
+              price_kopecks: user.role === 'admin' ? o.price_kopecks : undefined,
+              paid_kopecks: user.role === 'admin' ? paid : undefined,
+              debt_kopecks: user.role === 'admin' && o.status !== 'cancelled' ? Math.max(0, o.price_kopecks - paid) : undefined,
+              overpaid_kopecks: user.role === 'admin' && o.status !== 'cancelled' ? Math.max(0, paid - o.price_kopecks) : undefined,
+            };
+          }),
+          debt_kopecks: user.role === 'admin' ? totalDebt : undefined,
+          overpaid_kopecks: user.role === 'admin' ? totalOverpaid : undefined,
           total_orders: compOrders.length,
         };
       });
@@ -108,27 +116,35 @@ export function createClientsRouter(db: DatabaseSync): express.Router {
       })
       .map((ct) => {
         const ctOrders = orders.filter((o) => o.client_contact_id === ct.id);
-        let totalPrice = 0;
-        let totalPaid = 0;
+        let totalDebt = 0;
+        let totalOverpaid = 0;
         if (user.role === 'admin') {
           for (const o of ctOrders) {
             if (o.status !== 'cancelled') {
-              totalPrice += o.price_kopecks;
-              totalPaid += paymentsByOrder.get(o.id) || 0;
+              const paid = paymentsByOrder.get(o.id) || 0;
+              totalDebt += Math.max(0, o.price_kopecks - paid);
+              totalOverpaid += Math.max(0, paid - o.price_kopecks);
             }
           }
         }
         return {
           ...ct,
-          orders: ctOrders.map((o) => ({
-            id: o.id,
-            order_number: o.order_number,
-            title: o.title,
-            status: o.status,
-            scheduled_at: o.scheduled_at,
-            price_kopecks: user.role === 'admin' ? o.price_kopecks : undefined,
-          })),
-          debt_kopecks: user.role === 'admin' ? Math.max(0, totalPrice - totalPaid) : undefined,
+          orders: ctOrders.map((o) => {
+            const paid = paymentsByOrder.get(o.id) || 0;
+            return {
+              id: o.id,
+              order_number: o.order_number,
+              title: o.title,
+              status: o.status,
+              scheduled_at: o.scheduled_at,
+              price_kopecks: user.role === 'admin' ? o.price_kopecks : undefined,
+              paid_kopecks: user.role === 'admin' ? paid : undefined,
+              debt_kopecks: user.role === 'admin' && o.status !== 'cancelled' ? Math.max(0, o.price_kopecks - paid) : undefined,
+              overpaid_kopecks: user.role === 'admin' && o.status !== 'cancelled' ? Math.max(0, paid - o.price_kopecks) : undefined,
+            };
+          }),
+          debt_kopecks: user.role === 'admin' ? totalDebt : undefined,
+          overpaid_kopecks: user.role === 'admin' ? totalOverpaid : undefined,
           total_orders: ctOrders.length,
         };
       });
@@ -254,6 +270,10 @@ export function createClientsRouter(db: DatabaseSync): express.Router {
       res.status(400).json({ error: 'Укажите ФИО контакта.' });
       return;
     }
+    if (companyId && !db.prepare('SELECT 1 FROM companies WHERE id = ?').get(companyId)) {
+      res.status(404).json({ error: 'Компания не найдена.' });
+      return;
+    }
 
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
@@ -290,6 +310,10 @@ export function createClientsRouter(db: DatabaseSync): express.Router {
       return;
     }
     const b = req.body as Record<string, string | null | undefined>;
+    if (b.companyId && !db.prepare('SELECT 1 FROM companies WHERE id = ?').get(b.companyId)) {
+      res.status(404).json({ error: 'Компания не найдена.' });
+      return;
+    }
     db.prepare(
       `UPDATE contacts SET company_id = ?, full_name = ?, phone = ?, email = ?, position = ?, notes = ? WHERE id = ?`
     ).run(

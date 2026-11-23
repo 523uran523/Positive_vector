@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Briefcase,
   CalendarDays,
@@ -17,12 +17,14 @@ import {
   Trash2,
   Users,
   Wrench,
+  X,
 } from 'lucide-react';
 import { DatePresets } from '../components/DatePresets';
 import { SectionHeader } from '../components/SectionHeader';
 import {
   apiRequest,
   formatDateTimeRu,
+  formatDuration,
   formatQty,
   formatRub,
   ORDER_STATUS_META,
@@ -36,10 +38,13 @@ import type {
   MaterialItem,
   Order,
   QuickTask,
+  ShiftEditRequest,
+  ShiftTargetType,
+  ShiftTodayOptions,
   WorkshopShift,
 } from '../types/crm';
 import { CalendarView } from './CalendarView';
-import { QuickTasks } from './QuickTasks';
+import { QuickTaskModal, QuickTasks } from './QuickTasks';
 import { ReportsView } from './ReportsView';
 
 export type WorkSubTab = 'calendar' | 'orders' | 'tasks' | 'shifts' | 'reports';
@@ -75,6 +80,31 @@ function getNearestOrderDate(order: Order): string | null {
   return order.scheduled_at || null;
 }
 
+function shiftTargetLabel(sh: {
+  shift_type?: string;
+  order_number?: string | null;
+  order_title?: string | null;
+  visit_title?: string | null;
+  quick_task_title?: string | null;
+}): string {
+  if (sh.shift_type === 'visit') {
+    const num = sh.order_number ? `${sh.order_number}` : '';
+    const title = sh.visit_title || sh.order_title || '';
+    return ['Монтаж', num, title].filter(Boolean).join(' · ');
+  }
+  if (sh.shift_type === 'quick_task') {
+    return `Задача: ${sh.quick_task_title || 'Быстрая задача'}`;
+  }
+  return 'Смена в цеху';
+}
+
+function toLocalHmInput(iso: string | null | undefined): string {
+  if (!iso) return '09:00';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '09:00';
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
 export function WorkView({
   user,
   workTab,
@@ -100,6 +130,36 @@ export function WorkView({
     workTab === 'reports' ? 'reports' : 'shifts'
   );
   const [workDropdownOpen, setWorkDropdownOpen] = useState(false);
+  const [addTaskDropdownOpen, setAddTaskDropdownOpen] = useState(false);
+  const [headerTaskCreating, setHeaderTaskCreating] = useState(false);
+  const [headerTask, setHeaderTask] = useState<QuickTask | null>(null);
+  const workDropdownRef = useRef<HTMLDivElement | null>(null);
+  const addTaskDropdownRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!workDropdownOpen && !addTaskDropdownOpen) return;
+    const onPointerDown = (e: MouseEvent) => {
+      const target = e.target as Node | null;
+      if (workDropdownRef.current && !workDropdownRef.current.contains(target)) {
+        setWorkDropdownOpen(false);
+      }
+      if (addTaskDropdownRef.current && !addTaskDropdownRef.current.contains(target)) {
+        setAddTaskDropdownOpen(false);
+      }
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setWorkDropdownOpen(false);
+        setAddTaskDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [workDropdownOpen, addTaskDropdownOpen]);
 
   useEffect(() => {
     if (workTab === 'reports') setShiftsSubMode('reports');
@@ -154,26 +214,94 @@ export function WorkView({
 
   const [finishModalOpen, setFinishModalOpen] = useState(false);
   const [workDone, setWorkDone] = useState('');
+  const [completeQuickTaskOnFinish, setCompleteQuickTaskOnFinish] = useState(true);
   const [shiftMaterials, setShiftMaterials] = useState<Array<{ materialId: string; qty: string }>>([]);
   const [shiftBusy, setShiftBusy] = useState(false);
   const [shiftError, setShiftError] = useState('');
   const [shiftOfflineNotice, setShiftOfflineNotice] = useState('');
 
-  const handleStartShift = async () => {
+  // Unified shift target picker, same-day backfill, edit requests, admin time editor
+  const [todayOptions, setTodayOptions] = useState<ShiftTodayOptions | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [sameDayModalOpen, setSameDayModalOpen] = useState(false);
+  const [sameDayTargetKey, setSameDayTargetKey] = useState('workshop');
+  const [sameDayStart, setSameDayStart] = useState('09:00');
+  const [sameDayEnd, setSameDayEnd] = useState('18:00');
+  const [sameDayWorkDone, setSameDayWorkDone] = useState('');
+
+  const [editRequests, setEditRequests] = useState<ShiftEditRequest[]>([]);
+  const [requestModalOpen, setRequestModalOpen] = useState(false);
+  const [requestShift, setRequestShift] = useState<WorkshopShift | null>(null);
+  const [reqDate, setReqDate] = useState(() => toLocalDateString(new Date()));
+  const [reqStart, setReqStart] = useState('09:00');
+  const [reqEnd, setReqEnd] = useState('18:00');
+  const [reqWorkDone, setReqWorkDone] = useState('');
+  const [reqReason, setReqReason] = useState('');
+
+  const [adminEditShift, setAdminEditShift] = useState<WorkshopShift | null>(null);
+  const [adminEditDate, setAdminEditDate] = useState('');
+  const [adminEditStart, setAdminEditStart] = useState('');
+  const [adminEditEnd, setAdminEditEnd] = useState('');
+  const [adminEditWorkDone, setAdminEditWorkDone] = useState('');
+  const [adminReviewComments, setAdminReviewComments] = useState<Record<string, string>>({});
+
+  const loadTodayOptions = useCallback(async () => {
+    try {
+      const tzOffsetMinutes = new Date().getTimezoneOffset();
+      const res = await apiRequest<ShiftTodayOptions>(
+        `/api/shifts/today-options?tzOffsetMinutes=${tzOffsetMinutes}`,
+        { useCache: false, skipOfflineQueue: true }
+      );
+      setTodayOptions(res);
+      return res;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const loadEditRequests = useCallback(async () => {
+    try {
+      const res = await apiRequest<{ requests: ShiftEditRequest[] }>('/api/shifts/edit-requests', {
+        useCache: false,
+      });
+      setEditRequests(res.requests);
+    } catch {
+      // ignore offline
+    }
+  }, []);
+
+  useEffect(() => {
+    if (workTab === 'shifts' || workTab === 'calendar') {
+      void loadTodayOptions();
+    }
+    if (workTab === 'shifts') {
+      void loadEditRequests();
+    }
+  }, [workTab, loadTodayOptions, loadEditRequests]);
+
+  const startShiftWithTarget = async (explicitTarget?: {
+    targetType: ShiftTargetType;
+    orderId?: string | null;
+    visitId?: string | null;
+    quickTaskId?: string | null;
+  }) => {
     setShiftBusy(true);
     setShiftError('');
     setShiftOfflineNotice('');
+    const tzOffsetMinutes = new Date().getTimezoneOffset();
     try {
-      const res = await apiRequest<{ offlineQueued?: boolean }>('/api/shifts/start', {
+      const res = await apiRequest<{ offlineQueued?: boolean; shift?: WorkshopShift }>('/api/shifts/start', {
         method: 'POST',
-        body: {},
+        body: explicitTarget ? { ...explicitTarget, tzOffsetMinutes } : { tzOffsetMinutes },
       });
+      setPickerOpen(false);
       if (res?.offlineQueued) {
         setShiftOfflineNotice(
           'Старт смены сохранён в офлайн-очередь и будет отправлен при появлении сети.'
         );
       } else {
         onShiftChanged();
+        void loadTodayOptions();
       }
     } catch (err) {
       setShiftError(err instanceof Error ? err.message : 'Не удалось начать смену');
@@ -182,17 +310,49 @@ export function WorkView({
     }
   };
 
+  const handleStartShift = async (explicitTarget?: {
+    targetType: ShiftTargetType;
+    orderId?: string | null;
+    visitId?: string | null;
+    quickTaskId?: string | null;
+  }) => {
+    if (explicitTarget) {
+      await startShiftWithTarget(explicitTarget);
+      return;
+    }
+    setShiftBusy(true);
+    setShiftError('');
+    setShiftOfflineNotice('');
+    const options = await loadTodayOptions();
+    if (options && options.totalTargets >= 2) {
+      setPickerOpen(true);
+      setShiftBusy(false);
+      return;
+    }
+    await startShiftWithTarget();
+  };
+
+  const openFinishModal = () => {
+    setCompleteQuickTaskOnFinish(Boolean(activeShift?.quick_task_id));
+    setFinishModalOpen(true);
+  };
+
   const handleFinishShift = async (e: React.FormEvent) => {
     e.preventDefault();
     setShiftBusy(true);
     setShiftError('');
     setShiftOfflineNotice('');
     try {
-      const res = await apiRequest<{ offlineQueued?: boolean }>('/api/shifts/finish', {
+      const res = await apiRequest<{
+        offlineQueued?: boolean;
+        uncoveredToday?: ShiftTodayOptions;
+      }>('/api/shifts/finish', {
         method: 'POST',
         body: {
           workDone,
           shiftId: activeShift?.id,
+          tzOffsetMinutes: new Date().getTimezoneOffset(),
+          ...(activeShift?.quick_task_id ? { completeTarget: completeQuickTaskOnFinish } : {}),
           materials: shiftMaterials
             .filter((m) => m.materialId && Number(m.qty) > 0)
             .map((m) => ({ materialId: m.materialId, qtyMilli: Math.round(Number(m.qty) * 1000) })),
@@ -201,15 +361,197 @@ export function WorkView({
       setFinishModalOpen(false);
       setWorkDone('');
       setShiftMaterials([]);
+      if (res?.uncoveredToday) {
+        setTodayOptions(res.uncoveredToday);
+      } else {
+        void loadTodayOptions();
+      }
       if (res?.offlineQueued) {
         setShiftOfflineNotice(
           'Завершение смены сохранено в офлайн-очередь и будет отправлено при появлении сети.'
         );
       } else {
         onShiftChanged();
+        void loadQuickTasks();
       }
     } catch (err) {
       setShiftError(err instanceof Error ? err.message : 'Ошибка завершения смены');
+    } finally {
+      setShiftBusy(false);
+    }
+  };
+
+  const parseSameDayTargetKey = (
+    key: string
+  ): {
+    targetType: ShiftTargetType;
+    orderId: string | null;
+    visitId: string | null;
+    quickTaskId: string | null;
+  } => {
+    if (key.startsWith('visit:')) {
+      const [, visitId, orderId] = key.split(':');
+      return { targetType: 'visit', visitId: visitId || null, orderId: orderId || null, quickTaskId: null };
+    }
+    if (key.startsWith('order:')) {
+      const [, orderId] = key.split(':');
+      return { targetType: 'visit', visitId: null, orderId: orderId || null, quickTaskId: null };
+    }
+    if (key.startsWith('quick_task:')) {
+      const [, quickTaskId, orderId] = key.split(':');
+      return { targetType: 'quick_task', quickTaskId: quickTaskId || null, orderId: orderId || null, visitId: null };
+    }
+    return { targetType: 'workshop', orderId: null, visitId: null, quickTaskId: null };
+  };
+
+  const openSameDayModal = async () => {
+    const opts = (await loadTodayOptions()) || todayOptions;
+    if (opts) {
+      const firstUncoveredVisit = opts.visits.find((v) => !v.hasLoggedShift);
+      const firstUncoveredOrder = opts.orders.find((o) => !o.hasLoggedShift);
+      const firstUncoveredTask = opts.quickTasks.find((t) => !t.hasLoggedShift);
+      if (firstUncoveredVisit) {
+        setSameDayTargetKey(`visit:${firstUncoveredVisit.visitId}:${firstUncoveredVisit.orderId}`);
+      } else if (firstUncoveredOrder) {
+        setSameDayTargetKey(`order:${firstUncoveredOrder.orderId}`);
+      } else if (firstUncoveredTask) {
+        setSameDayTargetKey(`quick_task:${firstUncoveredTask.quickTaskId}:${firstUncoveredTask.orderId || ''}`);
+      } else {
+        setSameDayTargetKey('workshop');
+      }
+    } else {
+      setSameDayTargetKey('workshop');
+    }
+    setSameDayStart('09:00');
+    setSameDayEnd('18:00');
+    setSameDayWorkDone('');
+    setSameDayModalOpen(true);
+  };
+
+  const handleSameDayLog = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setShiftBusy(true);
+    setShiftError('');
+    try {
+      const target = parseSameDayTargetKey(sameDayTargetKey);
+      const tzOffsetMinutes = new Date().getTimezoneOffset();
+      await apiRequest('/api/shifts/same-day-log', {
+        method: 'POST',
+        skipOfflineQueue: true,
+        body: {
+          workDate: todayOptions?.date || toLocalDateString(new Date()),
+          startTime: sameDayStart,
+          endTime: sameDayEnd,
+          workDone: sameDayWorkDone,
+          tzOffsetMinutes,
+          ...target,
+        },
+      });
+      setSameDayModalOpen(false);
+      onShiftChanged();
+      void loadTodayOptions();
+      void loadQuickTasks();
+    } catch (err) {
+      setShiftError(err instanceof Error ? err.message : 'Не удалось сохранить время за сегодня');
+    } finally {
+      setShiftBusy(false);
+    }
+  };
+
+  const openEditRequestModal = (shift?: WorkshopShift) => {
+    setRequestShift(shift || null);
+    setReqDate(shift?.work_date || shift?.started_at.slice(0, 10) || toLocalDateString(new Date()));
+    setReqStart(shift ? toLocalHmInput(shift.started_at) : '09:00');
+    setReqEnd(shift?.ended_at ? toLocalHmInput(shift.ended_at) : '18:00');
+    setReqWorkDone(shift?.work_done || '');
+    setReqReason('');
+    setRequestModalOpen(true);
+  };
+
+  const handleCreateEditRequest = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setShiftBusy(true);
+    setShiftError('');
+    try {
+      await apiRequest('/api/shifts/edit-requests', {
+        method: 'POST',
+        skipOfflineQueue: true,
+        body: {
+          shiftId: requestShift?.id || null,
+          targetType: requestShift?.shift_type || 'workshop',
+          orderId: requestShift?.order_id || null,
+          visitId: requestShift?.visit_id || null,
+          quickTaskId: requestShift?.quick_task_id || null,
+          workDate: reqDate,
+          requestedStartTime: reqStart,
+          requestedEndTime: reqEnd,
+          workDone: reqWorkDone,
+          reason: reqReason,
+          tzOffsetMinutes: new Date().getTimezoneOffset(),
+        },
+      });
+      setRequestModalOpen(false);
+      await loadEditRequests();
+    } catch (err) {
+      setShiftError(err instanceof Error ? err.message : 'Не удалось отправить запрос');
+    } finally {
+      setShiftBusy(false);
+    }
+  };
+
+  const handleReviewEditRequest = async (requestId: string, decision: 'approve' | 'reject') => {
+    setShiftBusy(true);
+    setShiftError('');
+    try {
+      await apiRequest(`/api/shifts/edit-requests/${requestId}/review`, {
+        method: 'POST',
+        skipOfflineQueue: true,
+        body: {
+          decision,
+          adminComment: adminReviewComments[requestId] || '',
+          tzOffsetMinutes: new Date().getTimezoneOffset(),
+        },
+      });
+      await loadEditRequests();
+      onShiftChanged();
+      void loadQuickTasks();
+    } catch (err) {
+      setShiftError(err instanceof Error ? err.message : 'Не удалось обработать запрос');
+    } finally {
+      setShiftBusy(false);
+    }
+  };
+
+  const openAdminShiftEdit = (sh: WorkshopShift) => {
+    setAdminEditShift(sh);
+    setAdminEditDate(sh.work_date || sh.started_at.slice(0, 10));
+    setAdminEditStart(toLocalHmInput(sh.started_at));
+    setAdminEditEnd(sh.ended_at ? toLocalHmInput(sh.ended_at) : '18:00');
+    setAdminEditWorkDone(sh.work_done || '');
+  };
+
+  const handleAdminSaveShiftEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!adminEditShift) return;
+    setShiftBusy(true);
+    setShiftError('');
+    try {
+      await apiRequest(`/api/shifts/${adminEditShift.id}`, {
+        method: 'PATCH',
+        skipOfflineQueue: true,
+        body: {
+          workDate: adminEditDate,
+          startTime: adminEditStart,
+          endTime: adminEditEnd,
+          workDone: adminEditWorkDone,
+          tzOffsetMinutes: new Date().getTimezoneOffset(),
+        },
+      });
+      setAdminEditShift(null);
+      onShiftChanged();
+      void loadQuickTasks();
+    } catch (err) {
+      setShiftError(err instanceof Error ? err.message : 'Не удалось изменить время смены');
     } finally {
       setShiftBusy(false);
     }
@@ -338,15 +680,13 @@ export function WorkView({
   return (
     <div className="space-y-4">
       <SectionHeader<WorkSubTab>
-        title="Работа"
-        description="Планирование выездов, заказы, быстрые задачи, смены в цеху и отчёты"
         actions={
           <>
             {activeShift ? (
               <button
                 type="button"
-                onClick={() => setFinishModalOpen(true)}
-                className="inline-flex min-h-[40px] items-center gap-2 rounded-xl bg-red-600 px-3.5 py-2 text-xs font-semibold text-white transition hover:bg-red-700"
+                onClick={openFinishModal}
+                className="inline-flex min-h-[36px] shrink-0 whitespace-nowrap items-center gap-1.5 rounded-xl bg-red-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-red-700"
               >
                 <Square className="h-3.5 w-3.5 fill-current" />
                 <span>Завершить смену ({elapsedText || 'идёт'})</span>
@@ -356,44 +696,114 @@ export function WorkView({
                 type="button"
                 disabled={shiftBusy}
                 onClick={() => void handleStartShift()}
-                className="inline-flex min-h-[40px] items-center gap-2 rounded-xl border border-emerald-500/35 bg-emerald-500/10 px-3.5 py-2 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-500/15 disabled:opacity-50 dark:text-emerald-300"
+                className="inline-flex min-h-[36px] shrink-0 whitespace-nowrap items-center gap-1.5 rounded-xl border border-emerald-500/35 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-500/15 disabled:opacity-50 dark:text-emerald-300"
               >
                 <Play className="h-3.5 w-3.5 fill-current" />
                 <span>Начать смену</span>
               </button>
             )}
-            {canCreateOrder && (
+            <div ref={addTaskDropdownRef} className="relative inline-block">
               <button
                 type="button"
-                onClick={() => onOpenCreateOrder(workTab === 'calendar' ? calendarDate : undefined)}
-                className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl bg-[#0071E3] px-4 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-[#0077ED] dark:bg-[#2997FF] dark:text-[#0B0C10]"
+                onClick={() => {
+                  setAddTaskDropdownOpen((prev) => !prev);
+                  setWorkDropdownOpen(false);
+                }}
+                aria-expanded={addTaskDropdownOpen}
+                aria-haspopup="true"
+                aria-label="Добавить задачу"
+                className="inline-flex min-h-[36px] shrink-0 whitespace-nowrap items-center gap-1.5 rounded-xl bg-[#0071E3] px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-[#0077ED] dark:bg-[#2997FF] dark:text-[#0B0C10]"
               >
-                <Plus className="h-4 w-4" />
-                <span>Новый заказ</span>
+                <Plus className="h-3.5 w-3.5" />
+                <span>Добавить задачу</span>
+                <ChevronDown
+                  className={`h-3.5 w-3.5 transition-transform ${addTaskDropdownOpen ? 'rotate-180' : ''}`}
+                />
               </button>
-            )}
+              {addTaskDropdownOpen && (
+                <div
+                  className="absolute top-[calc(100%+8px)] left-0 z-50 w-52 max-w-[calc(100vw-3rem)] rounded-xl border border-black/[0.08] bg-white p-1 shadow-xl dark:border-white/[0.1] dark:bg-[#15171C]"
+                  role="menu"
+                  aria-label="Выбор типа задачи"
+                >
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setAddTaskDropdownOpen(false);
+                      setHeaderTask(null);
+                      setHeaderTaskCreating(true);
+                    }}
+                    className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs font-semibold text-[#1D1D1F] hover:bg-black/[0.04] dark:text-white dark:hover:bg-white/[0.06]"
+                  >
+                    <CheckSquare className="h-4 w-4 shrink-0 text-violet-600 dark:text-violet-400" />
+                    <span>Быстрая</span>
+                  </button>
+                  {canCreateOrder && (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setAddTaskDropdownOpen(false);
+                        onOpenCreateOrder(workTab === 'calendar' ? calendarDate : undefined);
+                      }}
+                      className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs font-semibold text-[#1D1D1F] hover:bg-black/[0.04] dark:text-white dark:hover:bg-white/[0.06]"
+                    >
+                      <Briefcase className="h-4 w-4 shrink-0 text-[#0071E3] dark:text-[#2997FF]" />
+                      <span>Заказ</span>
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
             {/* Кнопка календаря с выпадающим меню подразделов "Работа" (для монтажников и админа) */}
-            <div className="relative inline-block">
+            <div ref={workDropdownRef} className="relative inline-block">
               <button
                 type="button"
-                onClick={() => setWorkDropdownOpen(!workDropdownOpen)}
-                className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 px-3.5 py-2 text-xs font-semibold hover:bg-black/[0.04] dark:border-white/[0.1] dark:bg-[#0B0C10] dark:hover:bg-white/[0.06]"
+                onClick={() => {
+                  setWorkDropdownOpen((prev) => !prev);
+                  setAddTaskDropdownOpen(false);
+                }}
+                className="inline-flex min-h-[36px] shrink-0 whitespace-nowrap items-center gap-1.5 rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 px-3 py-1.5 text-xs font-semibold hover:bg-black/[0.04] dark:border-white/[0.1] dark:bg-[#0B0C10] dark:hover:bg-white/[0.06]"
                 aria-expanded={workDropdownOpen}
                 aria-haspopup="true"
-                aria-label="Подразделы Работа"
+                aria-label="Инструменты и работа"
               >
-                <CalendarDays className="h-4 w-4" />
-                <span>Работа</span>
+                <CalendarDays className="h-3.5 w-3.5 shrink-0" />
+                <span>Инструменты и работа</span>
+                <span className="rounded-lg bg-black/[0.06] px-1.5 py-0.5 text-[11px] font-semibold text-zinc-700 dark:bg-white/[0.1] dark:text-zinc-200">
+                  {workTab === 'calendar'
+                    ? 'Календарь'
+                    : workTab === 'orders'
+                      ? 'Заказы'
+                      : workTab === 'tasks'
+                        ? 'Быстрые задачи'
+                        : workTab === 'reports' || shiftsSubMode === 'reports'
+                          ? 'Отчёты'
+                          : 'Смены'}
+                </span>
                 <ChevronDown
-                  className={`h-3.5 w-3.5 transition-transform ${workDropdownOpen ? 'rotate-180' : ''}`}
+                  className={`h-3.5 w-3.5 shrink-0 transition-transform ${workDropdownOpen ? 'rotate-180' : ''}`}
                 />
               </button>
               {workDropdownOpen && (
                 <div
-                  className="absolute bottom-[calc(100%+8px)] left-0 z-50 w-52 rounded-xl border border-black/[0.08] bg-white shadow-xl p-1 animate-[slide-down_150ms_ease-out] dark:border-white/[0.1] dark:bg-[#15171C]"
+                  className="absolute top-[calc(100%+8px)] left-0 z-50 w-56 max-w-[calc(100vw-3rem)] rounded-xl border border-black/[0.08] bg-white p-1 shadow-xl dark:border-white/[0.1] dark:bg-[#15171C]"
                   role="menu"
-                  aria-label="Подразделы Работа"
+                  aria-label="Инструменты и работа"
                 >
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      onSelectWorkTab('calendar');
+                      setWorkDropdownOpen(false);
+                    }}
+                    className={`w-full flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06] ${workTab === 'calendar' ? 'bg-[#0071E3]/10 text-[#0071E3] dark:text-[#2997FF]' : ''}`}
+                  >
+                    <CalendarDays className="h-4 w-4 shrink-0" />
+                    <span>Календарь</span>
+                  </button>
                   <button
                     type="button"
                     role="menuitem"
@@ -401,7 +811,7 @@ export function WorkView({
                       onSelectWorkTab('orders');
                       setWorkDropdownOpen(false);
                     }}
-                    className="w-full flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06]"
+                    className={`w-full flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06] ${workTab === 'orders' ? 'bg-[#0071E3]/10 text-[#0071E3] dark:text-[#2997FF]' : ''}`}
                   >
                     <Briefcase className="h-4 w-4 shrink-0" />
                     <span>Заказы</span>
@@ -413,7 +823,7 @@ export function WorkView({
                       onSelectWorkTab('tasks');
                       setWorkDropdownOpen(false);
                     }}
-                    className="w-full flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06]"
+                    className={`w-full flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06] ${workTab === 'tasks' ? 'bg-[#0071E3]/10 text-[#0071E3] dark:text-[#2997FF]' : ''}`}
                   >
                     <CheckSquare className="h-4 w-4 shrink-0" />
                     <span>Быстрые задачи</span>
@@ -426,7 +836,7 @@ export function WorkView({
                       onSelectWorkTab('shifts');
                       setWorkDropdownOpen(false);
                     }}
-                    className="w-full flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06]"
+                    className={`w-full flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06] ${workTab === 'shifts' && shiftsSubMode === 'shifts' ? 'bg-[#0071E3]/10 text-[#0071E3] dark:text-[#2997FF]' : ''}`}
                   >
                     <Wrench className="h-4 w-4 shrink-0" />
                     <span>Смены</span>
@@ -435,10 +845,11 @@ export function WorkView({
                     type="button"
                     role="menuitem"
                     onClick={() => {
+                      setShiftsSubMode('reports');
                       onSelectWorkTab('reports');
                       setWorkDropdownOpen(false);
                     }}
-                    className="w-full flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06]"
+                    className={`w-full flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06] ${workTab === 'reports' || (workTab === 'shifts' && shiftsSubMode === 'reports') ? 'bg-[#0071E3]/10 text-[#0071E3] dark:text-[#2997FF]' : ''}`}
                   >
                     <ClipboardCheck className="h-4 w-4 shrink-0" />
                     <span>Отчёты</span>
@@ -483,13 +894,19 @@ export function WorkView({
           onOpenUnplannedOrders={() => onSelectWorkTab('orders')}
           onOpenOrder={onOpenOrder}
           onOpenOrderById={onOpenOrderById}
+          hasActiveShift={Boolean(activeShift)}
+          onStartShiftForTarget={(target) => void handleStartShift(target)}
+          onShiftChanged={() => {
+            void loadQuickTasks();
+            onShiftChanged();
+          }}
         />
       )}
 
       {workTab === 'orders' && (
         <div className="space-y-4">
           {/* Orders Search & Filters */}
-          <div className="space-y-3 rounded-2xl border border-black/[0.06] bg-white p-4 shadow-[0_1px_3px_rgba(0,0,0,0.04)] dark:border-white/[0.08] dark:bg-[#15171C]">
+          <div className="space-y-2.5 rounded-2xl border border-black/[0.06] bg-white p-3.5 shadow-[0_1px_3px_rgba(0,0,0,0.04)] sm:p-4 dark:border-white/[0.08] dark:bg-[#15171C]">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex flex-wrap items-center gap-1.5">
                 {[
@@ -508,7 +925,7 @@ export function WorkView({
                           active && chip.id !== 'all' ? 'all' : (chip.id as typeof orderQuickFilter)
                         )
                       }
-                      className={`min-h-[32px] rounded-xl px-3 py-1 text-xs font-semibold transition ${
+                      className={`min-h-[32px] shrink-0 whitespace-nowrap rounded-xl px-2.5 py-1 text-xs font-semibold transition ${
                         active
                           ? 'bg-[#0071E3] text-white dark:bg-[#2997FF] dark:text-[#0B0C10]'
                           : 'bg-[#F5F5F7] text-zinc-600 hover:bg-black/[0.06] dark:bg-[#0B0C10] dark:text-zinc-300 dark:hover:bg-white/[0.08]'
@@ -529,23 +946,35 @@ export function WorkView({
               />
             </div>
 
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-6">
-              <div className="relative sm:col-span-2">
-                <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400" />
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-12">
+              <div className="relative sm:col-span-2 md:col-span-3 lg:col-span-3">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400" />
                 <input
                   type="text"
                   value={orderSearch}
                   onChange={(e) => setOrderSearch(e.target.value)}
                   placeholder="Поиск по номеру, названию, адресу, клиенту..."
-                  className="w-full rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 py-2 pl-8 pr-3 text-xs outline-none focus:border-[#0071E3] focus:bg-white dark:border-white/[0.1] dark:bg-[#0B0C10] dark:focus:bg-[#0B0C10]"
+                  className={`w-full rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 py-1.5 pl-8 text-xs outline-none focus:border-[#0071E3] focus:bg-white dark:border-white/[0.1] dark:bg-[#0B0C10] dark:focus:bg-[#0B0C10] ${
+                    orderSearch ? 'pr-8' : 'pr-3'
+                  }`}
                 />
+                {orderSearch && (
+                  <button
+                    type="button"
+                    aria-label="Очистить поиск"
+                    onClick={() => setOrderSearch('')}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-0.5 text-zinc-400 transition hover:bg-black/[0.06] hover:text-zinc-700 dark:hover:bg-white/[0.08] dark:hover:text-zinc-200"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                )}
               </div>
 
               <select
                 aria-label="Статус заказа"
                 value={orderStatusFilter}
                 onChange={(e) => setOrderStatusFilter(e.target.value)}
-                className="min-w-0 w-full rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 px-3 py-2 text-xs dark:border-white/[0.1] dark:bg-[#0B0C10]"
+                className="min-w-0 w-full rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 px-3 py-1.5 text-xs lg:col-span-2 dark:border-white/[0.1] dark:bg-[#0B0C10]"
               >
                 <option value="all">Все статусы</option>
                 <option value="new">Новый</option>
@@ -558,7 +987,7 @@ export function WorkView({
                 aria-label="Фильтр по исполнителю"
                 value={orderUserFilter}
                 onChange={(e) => setOrderUserFilter(e.target.value)}
-                className="min-w-0 w-full rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 px-3 py-2 text-xs dark:border-white/[0.1] dark:bg-[#0B0C10]"
+                className="min-w-0 w-full rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 px-3 py-1.5 text-xs lg:col-span-2 dark:border-white/[0.1] dark:bg-[#0B0C10]"
               >
                 <option value="">Все исполнители</option>
                 {directory.map((emp) => (
@@ -573,7 +1002,7 @@ export function WorkView({
                   aria-label="Фильтр по клиенту"
                   value={orderClientFilter}
                   onChange={(e) => setOrderClientFilter(e.target.value)}
-                  className="min-w-0 w-full rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 px-3 py-2 text-xs dark:border-white/[0.1] dark:bg-[#0B0C10]"
+                  className="min-w-0 w-full rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 px-3 py-1.5 text-xs lg:col-span-2 dark:border-white/[0.1] dark:bg-[#0B0C10]"
                 >
                   <option value="">Все клиенты</option>
                   {companies.map((c) => (
@@ -584,20 +1013,20 @@ export function WorkView({
                 </select>
               )}
 
-              <div className="flex items-center gap-1.5">
+              <div className={`flex items-center gap-1.5 ${companies.length > 0 ? 'lg:col-span-3' : 'lg:col-span-5'}`}>
                 <input
                   type="date"
                   aria-label="Дата с"
                   value={orderFromDate}
                   onChange={(e) => setOrderFromDate(e.target.value)}
-                  className="min-w-0 flex-1 rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 px-2.5 py-2 text-xs tabular-nums dark:border-white/[0.1] dark:bg-[#0B0C10]"
+                  className="min-w-0 flex-1 rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 px-2.5 py-1.5 text-xs tabular-nums dark:border-white/[0.1] dark:bg-[#0B0C10]"
                 />
                 <input
                   type="date"
                   aria-label="Дата по"
                   value={orderToDate}
                   onChange={(e) => setOrderToDate(e.target.value)}
-                  className="min-w-0 flex-1 rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 px-2.5 py-2 text-xs tabular-nums dark:border-white/[0.1] dark:bg-[#0B0C10]"
+                  className="min-w-0 flex-1 rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 px-2.5 py-1.5 text-xs tabular-nums dark:border-white/[0.1] dark:bg-[#0B0C10]"
                 />
                 {hasOrderFilters && (
                   <button
@@ -612,7 +1041,7 @@ export function WorkView({
                       setOrderToDate('');
                       setOrderQuickFilter('all');
                     }}
-                    className="inline-flex h-9 shrink-0 items-center justify-center rounded-xl border border-black/[0.08] px-2.5 text-xs text-zinc-600 hover:bg-black/[0.04] dark:border-white/[0.1] dark:text-zinc-300"
+                    className="inline-flex h-8 shrink-0 items-center justify-center rounded-xl border border-black/[0.08] px-2.5 text-xs text-zinc-600 hover:bg-black/[0.04] dark:border-white/[0.1] dark:text-zinc-300"
                   >
                     <RotateCcw className="h-3.5 w-3.5" />
                   </button>
@@ -652,9 +1081,6 @@ export function WorkView({
                     Незапланированные заказы и черновики ({unplannedFilteredOrders.length})
                   </h3>
                 </div>
-                <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                  Без даты выезда в календаре
-                </span>
               </div>
 
               <div className="grid grid-cols-1 gap-2.5 md:grid-cols-2">
@@ -802,6 +1228,10 @@ export function WorkView({
             openTaskId={openTaskId}
             onConsumeOpenTask={onConsumeOpenTask}
             onRefresh={() => void loadQuickTasks()}
+            onShiftChanged={() => {
+              void loadQuickTasks();
+              onShiftChanged();
+            }}
             onOpenOrderById={onOpenOrderById}
           />
         </>
@@ -842,20 +1272,22 @@ export function WorkView({
               <div className="rounded-2xl border border-black/[0.06] bg-white p-5 shadow-[0_1px_3px_rgba(0,0,0,0.04)] dark:border-white/[0.08] dark:bg-[#15171C]">
                 <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
                   <div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <Wrench className="h-4 w-4 text-[#0071E3] dark:text-[#2997FF]" />
-                      <h3 className="font-display text-base font-bold">Текущая смена в цеху</h3>
+                      <h3 className="font-display text-base font-bold">
+                        {activeShift ? shiftTargetLabel(activeShift) : 'Текущая смена'}
+                      </h3>
                       {activeShift && (
                         <span className="rounded-md bg-emerald-500/15 px-2 py-0.5 text-xs font-semibold text-emerald-700 dark:text-emerald-300">
                           Смена идёт
                         </span>
                       )}
                     </div>
-                    <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-                      {activeShift
-                        ? `Начата в ${formatDateTimeRu(activeShift.started_at)} · Ставка ${formatRub(activeShift.rate_snapshot_kopecks)}`
-                        : `Фиксированная ставка смены: ${formatRub(user.shiftRateKopecks)} · Время фиксируется сервером`}
-                    </p>
+                    {activeShift && (
+                      <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                        Начата в {formatDateTimeRu(activeShift.started_at)}
+                      </p>
+                    )}
                   </div>
 
                   <div className="flex items-center gap-3">
@@ -869,7 +1301,7 @@ export function WorkView({
                     {activeShift ? (
                       <button
                         type="button"
-                        onClick={() => setFinishModalOpen(true)}
+                        onClick={openFinishModal}
                         className="inline-flex min-h-[44px] items-center gap-2 rounded-xl bg-red-600 px-4 py-2.5 text-xs font-semibold text-white transition hover:bg-red-700"
                       >
                         <Square className="h-3.5 w-3.5 fill-current" />
@@ -890,9 +1322,45 @@ export function WorkView({
                 </div>
               </div>
 
+              {/* Uncovered Same-Day Tasks Notice */}
+              {todayOptions && todayOptions.uncoveredCount > 0 && (
+                <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-500/30 bg-amber-500/10 p-4 text-xs">
+                  <div>
+                    <div className="font-bold text-amber-800 dark:text-amber-200">
+                      На сегодня ({todayOptions.date}) есть задачи без отмеченного времени ({todayOptions.uncoveredCount})
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void openSameDayModal()}
+                    className="rounded-xl bg-amber-600 px-3.5 py-2 font-semibold text-white hover:bg-amber-700"
+                  >
+                    Проставить время за сегодня
+                  </button>
+                </div>
+              )}
+
               {/* Shift History */}
               <div className="rounded-2xl border border-black/[0.06] bg-white p-5 shadow-[0_1px_3px_rgba(0,0,0,0.04)] dark:border-white/[0.08] dark:bg-[#15171C]">
-                <h3 className="mb-3 font-display text-base font-bold">История смен ({shifts.length})</h3>
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                  <h3 className="font-display text-base font-bold">История смен ({shifts.length})</h3>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void openSameDayModal()}
+                      className="rounded-xl border border-black/[0.08] px-3 py-1.5 text-xs font-semibold hover:bg-black/[0.04] dark:border-white/[0.1] dark:hover:bg-white/[0.06]"
+                    >
+                      Отметить время за сегодня
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => openEditRequestModal()}
+                      className="rounded-xl border border-black/[0.08] px-3 py-1.5 text-xs font-semibold text-[#0071E3] hover:bg-black/[0.04] dark:border-white/[0.1] dark:text-[#2997FF]"
+                    >
+                      Запрос за прошлую дату
+                    </button>
+                  </div>
+                </div>
                 {shifts.length === 0 ? (
                   <div className="rounded-2xl border border-dashed border-black/[0.1] p-8 text-center text-sm text-zinc-400 dark:border-white/[0.1]">
                     Отработанных смен пока нет
@@ -900,34 +1368,74 @@ export function WorkView({
                 ) : (
                   <div className="space-y-2.5">
                     {shifts.map((sh) => {
-                      const mins = sh.ended_at
+                      const mins = sh.duration_minutes ?? (sh.ended_at
                         ? Math.max(
                             1,
                             Math.round((Date.parse(sh.ended_at) - Date.parse(sh.started_at)) / 60_000)
                           )
-                        : 0;
+                        : 0);
+                      const isOwn = sh.user_id === user.id;
+                      const showWage = isAdmin || isOwn;
                       return (
                         <div
                           key={sh.id}
                           className="rounded-xl border border-black/[0.06] bg-[#F5F5F7]/50 p-3.5 text-xs dark:border-white/[0.08] dark:bg-[#0B0C10]"
                         >
                           <div className="flex flex-wrap items-center justify-between gap-2">
-                            <div>
-                              <div className="font-semibold text-[#1D1D1F] dark:text-white">
-                                {sh.employee_name || user.fullName}
-                                <span className="ml-2 font-normal text-zinc-500 tabular-nums">
-                                  {formatDateTimeRu(sh.started_at)}
-                                  {sh.ended_at
-                                    ? ` → ${new Date(sh.ended_at).toLocaleTimeString('ru-RU', {
-                                        hour: '2-digit',
-                                        minute: '2-digit',
-                                      })} (${Math.floor(mins / 60)} ч ${mins % 60} мин)`
-                                    : ' · активная смена'}
+                            <div className="space-y-1">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="font-semibold text-[#1D1D1F] dark:text-white">
+                                  {sh.employee_name || user.fullName}
                                 </span>
+                                <span className="rounded-md bg-[#0071E3]/10 px-2 py-0.5 text-[11px] font-semibold text-[#0071E3] dark:text-[#71b5ff]">
+                                  {shiftTargetLabel(sh)}
+                                </span>
+                                {sh.is_manual_entry === 1 && (
+                                  <span className="rounded-md bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700 dark:text-amber-300">
+                                    Вручную
+                                  </span>
+                                )}
+                              </div>
+                              <div className="text-zinc-500 tabular-nums">
+                                {formatDateTimeRu(sh.started_at)}
+                                {sh.ended_at
+                                  ? ` → ${new Date(sh.ended_at).toLocaleTimeString('ru-RU', {
+                                      hour: '2-digit',
+                                      minute: '2-digit',
+                                    })} (${formatDuration(mins)})`
+                                  : ' · активная смена'}
                               </div>
                             </div>
-                            <div className="font-bold text-emerald-600 tabular-nums dark:text-emerald-400">
-                              {formatRub(sh.rate_snapshot_kopecks)}
+                            <div className="flex flex-wrap items-center gap-2">
+                              {showWage && (
+                                <span
+                                  className={`font-bold tabular-nums ${
+                                    sh.wage_kopecks != null
+                                      ? 'text-emerald-600 dark:text-emerald-400'
+                                      : 'text-zinc-500'
+                                  }`}
+                                >
+                                  {sh.wage_kopecks != null ? formatRub(sh.wage_kopecks) : 'Ожидает оплаты'}
+                                </span>
+                              )}
+                              {isOwn && sh.status === 'completed' && !isAdmin && (
+                                <button
+                                  type="button"
+                                  onClick={() => openEditRequestModal(sh)}
+                                  className="rounded-lg border border-black/[0.08] bg-white px-2.5 py-1 text-[11px] font-semibold text-[#0071E3] hover:bg-black/[0.03] dark:border-white/[0.1] dark:bg-[#15171C] dark:text-[#2997FF]"
+                                >
+                                  Запросить правку
+                                </button>
+                              )}
+                              {isAdmin && (
+                                <button
+                                  type="button"
+                                  onClick={() => openAdminShiftEdit(sh)}
+                                  className="rounded-lg border border-black/[0.08] bg-white px-2.5 py-1 text-[11px] font-semibold text-zinc-700 hover:text-[#0071E3] dark:border-white/[0.1] dark:bg-[#15171C] dark:text-zinc-200"
+                                >
+                                  Править время
+                                </button>
+                              )}
                             </div>
                           </div>
                           {sh.work_done && (
@@ -941,6 +1449,100 @@ export function WorkView({
                   </div>
                 )}
               </div>
+
+              {/* Shift Edit Requests */}
+              {editRequests.length > 0 && (
+                <div className="rounded-2xl border border-black/[0.06] bg-white p-5 shadow-[0_1px_3px_rgba(0,0,0,0.04)] dark:border-white/[0.08] dark:bg-[#15171C]">
+                  <h3 className="mb-3 font-display text-base font-bold">
+                    Запросы на редактирование смен ({editRequests.length})
+                  </h3>
+                  <div className="space-y-2.5">
+                    {editRequests.map((reqItem) => {
+                      const statusLabel =
+                        reqItem.status === 'approved'
+                          ? 'Принят'
+                          : reqItem.status === 'rejected'
+                            ? 'Отклонён'
+                            : 'На рассмотрении';
+                      const statusCls =
+                        reqItem.status === 'approved'
+                          ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+                          : reqItem.status === 'rejected'
+                            ? 'bg-red-500/15 text-red-600 dark:text-red-400'
+                            : 'bg-amber-500/15 text-amber-700 dark:text-amber-300';
+                      return (
+                        <div
+                          key={reqItem.id}
+                          className="rounded-xl border border-black/[0.06] bg-[#F5F5F7]/50 p-3.5 text-xs dark:border-white/[0.08] dark:bg-[#0B0C10]"
+                        >
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="font-semibold">{reqItem.employee_name || user.fullName}</span>
+                              <span className="rounded-md bg-black/[0.05] px-2 py-0.5 text-[11px] font-medium dark:bg-white/[0.08]">
+                                {shiftTargetLabel({
+                                  shift_type: reqItem.target_type,
+                                  order_number: reqItem.order_number,
+                                  order_title: reqItem.order_title,
+                                  visit_title: reqItem.visit_title,
+                                  quick_task_title: reqItem.quick_task_title,
+                                })}
+                              </span>
+                              <span className={`rounded-md px-2 py-0.5 text-[11px] font-semibold ${statusCls}`}>
+                                {statusLabel}
+                              </span>
+                            </div>
+                            <span className="text-zinc-500 tabular-nums">
+                              {reqItem.work_date} · {toLocalHmInput(reqItem.requested_started_at)}–
+                              {toLocalHmInput(reqItem.requested_ended_at)}
+                            </span>
+                          </div>
+                          <p className="mt-1.5 text-zinc-700 dark:text-zinc-200">
+                            Причина: {reqItem.reason}
+                          </p>
+                          {reqItem.work_done && (
+                            <p className="mt-1 text-zinc-500">Работы: {reqItem.work_done}</p>
+                          )}
+                          {reqItem.admin_comment && (
+                            <p className="mt-1 text-zinc-500">Комментарий: {reqItem.admin_comment}</p>
+                          )}
+                          {isAdmin && reqItem.status === 'pending' && (
+                            <div className="mt-2.5 flex flex-wrap items-center gap-2">
+                              <input
+                                type="text"
+                                value={adminReviewComments[reqItem.id] || ''}
+                                onChange={(e) =>
+                                  setAdminReviewComments((prev) => ({
+                                    ...prev,
+                                    [reqItem.id]: e.target.value,
+                                  }))
+                                }
+                                placeholder="Комментарий (опционально)"
+                                className="min-w-[180px] flex-1 rounded-lg border border-black/[0.1] bg-white px-2.5 py-1.5 text-xs dark:border-white/[0.1] dark:bg-[#15171C]"
+                              />
+                              <button
+                                type="button"
+                                disabled={shiftBusy}
+                                onClick={() => void handleReviewEditRequest(reqItem.id, 'approve')}
+                                className="rounded-lg bg-emerald-600 px-3 py-1.5 font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+                              >
+                                Принять
+                              </button>
+                              <button
+                                type="button"
+                                disabled={shiftBusy}
+                                onClick={() => void handleReviewEditRequest(reqItem.id, 'reject')}
+                                className="rounded-lg bg-red-600 px-3 py-1.5 font-semibold text-white hover:bg-red-700 disabled:opacity-50"
+                              >
+                                Отклонить
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </>
           ) : (
             <ReportsView
@@ -953,6 +1555,111 @@ export function WorkView({
         </div>
       )}
 
+      {/* Task Picker Modal on Start Shift */}
+      {pickerOpen && todayOptions && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 p-0 backdrop-blur-xs sm:items-center sm:p-4">
+          <div className="w-full max-w-lg rounded-t-3xl border border-black/[0.08] bg-white p-6 shadow-2xl sm:rounded-3xl dark:border-white/[0.1] dark:bg-[#15171C]">
+            <h3 className="font-display text-lg font-bold">По какой задаче начать смену?</h3>
+            <div className="mt-4 max-h-[60vh] space-y-2 overflow-y-auto">
+              {todayOptions.visits.map((v) => (
+                <button
+                  key={`v:${v.visitId}`}
+                  type="button"
+                  disabled={shiftBusy}
+                  onClick={() =>
+                    void startShiftWithTarget({
+                      targetType: 'visit',
+                      orderId: v.orderId,
+                      visitId: v.visitId,
+                    })
+                  }
+                  className="w-full rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 p-3 text-left transition hover:border-[#0071E3] dark:border-white/[0.1] dark:bg-[#0B0C10]"
+                >
+                  <div className="flex items-center justify-between gap-2 text-xs font-semibold">
+                    <span className="text-[#0071E3] dark:text-[#2997FF]">
+                      Монтаж {v.orderNumber} · {v.visitTitle || v.orderTitle}
+                    </span>
+                    {v.hasLoggedShift && (
+                      <span className="text-[11px] text-emerald-600 dark:text-emerald-400">Уже есть смена</span>
+                    )}
+                  </div>
+                  <div className="mt-1 text-xs text-zinc-500">
+                    {v.orderTitle}
+                    {v.address ? ` · ${v.address}` : ''}
+                  </div>
+                </button>
+              ))}
+              {todayOptions.orders.map((o) => (
+                <button
+                  key={`o:${o.orderId}`}
+                  type="button"
+                  disabled={shiftBusy}
+                  onClick={() =>
+                    void startShiftWithTarget({
+                      targetType: 'visit',
+                      orderId: o.orderId,
+                    })
+                  }
+                  className="w-full rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 p-3 text-left transition hover:border-[#0071E3] dark:border-white/[0.1] dark:bg-[#0B0C10]"
+                >
+                  <div className="flex items-center justify-between gap-2 text-xs font-semibold">
+                    <span className="text-[#0071E3] dark:text-[#2997FF]">
+                      Монтаж {o.orderNumber} · {o.orderTitle}
+                    </span>
+                    {o.hasLoggedShift && (
+                      <span className="text-[11px] text-emerald-600 dark:text-emerald-400">Уже есть смена</span>
+                    )}
+                  </div>
+                  {o.address && <div className="mt-1 text-xs text-zinc-500">{o.address}</div>}
+                </button>
+              ))}
+              {todayOptions.quickTasks.map((t) => (
+                <button
+                  key={`t:${t.quickTaskId}`}
+                  type="button"
+                  disabled={shiftBusy}
+                  onClick={() =>
+                    void startShiftWithTarget({
+                      targetType: 'quick_task',
+                      quickTaskId: t.quickTaskId,
+                      orderId: t.orderId,
+                    })
+                  }
+                  className="w-full rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 p-3 text-left transition hover:border-[#0071E3] dark:border-white/[0.1] dark:bg-[#0B0C10]"
+                >
+                  <div className="flex items-center justify-between gap-2 text-xs font-semibold">
+                    <span>Быстрая задача: {t.title}</span>
+                    {t.hasLoggedShift && (
+                      <span className="text-[11px] text-emerald-600 dark:text-emerald-400">Уже есть смена</span>
+                    )}
+                  </div>
+                  {t.orderNumber && (
+                    <div className="mt-1 text-xs text-zinc-500">
+                      Заказ {oNum(t)}
+                    </div>
+                  )}
+                </button>
+              ))}
+              <button
+                type="button"
+                disabled={shiftBusy}
+                onClick={() => void startShiftWithTarget({ targetType: 'workshop' })}
+                className="w-full rounded-xl border border-dashed border-black/[0.15] p-3 text-left text-xs font-semibold text-zinc-600 hover:border-[#0071E3] dark:border-white/[0.15] dark:text-zinc-300"
+              >
+                Работа в цеху (без привязки к монтажу)
+              </button>
+            </div>
+            <button
+              type="button"
+              onClick={() => setPickerOpen(false)}
+              className="mt-4 w-full rounded-2xl border border-black/[0.08] py-2.5 text-sm font-semibold dark:border-white/[0.1]"
+            >
+              Отмена
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Finish Shift Modal */}
       {finishModalOpen && (
         <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 p-0 backdrop-blur-xs sm:items-center sm:p-4">
@@ -960,10 +1667,9 @@ export function WorkView({
             onSubmit={handleFinishShift}
             className="w-full max-w-lg rounded-t-3xl border border-black/[0.08] bg-white p-6 shadow-2xl sm:rounded-3xl dark:border-white/[0.1] dark:bg-[#15171C]"
           >
-            <h3 className="font-display text-lg font-bold">Завершение смены в цеху</h3>
-            <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-              После сохранения смена закроется, а ставка {formatRub(activeShift?.rate_snapshot_kopecks)} будет автоматически начислена в зарплату.
-            </p>
+            <h3 className="font-display text-lg font-bold">
+              Завершение смены{activeShift ? ` · ${shiftTargetLabel(activeShift)}` : ''}
+            </h3>
 
             <div className="mt-4 space-y-3">
               <div>
@@ -975,10 +1681,22 @@ export function WorkView({
                   rows={3}
                   value={workDone}
                   onChange={(e) => setWorkDone(e.target.value)}
-                  placeholder="Что изготовлено, сварено, раскроено или подготовлено к монтажу..."
+                  placeholder="Что изготовлено, смонтировано или выполнено за смену..."
                   className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3.5 py-2.5 text-sm outline-none dark:border-white/[0.12] dark:bg-[#0B0C10]"
                 />
               </div>
+
+              {activeShift?.quick_task_id && (
+                <label className="flex items-center gap-2 rounded-xl border border-black/[0.08] bg-[#F5F5F7]/60 px-3 py-2.5 text-xs font-semibold dark:border-white/[0.1] dark:bg-[#0B0C10]">
+                  <input
+                    type="checkbox"
+                    checked={completeQuickTaskOnFinish}
+                    onChange={(e) => setCompleteQuickTaskOnFinish(e.target.checked)}
+                    className="h-4 w-4 rounded"
+                  />
+                  <span>Отметить связанную быструю задачу выполненной</span>
+                </label>
+              )}
 
               {canTakeWarehouse && materials.length > 0 && (
                 <div className="rounded-2xl border border-black/[0.06] bg-[#F5F5F7]/60 p-3 dark:border-white/[0.08] dark:bg-[#0B0C10]">
@@ -1060,6 +1778,318 @@ export function WorkView({
           </form>
         </div>
       )}
+
+      {/* Same-Day Backfill Modal */}
+      {sameDayModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 p-0 backdrop-blur-xs sm:items-center sm:p-4">
+          <form
+            onSubmit={handleSameDayLog}
+            className="w-full max-w-lg rounded-t-3xl border border-black/[0.08] bg-white p-6 shadow-2xl sm:rounded-3xl dark:border-white/[0.1] dark:bg-[#15171C]"
+          >
+            <h3 className="font-display text-lg font-bold">Проставить время за сегодня</h3>
+            <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+              {todayOptions?.date || toLocalDateString(new Date())}
+            </p>
+            <div className="mt-4 space-y-3">
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-zinc-600 dark:text-zinc-300">
+                  Задача / смена
+                </label>
+                <select
+                  value={sameDayTargetKey}
+                  onChange={(e) => setSameDayTargetKey(e.target.value)}
+                  className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3 py-2 text-xs dark:border-white/[0.12] dark:bg-[#0B0C10]"
+                >
+                  <option value="workshop">Смена в цеху</option>
+                  {(todayOptions?.visits || []).map((v) => (
+                    <option key={`v:${v.visitId}`} value={`visit:${v.visitId}:${v.orderId}`}>
+                      Монтаж {v.orderNumber} · {v.visitTitle || v.orderTitle}
+                      {v.hasLoggedShift ? ' (уже есть смена)' : ''}
+                    </option>
+                  ))}
+                  {(todayOptions?.orders || []).map((o) => (
+                    <option key={`o:${o.orderId}`} value={`order:${o.orderId}`}>
+                      Монтаж {o.orderNumber} · {o.orderTitle}
+                      {o.hasLoggedShift ? ' (уже есть смена)' : ''}
+                    </option>
+                  ))}
+                  {(todayOptions?.quickTasks || []).map((t) => (
+                    <option key={`t:${t.quickTaskId}`} value={`quick_task:${t.quickTaskId}:${t.orderId || ''}`}>
+                      Задача: {t.title}
+                      {t.hasLoggedShift ? ' (уже есть смена)' : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="mb-1 block text-xs font-semibold text-zinc-600 dark:text-zinc-300">
+                    Начало *
+                  </label>
+                  <input
+                    type="time"
+                    required
+                    value={sameDayStart}
+                    onChange={(e) => setSameDayStart(e.target.value)}
+                    className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3 py-2 text-xs dark:border-white/[0.12] dark:bg-[#0B0C10]"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-semibold text-zinc-600 dark:text-zinc-300">
+                    Окончание *
+                  </label>
+                  <input
+                    type="time"
+                    required
+                    value={sameDayEnd}
+                    onChange={(e) => setSameDayEnd(e.target.value)}
+                    className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3 py-2 text-xs dark:border-white/[0.12] dark:bg-[#0B0C10]"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-zinc-600 dark:text-zinc-300">
+                  Выполненная работа
+                </label>
+                <textarea
+                  rows={2}
+                  value={sameDayWorkDone}
+                  onChange={(e) => setSameDayWorkDone(e.target.value)}
+                  placeholder="Кратко опишите выполненную работу..."
+                  className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3 py-2 text-xs dark:border-white/[0.12] dark:bg-[#0B0C10]"
+                />
+              </div>
+            </div>
+            <div className="mt-5 flex gap-2.5">
+              <button
+                type="button"
+                onClick={() => setSameDayModalOpen(false)}
+                className="flex-1 rounded-2xl border border-black/[0.08] py-2.5 text-sm font-semibold dark:border-white/[0.1]"
+              >
+                Отмена
+              </button>
+              <button
+                type="submit"
+                disabled={shiftBusy}
+                className="flex-1 rounded-2xl bg-[#0071E3] py-2.5 text-sm font-semibold text-white disabled:opacity-50"
+              >
+                Сохранить
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Past-Day Shift Edit Request Modal */}
+      {requestModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 p-0 backdrop-blur-xs sm:items-center sm:p-4">
+          <form
+            onSubmit={handleCreateEditRequest}
+            className="w-full max-w-lg rounded-t-3xl border border-black/[0.08] bg-white p-6 shadow-2xl sm:rounded-3xl dark:border-white/[0.1] dark:bg-[#15171C]"
+          >
+            <h3 className="font-display text-lg font-bold">Запрос на редактирование смены</h3>
+            {requestShift && (
+              <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                {shiftTargetLabel(requestShift)}
+              </p>
+            )}
+            <div className="mt-4 space-y-3">
+              <div className="grid grid-cols-3 gap-2">
+                <div>
+                  <label className="mb-1 block text-xs font-semibold text-zinc-600 dark:text-zinc-300">
+                    Дата *
+                  </label>
+                  <input
+                    type="date"
+                    required
+                    value={reqDate}
+                    onChange={(e) => setReqDate(e.target.value)}
+                    className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-2.5 py-2 text-xs dark:border-white/[0.12] dark:bg-[#0B0C10]"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-semibold text-zinc-600 dark:text-zinc-300">
+                    Начало *
+                  </label>
+                  <input
+                    type="time"
+                    required
+                    value={reqStart}
+                    onChange={(e) => setReqStart(e.target.value)}
+                    className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-2.5 py-2 text-xs dark:border-white/[0.12] dark:bg-[#0B0C10]"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-semibold text-zinc-600 dark:text-zinc-300">
+                    Конец *
+                  </label>
+                  <input
+                    type="time"
+                    required
+                    value={reqEnd}
+                    onChange={(e) => setReqEnd(e.target.value)}
+                    className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-2.5 py-2 text-xs dark:border-white/[0.12] dark:bg-[#0B0C10]"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-zinc-600 dark:text-zinc-300">
+                  Выполненная работа
+                </label>
+                <input
+                  type="text"
+                  value={reqWorkDone}
+                  onChange={(e) => setReqWorkDone(e.target.value)}
+                  placeholder="Описание работ"
+                  className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3 py-2 text-xs dark:border-white/[0.12] dark:bg-[#0B0C10]"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-zinc-600 dark:text-zinc-300">
+                  Причина корректировки *
+                </label>
+                <textarea
+                  required
+                  rows={2}
+                  value={reqReason}
+                  onChange={(e) => setReqReason(e.target.value)}
+                  placeholder="Например: забыл вовремя нажать «Завершить смену»..."
+                  className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3 py-2 text-xs dark:border-white/[0.12] dark:bg-[#0B0C10]"
+                />
+              </div>
+            </div>
+            <div className="mt-5 flex gap-2.5">
+              <button
+                type="button"
+                onClick={() => setRequestModalOpen(false)}
+                className="flex-1 rounded-2xl border border-black/[0.08] py-2.5 text-sm font-semibold dark:border-white/[0.1]"
+              >
+                Отмена
+              </button>
+              <button
+                type="submit"
+                disabled={shiftBusy}
+                className="flex-1 rounded-2xl bg-[#0071E3] py-2.5 text-sm font-semibold text-white disabled:opacity-50"
+              >
+                Отправить запрос
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Admin Edit Shift Modal */}
+      {adminEditShift && isAdmin && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 p-0 backdrop-blur-xs sm:items-center sm:p-4">
+          <form
+            onSubmit={handleAdminSaveShiftEdit}
+            className="w-full max-w-lg rounded-t-3xl border border-black/[0.08] bg-white p-6 shadow-2xl sm:rounded-3xl dark:border-white/[0.1] dark:bg-[#15171C]"
+          >
+            <h3 className="font-display text-lg font-bold">Редактирование смены (админ)</h3>
+            <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+              {adminEditShift.employee_name} · {shiftTargetLabel(adminEditShift)}
+            </p>
+            <div className="mt-4 space-y-3">
+              <div className="grid grid-cols-3 gap-2">
+                <div>
+                  <label className="mb-1 block text-xs font-semibold text-zinc-600 dark:text-zinc-300">
+                    Дата
+                  </label>
+                  <input
+                    type="date"
+                    required
+                    value={adminEditDate}
+                    onChange={(e) => setAdminEditDate(e.target.value)}
+                    className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-2.5 py-2 text-xs dark:border-white/[0.12] dark:bg-[#0B0C10]"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-semibold text-zinc-600 dark:text-zinc-300">
+                    Начало
+                  </label>
+                  <input
+                    type="time"
+                    required
+                    value={adminEditStart}
+                    onChange={(e) => setAdminEditStart(e.target.value)}
+                    className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-2.5 py-2 text-xs dark:border-white/[0.12] dark:bg-[#0B0C10]"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-semibold text-zinc-600 dark:text-zinc-300">
+                    Конец
+                  </label>
+                  <input
+                    type="time"
+                    required
+                    value={adminEditEnd}
+                    onChange={(e) => setAdminEditEnd(e.target.value)}
+                    className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-2.5 py-2 text-xs dark:border-white/[0.12] dark:bg-[#0B0C10]"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-zinc-600 dark:text-zinc-300">
+                  Выполненная работа
+                </label>
+                <textarea
+                  rows={2}
+                  value={adminEditWorkDone}
+                  onChange={(e) => setAdminEditWorkDone(e.target.value)}
+                  className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3 py-2 text-xs dark:border-white/[0.12] dark:bg-[#0B0C10]"
+                />
+              </div>
+            </div>
+            <div className="mt-5 flex gap-2.5">
+              <button
+                type="button"
+                onClick={() => setAdminEditShift(null)}
+                className="flex-1 rounded-2xl border border-black/[0.08] py-2.5 text-sm font-semibold dark:border-white/[0.1]"
+              >
+                Отмена
+              </button>
+              <button
+                type="submit"
+                disabled={shiftBusy}
+                className="flex-1 rounded-2xl bg-[#0071E3] py-2.5 text-sm font-semibold text-white disabled:opacity-50"
+              >
+                Сохранить
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+      {(headerTaskCreating || headerTask) && (
+        <QuickTaskModal
+          user={user}
+          directory={directory}
+          orders={orders}
+          creating={headerTaskCreating}
+          task={headerTask}
+          defaultDate={workTab === 'calendar' ? calendarDate : toLocalDateString(new Date())}
+          onClose={() => {
+            setHeaderTaskCreating(false);
+            setHeaderTask(null);
+          }}
+          onTaskChange={(next) => {
+            setHeaderTaskCreating(false);
+            setHeaderTask(next);
+          }}
+          onRefresh={() => void loadQuickTasks()}
+          onShiftChanged={() => {
+            void loadQuickTasks();
+            onShiftChanged();
+          }}
+          onNotice={(msg) => {
+            if (msg) setShiftOfflineNotice(msg);
+          }}
+          onOpenOrderById={onOpenOrderById}
+        />
+      )}
     </div>
   );
+}
+
+function oNum(t: { orderNumber: string | null; orderTitle: string | null }) {
+  return [t.orderNumber, t.orderTitle].filter(Boolean).join(' · ');
 }

@@ -43,6 +43,7 @@ const CLEAR_ORDER = [
   'expenses',
   'salary_accruals',
   'salary_payouts',
+  'shift_edit_requests',
   'workshop_shifts',
   'attachments',
   'order_visits',

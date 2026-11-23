@@ -12,14 +12,14 @@ export function createWarehouseRouter(db: DatabaseSync): express.Router {
 
   router.get('/materials/:id/batches', requireAdmin, (req,res) => {
     const id=String(req.params.id);
-    const material=db.prepare('SELECT id,quantity_milli FROM materials WHERE id=?').get(id) as {id:string;quantity_milli:number}|undefined;
+    const material=db.prepare('SELECT id,quantity_milli,purchase_price_kopecks FROM materials WHERE id=?').get(id) as {id:string;quantity_milli:number;purchase_price_kopecks:number}|undefined;
     if(!material) {res.status(404).json({error:'Материал не найден.'});return;}
     const batches=db.prepare('SELECT id,received_qty_milli,remaining_qty_milli,unit_cost_kopecks,estimated,created_at FROM material_batches WHERE material_id=? ORDER BY seq').all(id) as Array<{remaining_qty_milli:number;unit_cost_kopecks:number}>;
     const receipts=db.prepare("SELECT id,qty_milli,unit_cost_kopecks,created_at FROM warehouse_operations WHERE item_type='material' AND material_id=? AND op_type='receipt' ORDER BY created_at DESC, rowid DESC").all(id) as Array<{qty_milli:number;unit_cost_kopecks:number}>;
-    const remaining=batches.reduce((sum,b)=>sum+b.remaining_qty_milli,0);
-    const remainingValue=batches.reduce((sum,b)=>sum+b.remaining_qty_milli*b.unit_cost_kopecks,0);
+    const avgCost = Number(material.purchase_price_kopecks || 0);
+    const stockValue = Math.round((Math.max(0, Number(material.quantity_milli || 0)) * avgCost) / 1000);
     const purchasedValue=receipts.reduce((sum,r)=>sum+r.qty_milli*r.unit_cost_kopecks,0);
-    res.json({batches,receipts,stockQtyMilli:material.quantity_milli,averageCostKopecks:remaining ? Math.round(remainingValue/remaining) : null,stockValueKopecks:Math.round(remainingValue/1000),purchaseTotalKopecks:Math.round(purchasedValue/1000)});
+    res.json({batches,receipts,stockQtyMilli:material.quantity_milli,averageCostKopecks:avgCost,stockValueKopecks:stockValue,purchaseTotalKopecks:Math.round(purchasedValue/1000),costMethod:'weighted_average'});
   });
 
   router.get('/', requireAuth, (_req, res) => {
@@ -56,6 +56,22 @@ export function createWarehouseRouter(db: DatabaseSync): express.Router {
       )
       .all() as Array<{ tool_id: string; user_id: string; holder_name: string; held_milli: number }>;
 
+    const qtyHolderOrderRows = db
+      .prepare(
+        `SELECT wo.tool_id, wo.user_id, wo.order_id, o.order_number,
+                SUM(CASE WHEN wo.op_type = 'issue' THEN wo.qty_milli ELSE 0 END) -
+                SUM(CASE WHEN wo.op_type = 'return' THEN wo.qty_milli ELSE 0 END) as held_milli,
+                MIN(wo.created_at) as first_issued_at
+         FROM warehouse_operations wo
+         JOIN tools t ON t.id = wo.tool_id
+         LEFT JOIN orders o ON o.id = wo.order_id
+         WHERE wo.item_type = 'tool' AND t.tracking_mode = 'quantity'
+         GROUP BY wo.tool_id, wo.user_id, wo.order_id
+         HAVING held_milli > 0
+         ORDER BY first_issued_at ASC`
+      )
+      .all() as Array<{ tool_id: string; user_id: string; order_id: string | null; order_number: string | null; held_milli: number }>;
+
     const enrichedTools = tools.map((t) => ({
       ...t,
       instances: instances.filter((i) => i.tool_id === t.id),
@@ -65,6 +81,13 @@ export function createWarehouseRouter(db: DatabaseSync): express.Router {
           userId: h.user_id,
           holderName: h.holder_name || 'Сотрудник',
           qty: Math.round(h.held_milli / 1000),
+          orderBreakdown: qtyHolderOrderRows
+            .filter((r) => r.tool_id === t.id && r.user_id === h.user_id)
+            .map((r) => ({
+              orderId: r.order_id,
+              orderNumber: r.order_number,
+              qty: Math.round(r.held_milli / 1000),
+            })),
         })),
     }));
 
@@ -116,11 +139,24 @@ export function createWarehouseRouter(db: DatabaseSync): express.Router {
       return;
     }
 
+    if (initialQtyMilli !== undefined && (!Number.isSafeInteger(Number(initialQtyMilli)) || Number(initialQtyMilli) < 0)) {
+      res.status(400).json({ error: 'Начальный остаток должен быть целым неотрицательным числом.' });
+      return;
+    }
+    if (purchasePriceKopecks !== undefined && (!Number.isSafeInteger(Number(purchasePriceKopecks)) || Number(purchasePriceKopecks) < 0)) {
+      res.status(400).json({ error: 'Цена закупки должна быть целым неотрицательным числом копеек.' });
+      return;
+    }
+    if (minThresholdMilli !== undefined && (!Number.isSafeInteger(Number(minThresholdMilli)) || Number(minThresholdMilli) < 0)) {
+      res.status(400).json({ error: 'Минимальный порог должен быть целым неотрицательным числом.' });
+      return;
+    }
+
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
-    const qtyMilli = Math.round(Number(initialQtyMilli || 0));
-    const price = Math.max(0, Math.round(Number(purchasePriceKopecks || 0)));
-    const thresh = Math.max(0, Math.round(Number(minThresholdMilli || 0)));
+    const qtyMilli = initialQtyMilli !== undefined ? Number(initialQtyMilli) : 0;
+    const price = purchasePriceKopecks !== undefined ? Number(purchasePriceKopecks) : 0;
+    const thresh = minThresholdMilli !== undefined ? Number(minThresholdMilli) : 0;
 
     withTransaction(db, () => {
       db.prepare(
@@ -166,6 +202,14 @@ export function createWarehouseRouter(db: DatabaseSync): express.Router {
       purchasePriceKopecks?: number;
       minThresholdMilli?: number;
     };
+    if (b.purchasePriceKopecks !== undefined && (!Number.isSafeInteger(Number(b.purchasePriceKopecks)) || Number(b.purchasePriceKopecks) < 0)) {
+      res.status(400).json({ error: 'Цена закупки должна быть целым неотрицательным числом копеек.' });
+      return;
+    }
+    if (b.minThresholdMilli !== undefined && (!Number.isSafeInteger(Number(b.minThresholdMilli)) || Number(b.minThresholdMilli) < 0)) {
+      res.status(400).json({ error: 'Минимальный порог должен быть целым неотрицательным числом.' });
+      return;
+    }
     db.prepare(
       `UPDATE materials SET name = ?, category = ?, unit = ?, purchase_price_kopecks = ?, min_threshold_milli = ? WHERE id = ?`
     ).run(
@@ -173,10 +217,10 @@ export function createWarehouseRouter(db: DatabaseSync): express.Router {
       b.category?.trim() || existing.category,
       b.unit?.trim() || existing.unit,
       b.purchasePriceKopecks !== undefined
-        ? Math.max(0, Math.round(Number(b.purchasePriceKopecks)))
+        ? Number(b.purchasePriceKopecks)
         : existing.purchase_price_kopecks,
       b.minThresholdMilli !== undefined
-        ? Math.max(0, Math.round(Number(b.minThresholdMilli)))
+        ? Number(b.minThresholdMilli)
         : existing.min_threshold_milli,
       id
     );
@@ -224,8 +268,9 @@ export function createWarehouseRouter(db: DatabaseSync): express.Router {
     };
     if((opType==='issue' || opType==='return') && !orderId){res.status(400).json({error:'Для выдачи или возврата материала выберите заказ.'});return;}
     if(orderId) {
-      const exists=db.prepare('SELECT 1 FROM orders WHERE id=?').get(orderId);
-      if(!exists){res.status(404).json({error:'Заказ не найден.'});return;}
+      const ord=db.prepare('SELECT id, status FROM orders WHERE id=?').get(orderId) as {id:string;status:string}|undefined;
+      if(!ord){res.status(404).json({error:'Заказ не найден.'});return;}
+      if(user.role!=='admin' && (ord.status==='completed' || ord.status==='cancelled')){res.status(403).json({error:'Заказ закрыт. Операции со складом по закрытому заказу доступны только администратору.'});return;}
       const assigned=db.prepare('SELECT 1 FROM order_assignees WHERE order_id=? AND user_id=? UNION SELECT 1 FROM visit_assignees a JOIN order_visits v ON v.id=a.visit_id WHERE v.order_id=? AND a.user_id=? LIMIT 1').get(orderId,user.id,orderId,user.id);
       if(user.role!=='admin' && !assigned){res.status(403).json({error:'Нет доступа к операциям этого заказа.'});return;}
     }
@@ -295,16 +340,33 @@ export function createWarehouseRouter(db: DatabaseSync): express.Router {
       return;
     }
 
+    if (totalQty !== undefined && (!Number.isSafeInteger(Number(totalQty)) || Number(totalQty) < 1)) {
+      res.status(400).json({ error: 'Количество должно быть целым положительным числом.' });
+      return;
+    }
+
     const mode = trackingMode === 'individual' ? 'individual' : 'quantity';
     const cleanSerials =
       mode === 'individual'
-        ? (Array.isArray(serialNumbers) ? serialNumbers.map((s) => s.trim()).filter(Boolean) : [])
+        ? (Array.isArray(serialNumbers) ? serialNumbers.map((s) => String(s).trim()).filter(Boolean) : [])
         : [];
 
+    const requestedQty = totalQty !== undefined ? Number(totalQty) : 1;
     const qty =
       mode === 'individual'
-        ? Math.max(cleanSerials.length, Math.max(1, Math.round(Number(totalQty || 1))))
-        : Math.max(1, Math.round(Number(totalQty || 1)));
+        ? Math.max(cleanSerials.length, requestedQty)
+        : requestedQty;
+
+    const finalSerials: string[] = [];
+    if (mode === 'individual') {
+      for (let i = 0; i < qty; i++) {
+        finalSerials.push(cleanSerials[i] || `ИНВ-${String(i + 1).padStart(3, '0')}`);
+      }
+      if (new Set(finalSerials).size !== finalSerials.length) {
+        res.status(400).json({ error: 'Инвентарные номера экземпляров не должны повторяться.' });
+        return;
+      }
+    }
 
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
@@ -329,8 +391,7 @@ export function createWarehouseRouter(db: DatabaseSync): express.Router {
         const insInst = db.prepare(
           `INSERT INTO tool_instances (id, tool_id, serial_number, status) VALUES (?, ?, ?, 'available')`
         );
-        for (let i = 0; i < qty; i++) {
-          const sn = cleanSerials[i] || `ИНВ-${String(i + 1).padStart(3, '0')}`;
+        for (const sn of finalSerials) {
           insInst.run(crypto.randomUUID(), id, sn);
         }
       }
@@ -392,11 +453,18 @@ export function createWarehouseRouter(db: DatabaseSync): express.Router {
         }
 
         if (existing.tracking_mode === 'individual' && Array.isArray(b.addSerials)) {
-          const toAdd = b.addSerials.map((s) => s.trim()).filter(Boolean);
+          const toAdd = b.addSerials.map((s) => String(s).trim()).filter(Boolean);
+          if (new Set(toAdd).size !== toAdd.length) {
+            throw new Error('Инвентарные номера не должны повторяться.');
+          }
+          const chkInst = db.prepare('SELECT 1 FROM tool_instances WHERE tool_id = ? AND serial_number = ?');
           const insInst = db.prepare(
             `INSERT INTO tool_instances (id, tool_id, serial_number, status) VALUES (?, ?, ?, 'available')`
           );
           for (const sn of toAdd) {
+            if (chkInst.get(id, sn)) {
+              throw new Error(`Экземпляр с номером «${sn}» уже существует.`);
+            }
             insInst.run(crypto.randomUUID(), id, sn);
             nextTotal += 1;
             nextAvailable += 1;
@@ -481,7 +549,48 @@ export function createWarehouseRouter(db: DatabaseSync): express.Router {
       confirmReserved?: boolean;
     };
 
+    if (opType !== 'issue' && opType !== 'return') {
+      res.status(400).json({ error: 'Поддерживаются операции issue и return.' });
+      return;
+    }
+    if (qty !== undefined && (!Number.isSafeInteger(Number(qty)) || Number(qty) < 1)) {
+      res.status(400).json({ error: 'Укажите целое положительное количество инструмента.' });
+      return;
+    }
+
+    if (orderId) {
+      const ord = db.prepare('SELECT id, status FROM orders WHERE id = ?').get(orderId) as
+        | { id: string; status: string }
+        | undefined;
+      if (!ord) {
+        res.status(404).json({ error: 'Заказ не найден.' });
+        return;
+      }
+      if (user.role !== 'admin' && (ord.status === 'completed' || ord.status === 'cancelled')) {
+        res.status(403).json({ error: 'Заказ закрыт. Операции со складом по закрытому заказу доступны только администратору.' });
+        return;
+      }
+      const assigned = db
+        .prepare(
+          'SELECT 1 FROM order_assignees WHERE order_id=? AND user_id=? UNION SELECT 1 FROM visit_assignees a JOIN order_visits v ON v.id=a.visit_id WHERE v.order_id=? AND a.user_id=? LIMIT 1'
+        )
+        .get(orderId, user.id, orderId, user.id);
+      if (user.role !== 'admin' && !assigned) {
+        res.status(403).json({ error: 'Нет доступа к операциям этого заказа.' });
+        return;
+      }
+    }
+
+    if (user.role === 'admin' && employeeUserId) {
+      const empExists = db.prepare('SELECT 1 FROM users WHERE id = ?').get(employeeUserId);
+      if (!empExists) {
+        res.status(404).json({ error: 'Сотрудник не найден.' });
+        return;
+      }
+    }
+
     const holderId = user.role === 'admin' && employeeUserId ? employeeUserId : user.id;
+    const resolvedQty = qty !== undefined ? Number(qty) : 1;
 
     try {
       const opId = withTransaction(db, () => {
@@ -489,27 +598,24 @@ export function createWarehouseRouter(db: DatabaseSync): express.Router {
           return issueToolTx(db, {
             toolId,
             toolInstanceId,
-            qty: Number(qty || 1),
+            qty: resolvedQty,
             orderId: orderId || null,
             holderUserId: holderId,
             actorUserId: user.id,
             note,
-            confirmReserved:confirmReserved===true,
+            confirmReserved: confirmReserved === true,
           });
         }
-        if (opType === 'return') {
-          return returnToolTx(db, {
-            toolId,
-            toolInstanceId,
-            qty: Number(qty || 1),
-            orderId: orderId || null,
-            holderUserId: holderId,
-            actorUserId: user.id,
-            note,
-            force: user.role === 'admin',
-          });
-        }
-        throw new Error('Поддерживаются операции issue и return.');
+        return returnToolTx(db, {
+          toolId,
+          toolInstanceId,
+          qty: resolvedQty,
+          orderId: orderId || null,
+          holderUserId: holderId,
+          actorUserId: user.id,
+          note,
+          force: user.role === 'admin',
+        });
       });
 
       res.status(201).json({ ok: true, operationId: opId });

@@ -4,15 +4,18 @@ import { DatePresets } from '../components/DatePresets';
 import { SectionHeader } from '../components/SectionHeader';
 import { apiRequest, formatDateRu, formatRub, PAYMENT_TYPE_LABELS } from '../lib/api';
 import { ReportsView } from './ReportsView';
-import type { AuthUser, DirectoryUser, Order } from '../types/crm';
+import type { AuthUser, DirectoryUser, MonthlyFinanceSummary, Order } from '../types/crm';
 
 interface FinanceOverview {
   period: { from: string; to: string };
   metrics: {
     totalOrderPriceKopecks: number;
     totalReceivedCashKopecks: number;
+    totalRefundedCashKopecks: number;
     totalClientDebtKopecks: number;
+    totalClientOverpaidKopecks: number;
     periodClientDebtKopecks: number;
+    periodClientOverpaidKopecks: number;
     autoMaterialCostKopecks: number;
     effectiveMaterialCostKopecks: number;
     cancelledOrderMaterialCostKopecks: number;
@@ -33,10 +36,14 @@ interface FinanceOverview {
     price_kopecks: number;
     paid_kopecks: number;
     debt_kopecks: number;
+    overpaid_kopecks: number;
     auto_material_cost_kopecks: number;
     cost_override_kopecks: number | null;
     effective_material_cost_kopecks: number;
+    salary_cost_kopecks: number;
+    profit_kopecks: number;
   }>;
+  monthlySummary?: MonthlyFinanceSummary[];
   payments: Array<{
     id: string;
     order_id?: string | null;
@@ -89,7 +96,7 @@ export function FinanceView({ user, directory, orders, expenseCategories, onOpen
   // Payment form
   const [payOrderId, setPayOrderId] = useState('');
   const [payAmountRub, setPayAmountRub] = useState('');
-  const [payType, setPayType] = useState<'advance' | 'partial' | 'full'>('partial');
+  const [payType, setPayType] = useState<'advance' | 'partial' | 'full' | 'refund'>('partial');
   const [payDate, setPayDate] = useState(new Date().toISOString().slice(0, 10));
   const [payComment, setPayComment] = useState('');
 
@@ -157,8 +164,8 @@ export function FinanceView({ user, directory, orders, expenseCategories, onOpen
   const openEditPayment = (p: FinanceOverview['payments'][number]) => {
     setEditingPaymentId(p.id);
     setPayOrderId(p.order_id || '');
-    setPayAmountRub(String(Math.round(p.amount_kopecks / 100)));
-    setPayType((p.payment_type as 'advance' | 'partial' | 'full') || 'partial');
+    setPayAmountRub(String(Math.round(Math.abs(p.amount_kopecks) / 100)));
+    setPayType((p.payment_type as 'advance' | 'partial' | 'full' | 'refund') || 'partial');
     setPayDate((p.paid_at || '').slice(0, 10));
     setPayComment(p.comment || '');
     setModal('payment');
@@ -500,31 +507,29 @@ export function FinanceView({ user, directory, orders, expenseCategories, onOpen
   return (
     <div className="space-y-5">
       <SectionHeader<FinanceTab>
-        title="Финансы"
-        description="Поступления, расходы компании, долги клиентов и экономика заказов"
         actions={
           <>
             <button
               type="button"
               onClick={openNewPayment}
-              className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl bg-emerald-600 px-3.5 py-2 text-xs font-semibold text-white transition hover:bg-emerald-700"
+              className="inline-flex min-h-[36px] shrink-0 whitespace-nowrap items-center gap-1.5 rounded-xl bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-emerald-700"
             >
-              <Plus className="h-4 w-4" />
+              <Plus className="h-3.5 w-3.5" />
               <span>Оплата клиента</span>
             </button>
             <button
               type="button"
               onClick={openNewExpense}
-              className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl bg-[#0071E3] px-3.5 py-2 text-xs font-semibold text-white transition hover:bg-[#0077ED] dark:bg-[#2997FF] dark:text-[#0B0C10]"
+              className="inline-flex min-h-[36px] shrink-0 whitespace-nowrap items-center gap-1.5 rounded-xl bg-[#0071E3] px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-[#0077ED] dark:bg-[#2997FF] dark:text-[#0B0C10]"
             >
-              <Receipt className="h-4 w-4" />
+              <Receipt className="h-3.5 w-3.5" />
               <span>Расход</span>
             </button>
             <a
               href={exportUrl}
-              className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-black/[0.08] bg-white px-3.5 py-2 text-xs font-semibold hover:bg-black/[0.03] dark:border-white/[0.1] dark:bg-[#0B0C10]"
+              className="inline-flex min-h-[36px] shrink-0 whitespace-nowrap items-center gap-1.5 rounded-xl border border-black/[0.08] bg-white px-3 py-1.5 text-xs font-semibold hover:bg-black/[0.03] dark:border-white/[0.1] dark:bg-[#0B0C10]"
             >
-              <Download className="h-4 w-4" />
+              <Download className="h-3.5 w-3.5" />
               <span>XLSX</span>
             </a>
           </>
@@ -543,14 +548,14 @@ export function FinanceView({ user, directory, orders, expenseCategories, onOpen
         onSelectTab={setTab}
         filters={
           <div className="space-y-2">
-            <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex flex-wrap items-center gap-2">
                 <input
                   type="date"
                   aria-label="Период с"
                   value={from}
                   onChange={(e) => setFrom(e.target.value)}
-                  className="rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 px-3 py-2 text-xs tabular-nums dark:border-white/[0.1] dark:bg-[#0B0C10]"
+                  className="rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 px-2.5 py-1.5 text-xs tabular-nums dark:border-white/[0.1] dark:bg-[#0B0C10]"
                 />
                 <span className="text-xs text-zinc-400">—</span>
                 <input
@@ -558,7 +563,7 @@ export function FinanceView({ user, directory, orders, expenseCategories, onOpen
                   aria-label="Период по"
                   value={to}
                   onChange={(e) => setTo(e.target.value)}
-                  className="rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 px-3 py-2 text-xs tabular-nums dark:border-white/[0.1] dark:bg-[#0B0C10]"
+                  className="rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 px-2.5 py-1.5 text-xs tabular-nums dark:border-white/[0.1] dark:bg-[#0B0C10]"
                 />
                 {(from || to) && (
                   <button
@@ -567,7 +572,7 @@ export function FinanceView({ user, directory, orders, expenseCategories, onOpen
                       setFrom('');
                       setTo('');
                     }}
-                    className="text-xs font-medium text-[#0071E3] hover:underline dark:text-[#2997FF]"
+                    className="shrink-0 whitespace-nowrap text-xs font-medium text-[#0071E3] hover:underline dark:text-[#2997FF]"
                   >
                     Сбросить период
                   </button>
@@ -598,7 +603,7 @@ export function FinanceView({ user, directory, orders, expenseCategories, onOpen
                           key={pill.id}
                           type="button"
                           onClick={() => setCashflowType(pill.id as typeof cashflowType)}
-                          className={`min-h-[32px] rounded-xl px-3 py-1 text-xs font-semibold transition ${
+                          className={`min-h-[32px] shrink-0 whitespace-nowrap rounded-xl px-2.5 py-1 text-xs font-semibold transition ${
                             active
                               ? 'bg-[#0071E3] text-white dark:bg-[#2997FF] dark:text-[#0B0C10]'
                               : 'bg-[#F5F5F7] text-zinc-600 hover:bg-black/[0.06] dark:bg-[#0B0C10] dark:text-zinc-300 dark:hover:bg-white/[0.08]'
@@ -612,7 +617,7 @@ export function FinanceView({ user, directory, orders, expenseCategories, onOpen
                 )}
 
                 <div className="relative min-w-[200px] flex-1">
-                  <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400" />
+                  <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400" />
                   <input
                     type="text"
                     value={search}
@@ -622,8 +627,20 @@ export function FinanceView({ user, directory, orders, expenseCategories, onOpen
                         ? 'Поиск по клиенту, заказу, категории или комментарию...'
                         : 'Поиск по номеру или названию заказа...'
                     }
-                    className="w-full rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 py-2 pl-8 pr-3 text-xs outline-none focus:border-[#0071E3] focus:bg-white dark:border-white/[0.1] dark:bg-[#0B0C10] dark:focus:bg-[#0B0C10]"
+                    className={`w-full rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 py-1.5 pl-8 text-xs outline-none focus:border-[#0071E3] focus:bg-white dark:border-white/[0.1] dark:bg-[#0B0C10] dark:focus:bg-[#0B0C10] ${
+                      search ? 'pr-8' : 'pr-3'
+                    }`}
                   />
+                  {search && (
+                    <button
+                      type="button"
+                      aria-label="Очистить поиск"
+                      onClick={() => setSearch('')}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-0.5 text-zinc-400 transition hover:bg-black/[0.06] hover:text-zinc-700 dark:hover:bg-white/[0.08] dark:hover:text-zinc-200"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  )}
                 </div>
 
                 {tab === 'cashflow' && cashflowType !== 'income' && (
@@ -631,7 +648,7 @@ export function FinanceView({ user, directory, orders, expenseCategories, onOpen
                     aria-label="Категория расхода"
                     value={expFilterCat}
                     onChange={(e) => setExpFilterCat(e.target.value)}
-                    className="rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 px-3 py-2 text-xs dark:border-white/[0.1] dark:bg-[#0B0C10]"
+                    className="rounded-xl border border-black/[0.08] bg-[#F5F5F7]/70 px-3 py-1.5 text-xs dark:border-white/[0.1] dark:bg-[#0B0C10]"
                   >
                     <option value="">Все категории</option>
                     {expenseCategories.map((c) => (
@@ -666,7 +683,12 @@ export function FinanceView({ user, directory, orders, expenseCategories, onOpen
               <div className="text-xs text-zinc-500">Объём заказов</div>
               <div className="mt-1 text-xl font-bold tabular-nums">{formatRub(m.totalOrderPriceKopecks)}</div>
               <div className="mt-1 text-[11px] text-emerald-600 tabular-nums dark:text-emerald-400">
-                Получено деньгами: {formatRub(m.totalReceivedCashKopecks)}
+                Получено: {formatRub(m.totalReceivedCashKopecks)}
+                {m.totalRefundedCashKopecks > 0 && (
+                  <span className="ml-1.5 text-amber-600 dark:text-amber-400">
+                    (возвраты: −{formatRub(m.totalRefundedCashKopecks)})
+                  </span>
+                )}
               </div>
             </div>
 
@@ -675,8 +697,14 @@ export function FinanceView({ user, directory, orders, expenseCategories, onOpen
               <div className="mt-1 text-xl font-bold text-amber-600 tabular-nums dark:text-amber-400">
                 {formatRub(m.totalClientDebtKopecks)}
               </div>
-              <div className="mt-1 text-[11px] text-zinc-400">
-                По всем активным заказам
+              <div className="mt-1 text-[11px] text-zinc-400 tabular-nums">
+                {(m.totalClientOverpaidKopecks || 0) > 0 ? (
+                  <span className="text-emerald-600 dark:text-emerald-400">
+                    Переплата: +{formatRub(m.totalClientOverpaidKopecks)}
+                  </span>
+                ) : (
+                  'По всем активным заказам'
+                )}
                 {(from || to) && <> · за период: {formatRub(m.periodClientDebtKopecks)}</>}
               </div>
             </div>
@@ -735,9 +763,6 @@ export function FinanceView({ user, directory, orders, expenseCategories, onOpen
               <div className="flex flex-col justify-between rounded-2xl border border-black/[0.06] bg-white p-4 dark:border-white/[0.08] dark:bg-[#15171C]">
                 <div>
                   <div className="text-xs text-zinc-500">Выплаты сотрудникам</div>
-                  <div className="mt-1 text-sm font-semibold">
-                    Остаток к выплате и начисления по сменам
-                  </div>
                 </div>
                 <button
                   type="button"
@@ -772,9 +797,26 @@ export function FinanceView({ user, directory, orders, expenseCategories, onOpen
             </h3>
             <div className="flex flex-wrap items-center gap-3 text-xs tabular-nums">
               {cashflowType !== 'expense' && (
-                <span className="font-semibold text-emerald-600 dark:text-emerald-400">
-                  Поступления: +{formatRub(filteredPayments.reduce((s, p) => s + p.amount_kopecks, 0))}
-                </span>
+                <>
+                  <span className="font-semibold text-emerald-600 dark:text-emerald-400">
+                    Поступления: +
+                    {formatRub(
+                      filteredPayments
+                        .filter((p) => p.amount_kopecks > 0)
+                        .reduce((s, p) => s + p.amount_kopecks, 0)
+                    )}
+                  </span>
+                  {filteredPayments.some((p) => p.amount_kopecks < 0) && (
+                    <span className="font-semibold text-amber-600 dark:text-amber-400">
+                      Возвраты: −
+                      {formatRub(
+                        filteredPayments
+                          .filter((p) => p.amount_kopecks < 0)
+                          .reduce((s, p) => s + Math.abs(p.amount_kopecks), 0)
+                      )}
+                    </span>
+                  )}
+                </>
               )}
               {cashflowType !== 'income' && (
                 <span className="font-semibold text-red-600 dark:text-red-400">
@@ -793,6 +835,7 @@ export function FinanceView({ user, directory, orders, expenseCategories, onOpen
               cashflowItems.map((entry) => {
                 if (entry.kind === 'income') {
                   const p = entry.item;
+                  const isRefund = p.payment_type === 'refund' || p.amount_kopecks < 0;
                   return (
                     <div
                       key={`pay:${p.id}`}
@@ -800,8 +843,14 @@ export function FinanceView({ user, directory, orders, expenseCategories, onOpen
                     >
                       <div className="min-w-0">
                         <div className="flex flex-wrap items-center gap-1.5 truncate font-semibold">
-                          <span className="rounded bg-emerald-500/12 px-1.5 py-0.5 text-[10px] font-bold text-emerald-700 dark:text-emerald-300">
-                            Поступление
+                          <span
+                            className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${
+                              isRefund
+                                ? 'bg-amber-500/12 text-amber-700 dark:text-amber-300'
+                                : 'bg-emerald-500/12 text-emerald-700 dark:text-emerald-300'
+                            }`}
+                          >
+                            {isRefund ? 'Возврат клиенту' : 'Поступление'}
                           </span>
                           {p.order_number && p.order_id ? (
                             <button
@@ -822,8 +871,15 @@ export function FinanceView({ user, directory, orders, expenseCategories, onOpen
                         </div>
                       </div>
                       <div className="flex shrink-0 items-center gap-2">
-                        <div className="font-bold text-emerald-600 tabular-nums dark:text-emerald-400">
-                          +{formatRub(p.amount_kopecks)}
+                        <div
+                          className={`font-bold tabular-nums ${
+                            isRefund
+                              ? 'text-amber-600 dark:text-amber-400'
+                              : 'text-emerald-600 dark:text-emerald-400'
+                          }`}
+                        >
+                          {isRefund ? '−' : '+'}
+                          {formatRub(Math.abs(p.amount_kopecks))}
                         </div>
                         <button
                           type="button"
@@ -945,6 +1001,75 @@ export function FinanceView({ user, directory, orders, expenseCategories, onOpen
         </div>
       )}
 
+      {/* Сводка прибыли по месяцам — внутри «Обзора» */}
+      {tab === 'overview' && data?.monthlySummary && data.monthlySummary.length > 0 && (
+        <div className="rounded-2xl border border-black/[0.06] bg-white p-4 sm:p-5 dark:border-white/[0.08] dark:bg-[#15171C]">
+          <h3 className="mb-3 font-display text-base font-bold">
+            Сводка прибыли по месяцам ({data.monthlySummary.length})
+          </h3>
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[760px] text-left text-xs">
+              <thead>
+                <tr className="border-b border-black/[0.06] text-zinc-400 dark:border-white/[0.08]">
+                  <th className="py-2 pr-3 font-semibold">Месяц</th>
+                  <th className="px-3 py-2 font-semibold">Заказы</th>
+                  <th className="px-3 py-2 font-semibold">Поступило (нетто)</th>
+                  <th className="px-3 py-2 font-semibold">Материалы</th>
+                  <th className="px-3 py-2 font-semibold">Зарплата (начисл.)</th>
+                  <th className="px-3 py-2 font-semibold">Опер. расходы</th>
+                  <th className="px-3 py-2 font-semibold">Прибыль</th>
+                  <th className="py-2 pl-3 font-semibold">Ден. поток</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.monthlySummary.map((m) => (
+                  <tr
+                    key={m.month}
+                    className="border-b border-black/[0.04] last:border-0 dark:border-white/[0.05]"
+                  >
+                    <td className="py-2.5 pr-3 font-mono font-semibold">{m.month}</td>
+                    <td className="px-3 py-2.5 tabular-nums">{formatRub(m.ordersPriceKopecks)}</td>
+                    <td className="px-3 py-2.5 tabular-nums">
+                      <span className="font-semibold text-emerald-600 dark:text-emerald-400">
+                        {formatRub(m.receivedCashKopecks)}
+                      </span>
+                      {m.refundedCashKopecks > 0 && (
+                        <div className="text-[10px] text-amber-600 dark:text-amber-400">
+                          возврат −{formatRub(m.refundedCashKopecks)}
+                        </div>
+                      )}
+                    </td>
+                    <td className="px-3 py-2.5 tabular-nums">{formatRub(m.materialCostKopecks)}</td>
+                    <td className="px-3 py-2.5 tabular-nums">{formatRub(m.accruedSalariesKopecks)}</td>
+                    <td className="px-3 py-2.5 tabular-nums">{formatRub(m.operatingExpensesKopecks)}</td>
+                    <td
+                      className={`px-3 py-2.5 font-bold tabular-nums ${
+                        m.profitKopecks >= 0
+                          ? 'text-emerald-600 dark:text-emerald-400'
+                          : 'text-red-600 dark:text-red-400'
+                      }`}
+                    >
+                      {m.profitKopecks < 0 ? '−' : ''}
+                      {formatRub(Math.abs(m.profitKopecks))}
+                    </td>
+                    <td
+                      className={`py-2.5 pl-3 font-semibold tabular-nums ${
+                        m.cashFlowKopecks >= 0
+                          ? 'text-[#0071E3] dark:text-[#2997FF]'
+                          : 'text-red-600 dark:text-red-400'
+                      }`}
+                    >
+                      {m.cashFlowKopecks < 0 ? '−' : ''}
+                      {formatRub(Math.abs(m.cashFlowKopecks))}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
       {/* Экономика заказов — внутри «Обзора» */}
       {tab === 'overview' && data && (
         <div className="rounded-2xl border border-black/[0.06] bg-white p-4 sm:p-5 dark:border-white/[0.08] dark:bg-[#15171C]">
@@ -955,7 +1080,7 @@ export function FinanceView({ user, directory, orders, expenseCategories, onOpen
             <div className="py-6 text-center text-xs text-zinc-400">Заказы не найдены</div>
           ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
+            <table className="w-full min-w-[780px] text-left text-xs">
               <thead>
                 <tr className="border-b border-black/[0.06] text-zinc-400 dark:border-white/[0.08]">
                   <th className="py-2 pr-3 font-semibold">Заказ</th>
@@ -963,6 +1088,8 @@ export function FinanceView({ user, directory, orders, expenseCategories, onOpen
                   <th className="py-2 px-3 font-semibold">Оплачено</th>
                   <th className="py-2 px-3 font-semibold">Долг</th>
                   <th className="py-2 px-3 font-semibold">Материалы</th>
+                  <th className="py-2 px-3 font-semibold">Зарплата</th>
+                  <th className="py-2 px-3 font-semibold">Прибыль</th>
                   <th className="py-2 pl-3 text-right font-semibold">Действие</th>
                 </tr>
               </thead>
@@ -1045,14 +1172,21 @@ export function FinanceView({ user, directory, orders, expenseCategories, onOpen
                           className="w-24 rounded-lg border border-amber-500 bg-white px-2 py-1 text-xs text-[#1D1D1F] tabular-nums outline-none dark:bg-[#0B0C10] dark:text-white"
                         />
                       ) : (
-                        <button
-                          type="button"
-                          title="Нажмите, чтобы скорректировать долг (пересчитает цену)"
-                          onClick={() => startInlineEdit(o, 'debt')}
-                          className="cursor-pointer rounded px-1 py-0.5 hover:bg-amber-500/10"
-                        >
-                          {formatRub(o.debt_kopecks)}
-                        </button>
+                        <>
+                          <button
+                            type="button"
+                            title="Нажмите, чтобы скорректировать долг (пересчитает цену)"
+                            onClick={() => startInlineEdit(o, 'debt')}
+                            className="cursor-pointer rounded px-1 py-0.5 hover:bg-amber-500/10"
+                          >
+                            {formatRub(o.debt_kopecks)}
+                          </button>
+                          {(o.overpaid_kopecks || 0) > 0 && (
+                            <div className="text-[10px] font-semibold text-emerald-600 dark:text-emerald-400">
+                              Переплата +{formatRub(o.overpaid_kopecks)}
+                            </div>
+                          )}
+                        </>
                       )}
                     </td>
                     <td className="px-3 py-2.5 tabular-nums">
@@ -1083,6 +1217,19 @@ export function FinanceView({ user, directory, orders, expenseCategories, onOpen
                           )}
                         </button>
                       )}
+                    </td>
+                    <td className="px-3 py-2.5 tabular-nums">
+                      {formatRub(o.salary_cost_kopecks)}
+                    </td>
+                    <td
+                      className={`px-3 py-2.5 font-bold tabular-nums ${
+                        o.profit_kopecks >= 0
+                          ? 'text-emerald-600 dark:text-emerald-400'
+                          : 'text-red-600 dark:text-red-400'
+                      }`}
+                    >
+                      {o.profit_kopecks < 0 ? '−' : ''}
+                      {formatRub(Math.abs(o.profit_kopecks))}
                     </td>
                     <td className="py-2.5 pl-3 text-right">
                       <div className="flex flex-wrap justify-end gap-x-3 gap-y-1">
@@ -1137,7 +1284,11 @@ export function FinanceView({ user, directory, orders, expenseCategories, onOpen
           >
             <div className="mb-4 flex items-center justify-between">
               <h3 className="font-display text-lg font-bold">
-                {editingPaymentId ? 'Редактировать оплату клиента' : 'Принять оплату клиента'}
+                {editingPaymentId
+                  ? 'Редактировать операцию клиента'
+                  : payType === 'refund'
+                    ? 'Возврат клиенту'
+                    : 'Принять оплату клиента'}
               </h3>
               <button type="button" onClick={() => setModal(null)} className="text-zinc-400">
                 <X className="h-5 w-5" />
@@ -1168,12 +1319,13 @@ export function FinanceView({ user, directory, orders, expenseCategories, onOpen
               <div className="grid grid-cols-2 gap-2.5">
                 <select
                   value={payType}
-                  onChange={(e) => setPayType(e.target.value as any)}
+                  onChange={(e) => setPayType(e.target.value as 'advance' | 'partial' | 'full' | 'refund')}
                   className="rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3 py-2.5 text-sm dark:border-white/[0.12] dark:bg-[#0B0C10]"
                 >
                   <option value="advance">Аванс</option>
                   <option value="partial">Частичная оплата</option>
                   <option value="full">Полный расчёт</option>
+                  <option value="refund">Возврат клиенту</option>
                 </select>
                 <input
                   type="date"
@@ -1193,9 +1345,11 @@ export function FinanceView({ user, directory, orders, expenseCategories, onOpen
             <button
               type="submit"
               disabled={busy}
-              className="mt-4 w-full rounded-2xl bg-emerald-600 py-3 text-sm font-semibold text-white"
+              className={`mt-4 w-full rounded-2xl py-3 text-sm font-semibold text-white ${
+                payType === 'refund' ? 'bg-amber-600 hover:bg-amber-700' : 'bg-emerald-600 hover:bg-emerald-700'
+              }`}
             >
-              Записать оплату
+              {payType === 'refund' ? 'Оформить возврат' : 'Записать оплату'}
             </button>
           </form>
         </div>
@@ -1289,9 +1443,6 @@ export function FinanceView({ user, directory, orders, expenseCategories, onOpen
                 <X className="h-5 w-5" />
               </button>
             </div>
-            <p className="mb-3 text-xs text-zinc-500">
-              Сумма участвует в расчёте объёма заказов, долга и прибыли. Изменение попадёт в аудит.
-            </p>
             <input
               type="number"
               min="0"
@@ -1326,15 +1477,12 @@ export function FinanceView({ user, directory, orders, expenseCategories, onOpen
                 <X className="h-5 w-5" />
               </button>
             </div>
-            <p className="mb-3 text-xs text-zinc-500">
-              Оставьте поле суммы пустым, чтобы вернуться к автоматическому расчёту по списаниям со склада.
-            </p>
             <div className="space-y-3">
               <input
                 type="number"
                 value={ovrRub}
                 onChange={(e) => setOvrRub(e.target.value)}
-                placeholder="Сумма себестоимости, ₽"
+                placeholder="Сумма себестоимости, ₽ (пусто — авто)"
                 className="w-full rounded-xl border border-black/[0.1] bg-[#F5F5F7]/70 px-3.5 py-2.5 text-sm tabular-nums dark:border-white/[0.12] dark:bg-[#0B0C10]"
               />
               <input

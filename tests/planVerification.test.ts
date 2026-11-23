@@ -501,16 +501,43 @@ test('UI redesign enforces zero browser alert/confirm/prompt, no duplicate + but
   for (const tab of ['Календарь', 'Заказы', 'Быстрые задачи', 'Смены в цеху', 'Отчёты']) {
     assert.ok(workView.includes(tab), `WorkView missing tab ${tab}`);
   }
+  assert.ok(workView.includes('Инструменты и работа'), 'WorkView must label switcher Инструменты и работа');
   assert.ok(workView.includes('workDropdownOpen'), 'WorkView must have calendar dropdown state');
+  assert.ok(workView.includes('addTaskDropdownOpen'), 'WorkView must have add task dropdown state');
+  assert.ok(workView.includes('Добавить задачу'), 'WorkView must rename button to Добавить задачу');
+  assert.ok(workView.includes('Быстрая') && workView.includes('Заказ'), 'Add Task dropdown must include Быстрая and Заказ');
+  assert.equal(workView.includes('bottom-[calc(100%+8px)]'), false, 'WorkView dropdowns must open downward below button');
+  assert.ok(workView.includes('top-[calc(100%+8px)]'), 'WorkView dropdowns must open downward');
   assert.ok(workView.includes('role="menu"'), 'WorkView dropdown must be an accessible menu');
   assert.ok(workView.includes('Незапланированные заказы и черновики'));
+
+  const chatViewChecks = fs.readFileSync(path.resolve('src/views/ChatView.tsx'), 'utf8');
+  assert.ok(chatViewChecks.includes('Чаты'), 'ChatView must use Чаты dropdown button');
+  assert.ok(chatViewChecks.includes('BellOff') && chatViewChecks.includes('Bell'), 'ChatView must use compact bell toggle');
 
   const financeView = fs.readFileSync(path.resolve('src/views/FinanceView.tsx'), 'utf8');
   for (const tab of ['Обзор', 'Отчёты по работе', 'Движение денег', 'Экономика заказов']) {
     assert.ok(financeView.includes(tab), `FinanceView missing tab ${tab}`);
   }
+  assert.ok(financeView.includes('Сводка прибыли по месяцам'), 'FinanceView must show monthly profit table');
   assert.ok(financeView.includes('ReportsView'), 'FinanceView must embed ReportsView');
   assert.equal(financeView.includes("id: 'orders'"), false, 'Order economics must live inside Overview');
+
+  const sectionHeader = fs.readFileSync(path.resolve('src/components/SectionHeader.tsx'), 'utf8');
+  assert.ok(sectionHeader.includes('flex-wrap items-center gap-2'), 'SectionHeader actions must wrap');
+  assert.ok(
+    sectionHeader.includes('flex-wrap items-center justify-between gap-2'),
+    'SectionHeader must combine tabs and actions onto one row on wide screens'
+  );
+  assert.equal(sectionHeader.includes('sm:shrink-0'), false, 'SectionHeader actions must not have sm:shrink-0 causing overflow');
+
+  assert.equal(workView.includes('title="Работа"'), false, 'WorkView must not duplicate Работа title');
+  assert.equal(financeView.includes('title="Финансы"'), false, 'FinanceView must not duplicate Финансы title');
+  assert.equal(fs.readFileSync(path.resolve('src/views/WarehouseView.tsx'), 'utf8').includes('title="Склад"'), false);
+  assert.equal(fs.readFileSync(path.resolve('src/views/ClientsView.tsx'), 'utf8').includes('title="Клиенты"'), false);
+  assert.equal(fs.readFileSync(path.resolve('src/views/DocumentsView.tsx'), 'utf8').includes('title="Документы"'), false);
+  assert.equal(fs.readFileSync(path.resolve('src/views/EmployeesView.tsx'), 'utf8').includes('title="Сотрудники"'), false);
+  assert.equal(fs.readFileSync(path.resolve('src/views/EmployeeSalaryView.tsx'), 'utf8').includes('title="Моя зарплата"'), false);
 
   const empView = fs.readFileSync(path.resolve('src/views/EmployeesView.tsx'), 'utf8');
   for (const tab of ['Сотрудники', 'Уволенные', 'Зарплаты']) {

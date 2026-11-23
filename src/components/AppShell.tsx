@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Bell,
   Briefcase,
@@ -46,6 +46,7 @@ interface AppShellProps {
   onOpenOrderLink?: (orderId: string) => void;
   onOpenTaskLink?: (taskId: string) => void;
   onOpenSalaryLink?: () => void;
+  onOpenShiftsLink?: () => void;
   onOpenChatLink?: (roomId: string) => void;
   onOpenSettingsLink?: () => void;
   onLogout: () => void;
@@ -65,6 +66,7 @@ export function AppShell({
   onOpenOrderLink,
   onOpenTaskLink,
   onOpenSalaryLink,
+  onOpenShiftsLink,
   onOpenChatLink,
   onOpenSettingsLink,
   onLogout,
@@ -73,6 +75,18 @@ export function AppShell({
   const { theme, toggleTheme } = useTheme();
   const [notifOpen, setNotifOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
+
+  useEffect(() => {
+    if (!notifOpen && !moreOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setNotifOpen(false);
+        setMoreOpen(false);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [notifOpen, moreOpen]);
 
   const isAdmin = user.role === 'admin';
   const empCanClients = !isAdmin && Boolean(user.permissions['clients.view_all'] || user.permissions['orders.create']);
@@ -277,6 +291,13 @@ export function AppShell({
                               }
                               if (n.link_entity_type === 'salary' && onOpenSalaryLink) {
                                 onOpenSalaryLink();
+                                setNotifOpen(false);
+                              }
+                              if (
+                                (n.link_entity_type === 'shift' || n.link_entity_type === 'shift_edit_request') &&
+                                onOpenShiftsLink
+                              ) {
+                                onOpenShiftsLink();
                                 setNotifOpen(false);
                               }
                               if (n.link_entity_type === 'chat_room' && n.link_entity_id && onOpenChatLink) {

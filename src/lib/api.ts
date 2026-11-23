@@ -13,6 +13,15 @@ export function formatQty(milli: number | null | undefined): string {
   return val.toLocaleString('ru-RU', { maximumFractionDigits: 2 });
 }
 
+export function formatDuration(minutes: number | null | undefined): string {
+  const m = Math.max(0, Math.round(Number(minutes || 0)));
+  const h = Math.floor(m / 60);
+  const rem = m % 60;
+  if (h === 0) return `${rem} мин`;
+  if (rem === 0) return `${h} ч`;
+  return `${h} ч ${rem} мин`;
+}
+
 export function formatDateRu(iso: string | null | undefined): string {
   if (!iso) return 'Без даты';
   const d = new Date(iso.length === 10 ? `${iso}T12:00:00` : iso);
@@ -85,6 +94,7 @@ export const PAYMENT_TYPE_LABELS: Record<string, string> = {
   advance: 'Аванс',
   partial: 'Доплата',
   full: 'Полный расчёт',
+  refund: 'Возврат клиенту',
 };
 
 export const OP_TYPE_LABELS: Record<string, string> = {

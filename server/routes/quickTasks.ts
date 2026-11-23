@@ -4,6 +4,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { withTransaction } from '../db.ts';
 import { requireAuth, type AuthedRequest } from '../middleware.ts';
 import { notifyUser, writeAuditLog } from '../security.ts';
+import { formatIsoToHm } from './shifts.ts';
 
 function validDate(value: unknown): value is string {
   if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
@@ -25,12 +26,38 @@ export function createQuickTasksRouter(db: DatabaseSync): express.Router {
           | { order_number: string; title: string }
           | undefined)
       : undefined;
+    const shiftRows = db
+      .prepare(
+        `SELECT ws.id, ws.user_id, u.full_name as employee_name, ws.started_at, ws.ended_at, ws.work_date, ws.status
+         FROM workshop_shifts ws
+         JOIN users u ON u.id = ws.user_id
+         WHERE ws.quick_task_id = ?
+         ORDER BY ws.started_at DESC`
+      )
+      .all(String(task.id)) as Array<{
+      id: string;
+      user_id: string;
+      employee_name: string;
+      started_at: string;
+      ended_at: string | null;
+      work_date: string;
+      status: string;
+    }>;
+    let workedMinutes = 0;
+    for (const s of shiftRows) {
+      if (s.ended_at) {
+        const ms = Date.parse(s.ended_at) - Date.parse(s.started_at);
+        if (Number.isFinite(ms) && ms > 0) workedMinutes += Math.round(ms / 60_000);
+      }
+    }
     return {
       ...task,
       status: task.cancelled_at ? 'cancelled' : task.status,
       order_id: task.order_id || null,
       order_number: linkedOrder?.order_number || null,
       order_title: linkedOrder?.title || null,
+      worked_minutes: workedMinutes,
+      shifts: shiftRows,
       assignees: db
         .prepare(
           `SELECT u.id,u.full_name FROM quick_task_assignees a JOIN users u ON u.id=a.user_id
@@ -60,8 +87,10 @@ export function createQuickTasksRouter(db: DatabaseSync): express.Router {
     const description=typeof body.description==='string' ? body.description.trim() : '';
     const rawOrderId = typeof body.orderId === 'string' ? body.orderId.trim() : '';
     const orderId = rawOrderId || null;
+    const rawDueDate = body.dueDate === undefined || body.dueDate === null ? '' : String(body.dueDate).trim();
+    const dueDateValid = rawDueDate === '' || validDate(rawDueDate);
     const assignees=Array.isArray(body.assigneeIds) ? [...new Set(body.assigneeIds)] : [];
-    if(!title || title.length>200 || description.length>4000 || !validDate(body.dueDate) || !assignees.length ||
+    if(!title || title.length>200 || description.length>4000 || !dueDateValid || !assignees.length ||
       assignees.some(id=>typeof id!=='string' || !db.prepare('SELECT 1 FROM users WHERE id=? AND is_active=1').get(id))) {
       res.status(400).json({error:'Укажите название, корректный срок и хотя бы одного действующего исполнителя.'});return;
     }
@@ -72,7 +101,7 @@ export function createQuickTasksRouter(db: DatabaseSync): express.Router {
     const id=crypto.randomUUID(), now=new Date().toISOString();
     withTransaction(db,()=>{
       db.prepare('INSERT INTO quick_tasks(id,title,description,due_date,order_id,created_by,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)')
-        .run(id,title,description,body.dueDate,orderId,user.id,now,now);
+        .run(id,title,description,rawDueDate,orderId,user.id,now,now);
       const insert=db.prepare('INSERT INTO quick_task_assignees(task_id,user_id) VALUES (?,?)');
       for(const assignee of assignees as string[]) {
         insert.run(id,assignee);
@@ -91,11 +120,14 @@ export function createQuickTasksRouter(db: DatabaseSync): express.Router {
       res.status(400).json({ error: 'Укажите корректный срок.' });
       return;
     }
-    const nextDueDate = hasDueDate ? req.body.dueDate : task.due_date;
-    if (hasDueDate && !validDate(nextDueDate)) {
+    const rawNextDue = hasDueDate
+      ? (req.body.dueDate === null || req.body.dueDate === undefined ? '' : String(req.body.dueDate).trim())
+      : String(task.due_date ?? '');
+    if (hasDueDate && rawNextDue !== '' && !validDate(rawNextDue)) {
       res.status(400).json({ error: 'Укажите корректный срок.' });
       return;
     }
+    const nextDueDate = rawNextDue;
     const nextOrderId = hasOrderId
       ? (typeof req.body.orderId === 'string' && req.body.orderId.trim() ? req.body.orderId.trim() : null)
       : (task.order_id || null);
@@ -119,10 +151,26 @@ export function createQuickTasksRouter(db: DatabaseSync): express.Router {
     if(!comment || comment.length>4000){res.status(400).json({error:'Опишите выполненную работу.'});return;}
     if(task.status!=='open' || task.cancelled_at){res.status(409).json({error:'Задача уже завершена или отменена. Обновите данные.'});return;}
     const now=new Date().toISOString();
+    const stopActiveShift = req.body?.stopActiveShift !== false;
     withTransaction(db,()=>{
       const result=db.prepare("UPDATE quick_tasks SET status='completed',completed_by=?,completed_at=?,completion_comment=?,updated_at=? WHERE id=? AND status='open'")
         .run(user.id,now,comment,now,id);
       if(!result.changes) throw new Error('Задача уже завершена.');
+      if (stopActiveShift) {
+        const activeShift = db
+          .prepare("SELECT id FROM workshop_shifts WHERE user_id = ? AND status = 'active' AND quick_task_id = ?")
+          .get(user.id, id) as { id: string } | undefined;
+        if (activeShift) {
+          db.prepare("UPDATE workshop_shifts SET ended_at = ?, work_done = ?, status = 'completed' WHERE id = ?")
+            .run(now, comment, activeShift.id);
+          writeAuditLog(db, user.id, 'shift', activeShift.id, 'shift_completed', {
+            shiftType: 'quick_task',
+            quickTaskId: id,
+            closedViaTaskCompletion: true,
+            endedHm: formatIsoToHm(now, 0),
+          });
+        }
+      }
       if(task.created_by!==user.id) notifyUser(db,String(task.created_by),'quick_task_completed','Быстрая задача выполнена',String(task.title),'quick_task',id);
       writeAuditLog(db,user.id,'quick_task',id,'quick_task_completed',{});
     });

@@ -48,5 +48,24 @@ test('quick tasks: visibility, reassignment of deadline and completion by one as
     assert.equal(JSON.parse(event.details_json).comment,'Подготовил');
     cookie=adminCookie;csrf=adminCsrf;
     assert.equal((await call('GET','/api/quick-tasks')).data.tasks.length,2);
+
+    // Timeless quick task (dueDate: '') is allowed, listed in /api/shifts/today-options, and excluded from uncoveredCount
+    const timeless=await call('POST','/api/quick-tasks',{title:'Бессрочная задача',dueDate:'',assigneeIds:[a.data.user.id]});
+    assert.equal(timeless.status,201);
+    assert.equal(timeless.data.task.due_date,'');
+
+    const w1Login=await call('POST','/api/auth/login',{login:'worker1',password:'long-password-123'});
+    cookie=w1Login.res.headers.get('set-cookie')!.split(';')[0];csrf=w1Login.data.csrfToken;
+    const todayOpts=await call('GET','/api/shifts/today-options?tzOffsetMinutes=0');
+    assert.equal(todayOpts.status,200);
+    assert.ok(todayOpts.data.quickTasks.some((qt:any)=>qt.quickTaskId===timeless.data.task.id));
+    assert.equal(todayOpts.data.uncoveredCount,0);
+
+    cookie=adminCookie;csrf=adminCsrf;
+    const reports=await call('GET','/api/reports');
+    assert.equal(reports.status,200);
+    assert.equal(reports.data.quickTasksSummary.total,3);
+    assert.equal(reports.data.quickTasksSummary.open,3);
+    assert.ok(Array.isArray(reports.data.quickTaskReports));
   } finally {db.close();}
 });
