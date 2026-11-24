@@ -585,17 +585,15 @@ export function createOrdersRouter(db: DatabaseSync): express.Router {
       }
 
       for (const uid of assigneeSet) {
-        if (uid !== user.id) {
-          notifyUser(
-            db,
-            uid,
-            'order_assigned',
-            `Назначен заказ ${orderNumber}`,
-            `${title}${b.address ? ` · ${b.address}` : ''}`,
-            'order',
-            orderId
-          );
-        }
+        notifyUser(
+          db,
+          uid,
+          'order_assigned',
+          `Назначен заказ ${orderNumber}`,
+          `${title}${b.address ? ` · ${b.address}` : ''}`,
+          'order',
+          orderId
+        );
       }
 
       writeAuditLog(db, user.id, 'order', orderId, 'order_created', { orderNumber, title });
@@ -924,17 +922,15 @@ export function createOrdersRouter(db: DatabaseSync): express.Router {
            VALUES (?, ?, ?, ?, NULL)`
         ).run(crypto.randomUUID(), visitId, uid, idx === 0 ? 1 : 0);
         db.prepare('INSERT OR IGNORE INTO order_assignees (order_id, user_id) VALUES (?, ?)').run(orderId, uid);
-        if (uid !== user.id) {
-          notifyUser(
-            db,
-            uid,
-            'order_assigned',
-            `Назначен выезд по заказу ${String(order.order_number)}`,
-            `${title || 'Выезд'} · ${scheduledAt.slice(0, 16).replace('T', ' ')}`,
-            'order',
-            orderId
-          );
-        }
+        notifyUser(
+          db,
+          uid,
+          'order_assigned',
+          `Назначен выезд по заказу ${String(order.order_number)}`,
+          `${title || 'Выезд'} · ${scheduledAt.slice(0, 16).replace('T', ' ')}`,
+          'order',
+          orderId
+        );
       });
 
       if (order.status === 'new' || order.status === 'completed') {

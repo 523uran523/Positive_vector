@@ -105,7 +105,7 @@ export function createQuickTasksRouter(db: DatabaseSync): express.Router {
       const insert=db.prepare('INSERT INTO quick_task_assignees(task_id,user_id) VALUES (?,?)');
       for(const assignee of assignees as string[]) {
         insert.run(id,assignee);
-        if(assignee!==user.id) notifyUser(db,assignee,'quick_task_assigned','Новая быстрая задача',title,'quick_task',id);
+        notifyUser(db,assignee,'quick_task_assigned','Новая быстрая задача',title,'quick_task',id);
       }
       writeAuditLog(db,user.id,'quick_task',id,'quick_task_created',{orderId});
     });
@@ -171,7 +171,7 @@ export function createQuickTasksRouter(db: DatabaseSync): express.Router {
           });
         }
       }
-      if(task.created_by!==user.id) notifyUser(db,String(task.created_by),'quick_task_completed','Быстрая задача выполнена',String(task.title),'quick_task',id);
+      notifyUser(db,String(task.created_by),'quick_task_completed','Быстрая задача выполнена',String(task.title),'quick_task',id);
       writeAuditLog(db,user.id,'quick_task',id,'quick_task_completed',{});
     });
     res.json({task:enrich(visible(id,user)!)});
@@ -188,7 +188,7 @@ export function createQuickTasksRouter(db: DatabaseSync): express.Router {
       db.prepare('DELETE FROM quick_task_assignees WHERE task_id=?').run(id);
       for(const assignee of ids as string[]) {
         db.prepare('INSERT INTO quick_task_assignees(task_id,user_id) VALUES (?,?)').run(id,assignee);
-        if(!before.includes(assignee) && assignee!==user.id) notifyUser(db,assignee,'quick_task_assigned','Новая быстрая задача',String(task.title),'quick_task',id);
+        if(!before.includes(assignee)) notifyUser(db,assignee,'quick_task_assigned','Новая быстрая задача',String(task.title),'quick_task',id);
       }
       const now=new Date().toISOString();
       db.prepare('UPDATE quick_tasks SET updated_at=? WHERE id=?').run(now,id);
