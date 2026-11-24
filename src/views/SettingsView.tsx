@@ -51,10 +51,9 @@ export function SettingsView({
   const [confirmDisconnectYandex, setConfirmDisconnectYandex] = useState(false);
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({
     appearance: true,
-    messengers: true,
+    network: true,
     account: true,
     company: false,
-    backups: false,
     exportAudit: false,
   });
   const toggleGroup = (key: string) =>
@@ -398,123 +397,6 @@ export function SettingsView({
         )}
       </div>
 
-      {/* Уведомления в мессенджерах */}
-      <div className="rounded-2xl border border-black/[0.06] bg-white dark:border-white/[0.08] dark:bg-[#15171C]">
-        <button
-          type="button"
-          onClick={() => toggleGroup('messengers')}
-          aria-expanded={Boolean(openGroups.messengers)}
-          className="flex w-full items-center justify-between gap-3 p-5 text-left"
-        >
-          <h3 className="font-display text-base font-bold">Уведомления в мессенджерах</h3>
-          <ChevronDown
-            className={`h-4 w-4 text-zinc-400 transition-transform ${openGroups.messengers ? 'rotate-180' : ''}`}
-          />
-        </button>
-        {openGroups.messengers && (
-          <div className="border-t border-black/[0.05] px-5 pb-5 pt-4 dark:border-white/[0.06]">
-            <p className="text-xs text-zinc-500 dark:text-zinc-400">
-              Задачи и сообщения из чата будут приходить в Telegram с кнопкой «Перейти». Подключение
-              занимает полминуты и делается один раз.
-            </p>
-            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
-              {(['telegram'] as const).map((channel) => {
-                const status = messengerStatus?.[channel];
-                const title = channel === 'telegram' ? 'Telegram' : 'MAX';
-                const busy = messengerBusy === channel;
-                const pending = messengerLink?.channel === channel ? messengerLink : null;
-                const badge = status?.linked
-                  ? { text: 'Подключён', cls: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' }
-                  : status?.configured
-                    ? { text: 'Не подключён', cls: 'bg-black/[0.04] text-zinc-500 dark:bg-white/[0.06] dark:text-zinc-400' }
-                    : { text: 'Не настроен', cls: 'bg-amber-500/10 text-amber-600 dark:text-amber-400' };
-                return (
-                  <div
-                    key={channel}
-                    className="rounded-xl border border-black/[0.08] p-4 dark:border-white/[0.1]"
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-sm font-semibold">{title}</span>
-                      <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${badge.cls}`}>
-                        {badge.text}
-                      </span>
-                    </div>
-
-                    {status?.linked ? (
-                      <>
-                        <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-                          {status.username ? `@${status.username}` : 'Аккаунт привязан'}
-                        </p>
-                        <div className="mt-3 flex flex-wrap gap-2">
-                          <button
-                            type="button"
-                            disabled={busy}
-                            onClick={() => void testMessenger(channel)}
-                            className="rounded-xl border border-black/[0.08] px-3 py-2 text-xs font-semibold hover:bg-black/[0.03] disabled:opacity-50 dark:border-white/[0.1]"
-                          >
-                            Проверить
-                          </button>
-                          <button
-                            type="button"
-                            disabled={busy}
-                            onClick={() => void disconnectMessenger(channel)}
-                            className="rounded-xl bg-red-500/10 px-3 py-2 text-xs font-semibold text-red-600 disabled:opacity-50 dark:text-red-400"
-                          >
-                            Отключить
-                          </button>
-                        </div>
-                      </>
-                    ) : status?.configured ? (
-                      <>
-                        <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-                          Бот: @{status.botUsername}
-                        </p>
-                        <button
-                          type="button"
-                          disabled={busy}
-                          onClick={() => void connectMessenger(channel)}
-                          className="mt-3 rounded-xl bg-[#0071E3] px-3 py-2 text-xs font-semibold text-white disabled:opacity-50 dark:bg-[#2997FF] dark:text-[#0B0C10]"
-                        >
-                          Подключить
-                        </button>
-                        {pending && (
-                          <div className="mt-3 rounded-xl bg-black/[0.03] p-3 text-xs dark:bg-white/[0.06]">
-                            <div className="text-zinc-500 dark:text-zinc-400">Отправьте боту код:</div>
-                            <div className="mt-1 font-mono text-base font-bold tracking-widest">{pending.code}</div>
-                            {pending.url && (
-                              <a
-                                href={pending.url}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="mt-2 inline-block font-semibold text-[#0071E3] dark:text-[#2997FF]"
-                              >
-                                Открыть {title}
-                              </a>
-                            )}
-                            <div className="mt-1 text-[11px] text-zinc-400">
-                              Код действует 30 минут. Страница обновится сама.
-                            </div>
-                          </div>
-                        )}
-                      </>
-                    ) : (
-                      <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-                        Бот не настроен на сервере. Добавьте токен в .env и перезапустите.
-                      </p>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-            {messengerMsg && (
-              <p role="status" className="mt-2.5 text-xs text-zinc-500 dark:text-zinc-400">
-                {messengerMsg}
-              </p>
-            )}
-          </div>
-        )}
-      </div>
-
       {/* 2. Мой аккаунт и пароль */}
       <div className="rounded-2xl border border-black/[0.06] bg-white dark:border-white/[0.08] dark:bg-[#15171C]">
         <button
@@ -740,21 +622,117 @@ export function SettingsView({
             )}
           </div>
 
-          {/* 4. Резервные копии на Яндекс Диск и обновления */}
+          {/* 4. Сеть: Telegram, Яндекс Диск, обновления */}
           <div className="rounded-2xl border border-black/[0.06] bg-white dark:border-white/[0.08] dark:bg-[#15171C]">
             <button
               type="button"
-              onClick={() => toggleGroup('backups')}
-              aria-expanded={Boolean(openGroups.backups)}
+              onClick={() => toggleGroup('network')}
+              aria-expanded={Boolean(openGroups.network)}
               className="flex w-full items-center justify-between gap-3 p-5 text-left"
             >
-              <h3 className="font-display text-base font-bold">Резервные копии на Яндекс Диск и обновления</h3>
+              <h3 className="font-display text-base font-bold">Сеть</h3>
               <ChevronDown
-                className={`h-4 w-4 text-zinc-400 transition-transform ${openGroups.backups ? 'rotate-180' : ''}`}
+                className={`h-4 w-4 text-zinc-400 transition-transform ${openGroups.network ? 'rotate-180' : ''}`}
               />
             </button>
-            {openGroups.backups && (
+            {openGroups.network && (
               <div className="space-y-4 border-t border-black/[0.05] px-5 pb-5 pt-4 dark:border-white/[0.06]">
+                <div className="space-y-2.5">
+                  <div className="text-xs font-bold text-zinc-500">Telegram</div>
+                  <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                    Задачи и сообщения из чата будут приходить в Telegram с кнопкой «Перейти». Подключение
+                    занимает полминуты и делается один раз.
+                  </p>
+                  {(() => {
+                    const channel = 'telegram' as const;
+                    const status = messengerStatus?.[channel];
+                    const busy = messengerBusy === channel;
+                    const pending = messengerLink?.channel === channel ? messengerLink : null;
+                    const badge = status?.linked
+                      ? { text: 'Подключён', cls: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' }
+                      : status?.configured
+                        ? { text: 'Не подключён', cls: 'bg-black/[0.04] text-zinc-500 dark:bg-white/[0.06] dark:text-zinc-400' }
+                        : { text: 'Не настроен', cls: 'bg-amber-500/10 text-amber-600 dark:text-amber-400' };
+                    return (
+                      <div className="rounded-xl border border-black/[0.08] p-4 dark:border-white/[0.1]">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-sm font-semibold">Telegram</span>
+                          <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${badge.cls}`}>
+                            {badge.text}
+                          </span>
+                        </div>
+                        {status?.linked ? (
+                          <>
+                            <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                              {status.username ? `@${status.username}` : 'Аккаунт привязан'}
+                            </p>
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              <button
+                                type="button"
+                                disabled={busy}
+                                onClick={() => void testMessenger(channel)}
+                                className="rounded-xl border border-black/[0.08] px-3 py-2 text-xs font-semibold hover:bg-black/[0.03] disabled:opacity-50 dark:border-white/[0.1]"
+                              >
+                                Проверить
+                              </button>
+                              <button
+                                type="button"
+                                disabled={busy}
+                                onClick={() => void disconnectMessenger(channel)}
+                                className="rounded-xl bg-red-500/10 px-3 py-2 text-xs font-semibold text-red-600 disabled:opacity-50 dark:text-red-400"
+                              >
+                                Отключить
+                              </button>
+                            </div>
+                          </>
+                        ) : status?.configured ? (
+                          <>
+                            <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                              Бот: @{status.botUsername}
+                            </p>
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={() => void connectMessenger(channel)}
+                              className="mt-3 rounded-xl bg-[#0071E3] px-3 py-2 text-xs font-semibold text-white disabled:opacity-50 dark:bg-[#2997FF] dark:text-[#0B0C10]"
+                            >
+                              Подключить
+                            </button>
+                            {pending && (
+                              <div className="mt-3 rounded-xl bg-black/[0.03] p-3 text-xs dark:bg-white/[0.06]">
+                                <div className="text-zinc-500 dark:text-zinc-400">Отправьте боту код:</div>
+                                <div className="mt-1 font-mono text-base font-bold tracking-widest">{pending.code}</div>
+                                {pending.url && (
+                                  <a
+                                    href={pending.url}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="mt-2 inline-block font-semibold text-[#0071E3] dark:text-[#2997FF]"
+                                  >
+                                    Открыть Telegram
+                                  </a>
+                                )}
+                                <div className="mt-1 text-[11px] text-zinc-400">
+                                  Код действует 30 минут. Страница обновится сама.
+                                </div>
+                              </div>
+                            )}
+                          </>
+                        ) : (
+                          <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                            Бот не настроен на сервере. Добавьте токен в .env и перезапустите.
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })()}
+                  {messengerMsg && (
+                    <p role="status" className="text-xs text-zinc-500 dark:text-zinc-400">
+                      {messengerMsg}
+                    </p>
+                  )}
+                </div>
+
                 <div className="space-y-2.5">
                   <div className="text-xs font-bold text-zinc-500">Яндекс Диск</div>
                   {yandexStatus && (
