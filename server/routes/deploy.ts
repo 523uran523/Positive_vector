@@ -54,9 +54,8 @@ export function createDeployRouter(db: DatabaseSync): express.Router {
 $ErrorActionPreference = 'Stop'
 Set-Location ${DEPLOY_ROOT}
 
-Write-Host '=== Clean git tree ==='
+Write-Host '=== Clean tracked files ==='
 git reset --hard HEAD
-git clean -fd
 
 Write-Host '=== Git pull ==='
 git pull origin master
@@ -75,7 +74,7 @@ Write-Host '=== Test ==='
 npm test
 
 Write-Host '=== Restart service ==='
-schtasks /run /tn CRM-Auto-Start
+Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','C:\PositiveVector\deployment\windows\restart-crm.ps1' -WindowStyle Hidden
 `,
     ], {
       cwd: DEPLOY_ROOT,
