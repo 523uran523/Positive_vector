@@ -1,21 +1,9 @@
-node_modules/
-build/
-dist/
-coverage/
-.DS_Store
-*.log
-.env*
-!.env.example
-
-# Local runtime data - must never be removed by a deploy
-data/
-uploads/
-*.db
-*.db-shm
-*.db-wal
-
 # Deployment artifacts
 build-bundle.zip
 dist_backup/
 server_backup/
 *.tar.gz
+
+# Временные скрипты отладки сервера
+.tmp_*
+dev-dist/

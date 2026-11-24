@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { sessionSecret } from './config.ts';
 import { notifyPush } from './services/push.ts';
+import { notifyMessengers } from './services/messengers.ts';
 
 export const ALL_PERMISSIONS = [
   'orders.create',
@@ -216,6 +217,7 @@ export function notifyUser(
 
   const { url, tag } = buildNotificationUrl(type, linkEntityType, linkEntityId);
   notifyPush(db, userId, { title, body, tag, url });
+  notifyMessengers(db, userId, { title, body, url });
 }
 
 export function notifyAdmins(

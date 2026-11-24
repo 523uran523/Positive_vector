@@ -7,6 +7,28 @@ import { apiRequest, formatDateTimeRu } from '../lib/api';
 import { enablePushNotifications } from '../lib/push';
 import type { AppSettings, AuthUser } from '../types/crm';
 
+type MessengerChannel = 'telegram' | 'max';
+
+interface MessengerChannelStatus {
+  configured: boolean;
+  linked: boolean;
+  username: string;
+  botUsername: string;
+}
+
+interface MessengerStatus {
+  telegram: MessengerChannelStatus;
+  max: MessengerChannelStatus;
+}
+
+interface MessengerLinkInfo {
+  channel: MessengerChannel;
+  code: string;
+  url: string | null;
+  botUsername: string;
+  expiresAt: string;
+}
+
 interface SettingsViewProps {
   user: AuthUser;
   settings: AppSettings;
@@ -29,6 +51,7 @@ export function SettingsView({
   const [confirmDisconnectYandex, setConfirmDisconnectYandex] = useState(false);
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({
     appearance: true,
+    messengers: true,
     account: true,
     company: false,
     backups: false,
@@ -130,6 +153,92 @@ export function SettingsView({
       setYandexMessage(err instanceof Error ? err.message : 'Не удалось отключить Диск.');
     } finally {
       setBusy(false);
+    }
+  };
+
+  // Messenger notifications
+  const [messengerStatus, setMessengerStatus] = useState<MessengerStatus | null>(null);
+  const [messengerLink, setMessengerLink] = useState<MessengerLinkInfo | null>(null);
+  const [messengerMsg, setMessengerMsg] = useState('');
+  const [messengerBusy, setMessengerBusy] = useState<MessengerChannel | ''>('');
+
+  const loadMessengers = async () => {
+    try {
+      setMessengerStatus(await apiRequest<MessengerStatus>('/api/messengers/status', { useCache: false }));
+    } catch {
+      // Мессенджеры необязательны: молча пропускаем, если сервер их не отдал.
+    }
+  };
+  useEffect(() => {
+    void loadMessengers();
+  }, []);
+
+  useEffect(() => {
+    if (!messengerLink) return;
+    const timer = window.setInterval(() => {
+      void loadMessengers();
+    }, 4000);
+    return () => window.clearInterval(timer);
+  }, [messengerLink]);
+
+  useEffect(() => {
+    if (!messengerLink || !messengerStatus) return;
+    if (messengerStatus[messengerLink.channel].linked) {
+      setMessengerLink(null);
+      setMessengerMsg('Готово! Мессенджер подключён.');
+    }
+  }, [messengerStatus, messengerLink]);
+
+  const connectMessenger = async (channel: MessengerChannel) => {
+    setMessengerBusy(channel);
+    setMessengerMsg('');
+    try {
+      const info = await apiRequest<MessengerLinkInfo>('/api/messengers/link', {
+        method: 'POST',
+        body: { channel },
+        skipOfflineQueue: true,
+      });
+      setMessengerLink(info);
+    } catch (err) {
+      setMessengerMsg(err instanceof Error ? err.message : 'Не удалось начать подключение.');
+    } finally {
+      setMessengerBusy('');
+    }
+  };
+
+  const disconnectMessenger = async (channel: MessengerChannel) => {
+    setMessengerBusy(channel);
+    setMessengerMsg('');
+    try {
+      await apiRequest('/api/messengers/unlink', {
+        method: 'POST',
+        body: { channel },
+        skipOfflineQueue: true,
+      });
+      setMessengerLink(null);
+      await loadMessengers();
+      setMessengerMsg('Мессенджер отключён.');
+    } catch (err) {
+      setMessengerMsg(err instanceof Error ? err.message : 'Не удалось отключить мессенджер.');
+    } finally {
+      setMessengerBusy('');
+    }
+  };
+
+  const testMessenger = async (channel: MessengerChannel) => {
+    setMessengerBusy(channel);
+    setMessengerMsg('');
+    try {
+      await apiRequest('/api/messengers/test', {
+        method: 'POST',
+        body: { channel },
+        skipOfflineQueue: true,
+      });
+      setMessengerMsg('Тестовое сообщение отправлено.');
+    } catch (err) {
+      setMessengerMsg(err instanceof Error ? err.message : 'Не удалось отправить сообщение.');
+    } finally {
+      setMessengerBusy('');
     }
   };
 
@@ -285,6 +394,123 @@ export function SettingsView({
               </button>
             </div>
             {pushMsg && <p role="status" className="mt-2.5 text-xs text-zinc-500 dark:text-zinc-400">{pushMsg}</p>}
+          </div>
+        )}
+      </div>
+
+      {/* Уведомления в мессенджерах */}
+      <div className="rounded-2xl border border-black/[0.06] bg-white dark:border-white/[0.08] dark:bg-[#15171C]">
+        <button
+          type="button"
+          onClick={() => toggleGroup('messengers')}
+          aria-expanded={Boolean(openGroups.messengers)}
+          className="flex w-full items-center justify-between gap-3 p-5 text-left"
+        >
+          <h3 className="font-display text-base font-bold">Уведомления в мессенджерах</h3>
+          <ChevronDown
+            className={`h-4 w-4 text-zinc-400 transition-transform ${openGroups.messengers ? 'rotate-180' : ''}`}
+          />
+        </button>
+        {openGroups.messengers && (
+          <div className="border-t border-black/[0.05] px-5 pb-5 pt-4 dark:border-white/[0.06]">
+            <p className="text-xs text-zinc-500 dark:text-zinc-400">
+              Задачи и сообщения из чата будут приходить в Telegram и MAX с кнопкой «Перейти». Подключение
+              занимает полминуты и делается один раз.
+            </p>
+            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+              {(['telegram', 'max'] as const).map((channel) => {
+                const status = messengerStatus?.[channel];
+                const title = channel === 'telegram' ? 'Telegram' : 'MAX';
+                const busy = messengerBusy === channel;
+                const pending = messengerLink?.channel === channel ? messengerLink : null;
+                const badge = status?.linked
+                  ? { text: 'Подключён', cls: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' }
+                  : status?.configured
+                    ? { text: 'Не подключён', cls: 'bg-black/[0.04] text-zinc-500 dark:bg-white/[0.06] dark:text-zinc-400' }
+                    : { text: 'Не настроен', cls: 'bg-amber-500/10 text-amber-600 dark:text-amber-400' };
+                return (
+                  <div
+                    key={channel}
+                    className="rounded-xl border border-black/[0.08] p-4 dark:border-white/[0.1]"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-sm font-semibold">{title}</span>
+                      <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${badge.cls}`}>
+                        {badge.text}
+                      </span>
+                    </div>
+
+                    {status?.linked ? (
+                      <>
+                        <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                          {status.username ? `@${status.username}` : 'Аккаунт привязан'}
+                        </p>
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => void testMessenger(channel)}
+                            className="rounded-xl border border-black/[0.08] px-3 py-2 text-xs font-semibold hover:bg-black/[0.03] disabled:opacity-50 dark:border-white/[0.1]"
+                          >
+                            Проверить
+                          </button>
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => void disconnectMessenger(channel)}
+                            className="rounded-xl bg-red-500/10 px-3 py-2 text-xs font-semibold text-red-600 disabled:opacity-50 dark:text-red-400"
+                          >
+                            Отключить
+                          </button>
+                        </div>
+                      </>
+                    ) : status?.configured ? (
+                      <>
+                        <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                          Бот: @{status.botUsername}
+                        </p>
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => void connectMessenger(channel)}
+                          className="mt-3 rounded-xl bg-[#0071E3] px-3 py-2 text-xs font-semibold text-white disabled:opacity-50 dark:bg-[#2997FF] dark:text-[#0B0C10]"
+                        >
+                          Подключить
+                        </button>
+                        {pending && (
+                          <div className="mt-3 rounded-xl bg-black/[0.03] p-3 text-xs dark:bg-white/[0.06]">
+                            <div className="text-zinc-500 dark:text-zinc-400">Отправьте боту код:</div>
+                            <div className="mt-1 font-mono text-base font-bold tracking-widest">{pending.code}</div>
+                            {pending.url && (
+                              <a
+                                href={pending.url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="mt-2 inline-block font-semibold text-[#0071E3] dark:text-[#2997FF]"
+                              >
+                                Открыть {title}
+                              </a>
+                            )}
+                            <div className="mt-1 text-[11px] text-zinc-400">
+                              Код действует 30 минут. Страница обновится сама.
+                            </div>
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                        Бот не настроен на сервере. Добавьте токен в .env и перезапустите.
+                      </p>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            {messengerMsg && (
+              <p role="status" className="mt-2.5 text-xs text-zinc-500 dark:text-zinc-400">
+                {messengerMsg}
+              </p>
+            )}
           </div>
         )}
       </div>

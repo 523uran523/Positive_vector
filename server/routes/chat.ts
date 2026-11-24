@@ -13,6 +13,7 @@ import {
   savePushSubscription,
   sendPushToRoom,
 } from '../services/push.ts';
+import { notifyMessengersToRoom } from '../services/messengers.ts';
 
 const allowed = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'application/pdf', 'text/plain', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'audio/webm', 'audio/ogg', 'audio/mp4', 'audio/mpeg']);
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 12 * 1024 * 1024, files: 1 } });
@@ -127,14 +128,20 @@ export function createChatRouter(db: DatabaseSync) {
     res.json({ok:true});
   });
   function broadcast(roomId: string, authorId: string, author: string, body: string) {
+    const text = body.slice(0, 180) || 'Вложение';
     setImmediate(() => {
       void sendPushToRoom(db, roomId, authorId, {
         title: author,
-        body: body.slice(0, 180) || 'Вложение',
+        body: text,
         tag: `chat:${roomId}`,
         url: `/?chat=${encodeURIComponent(roomId)}`,
         roomId,
       }).catch(() => {});
+    });
+    notifyMessengersToRoom(db, roomId, authorId, {
+      title: author,
+      body: text,
+      url: `/?chat=${encodeURIComponent(roomId)}`,
     });
   }
   router.get('/messages', (req: AuthedRequest, res) => {

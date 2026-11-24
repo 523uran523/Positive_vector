@@ -12,6 +12,7 @@ import { startBackupScheduler } from './server/services/backupScheduler.ts';
 import { startWeeklyCleanup } from './server/services/serverCleanup.ts';
 import { notifyAdmins } from './server/security.ts';
 import { createYandexOAuth } from './server/services/yandexOAuth.ts';
+import { isAnyMessengerConfigured, setupMessengerWebhooks } from './server/services/messengers.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -23,6 +24,16 @@ async function startServer() {
   const applied = runMigrations(db);
   if (applied.length > 0) {
     console.log(`[DB] Применены миграции: ${applied.join(', ')}`);
+  }
+
+  if (isAnyMessengerConfigured()) {
+    void setupMessengerWebhooks()
+      .then((results) => {
+        if (results.length > 0) console.log(`[messengers] Webhooks: ${results.join(', ')}`);
+      })
+      .catch((err) => {
+        console.error('[messengers] Не удалось настроить webhooks:', err instanceof Error ? err.message : err);
+      });
   }
 
   const yandex=createYandexOAuth(db);

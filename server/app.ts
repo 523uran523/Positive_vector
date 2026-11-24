@@ -23,6 +23,7 @@ import { createYandexOAuth } from './services/yandexOAuth.ts';
 import { createYandexIntegrationRouter } from './routes/yandexIntegration.ts';
 import { createPushRouter } from './routes/push.ts';
 import { createDeployRouter } from './routes/deploy.ts';
+import { createMessengersRouter } from './routes/messengers.ts';
 
 export function createApp(db: DatabaseSync,oauth=createYandexOAuth(db)): express.Express {
   const app = express();
@@ -104,6 +105,7 @@ export function createApp(db: DatabaseSync,oauth=createYandexOAuth(db)): express
   app.use('/api/settings', createSettingsRouter(db));
   app.use('/api/export', createExportRouter(db));
   app.use('/api/deploy', createDeployRouter(db));
+  app.use('/api/messengers', createMessengersRouter(db));
 
   app.use('/api/*', (_req, res) => {
     res.status(404).json({ error: 'API маршрут не найден.' });
