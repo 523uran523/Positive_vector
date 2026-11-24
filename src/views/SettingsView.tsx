@@ -414,11 +414,11 @@ export function SettingsView({
         {openGroups.messengers && (
           <div className="border-t border-black/[0.05] px-5 pb-5 pt-4 dark:border-white/[0.06]">
             <p className="text-xs text-zinc-500 dark:text-zinc-400">
-              Задачи и сообщения из чата будут приходить в Telegram и MAX с кнопкой «Перейти». Подключение
+              Задачи и сообщения из чата будут приходить в Telegram с кнопкой «Перейти». Подключение
               занимает полминуты и делается один раз.
             </p>
             <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
-              {(['telegram', 'max'] as const).map((channel) => {
+              {(['telegram'] as const).map((channel) => {
                 const status = messengerStatus?.[channel];
                 const title = channel === 'telegram' ? 'Telegram' : 'MAX';
                 const busy = messengerBusy === channel;

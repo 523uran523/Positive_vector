@@ -86,7 +86,7 @@ export function isMessengerConfigured(channel: MessengerChannel): boolean {
 }
 
 export function isAnyMessengerConfigured(): boolean {
-  return isMessengerConfigured('telegram') || isMessengerConfigured('max');
+  return isMessengerConfigured('telegram');
 }
 
 function botUsername(channel: MessengerChannel): string {
@@ -217,10 +217,10 @@ export function getMessengerStatus(db: DatabaseSync, userId: string): MessengerS
       botUsername: getTelegramBotUsername(),
     },
     max: {
-      configured: isMessengerConfigured('max'),
+      configured: false,
       linked: Boolean(row?.max_user_id),
       username: row?.max_username || '',
-      botUsername: getMaxBotUsername(),
+      botUsername: '',
     },
   };
 }
@@ -345,20 +345,17 @@ export async function sendMessengersToUser(
   if (!customSender && !isAnyMessengerConfigured()) return;
   const row = db
     .prepare(
-      `SELECT telegram_chat_id, max_user_id FROM users
+      `SELECT telegram_chat_id FROM users
        WHERE id = ? AND is_active = 1 AND dismissed_at IS NULL`
     )
     .get(userId) as
-    | { telegram_chat_id: string | null; max_user_id: string | null }
+    | { telegram_chat_id: string | null }
     | undefined;
   if (!row) return;
 
   const jobs: Array<Promise<void>> = [];
   if (row.telegram_chat_id && (customSender || isMessengerConfigured('telegram'))) {
     jobs.push(deliver('telegram', String(row.telegram_chat_id), payload));
-  }
-  if (row.max_user_id && (customSender || isMessengerConfigured('max'))) {
-    jobs.push(deliver('max', String(row.max_user_id), payload));
   }
   await Promise.allSettled(jobs);
 }
@@ -381,23 +378,22 @@ export async function sendMessengersToRoom(
   payload: MessengerPayload
 ): Promise<void> {
   if (!customSender && !isAnyMessengerConfigured()) return;
-  let rows: Array<{ telegram_chat_id: string | null; max_user_id: string | null }> = [];
+  let rows: Array<{ telegram_chat_id: string | null }> = [];
   try {
     rows = db
       .prepare(
-        `SELECT u.telegram_chat_id, u.max_user_id
+        `SELECT u.telegram_chat_id
          FROM users u
          WHERE u.id != ?
            AND u.is_active = 1
            AND u.dismissed_at IS NULL
-           AND (u.telegram_chat_id IS NOT NULL OR u.max_user_id IS NOT NULL)
+           AND u.telegram_chat_id IS NOT NULL
            AND (? = 'general' OR EXISTS (
              SELECT 1 FROM chat_room_members m WHERE m.room_id = ? AND m.user_id = u.id
            ))`
       )
       .all(excludeUserId, roomId, roomId) as Array<{
       telegram_chat_id: string | null;
-      max_user_id: string | null;
     }>;
   } catch {
     return;
@@ -407,9 +403,6 @@ export async function sendMessengersToRoom(
   for (const row of rows) {
     if (row.telegram_chat_id && (customSender || isMessengerConfigured('telegram'))) {
       jobs.push(deliver('telegram', String(row.telegram_chat_id), payload));
-    }
-    if (row.max_user_id && (customSender || isMessengerConfigured('max'))) {
-      jobs.push(deliver('max', String(row.max_user_id), payload));
     }
   }
   await Promise.allSettled(jobs);
@@ -543,24 +536,6 @@ export async function setupMessengerWebhooks(): Promise<string[]> {
       messages.push(`telegram: ${result.ok ? 'ok' : `error ${result.status}`}`);
     } catch (err) {
       messages.push(`telegram: ${err instanceof Error ? err.message : 'failed'}`);
-    }
-  }
-
-  if (isMessengerConfigured('max')) {
-    const url = `${base}/api/messengers/max/webhook`;
-    try {
-      const result = await postJson(
-        `${MAX_API}/subscriptions`,
-        { Authorization: getMaxToken() },
-        {
-          url,
-          update_types: ['message_created', 'bot_started'],
-          secret: secret || undefined,
-        }
-      );
-      messages.push(`max: ${result.ok ? 'ok' : `error ${result.status}`}`);
-    } catch (err) {
-      messages.push(`max: ${err instanceof Error ? err.message : 'failed'}`);
     }
   }
 
