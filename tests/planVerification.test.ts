@@ -552,7 +552,7 @@ test('UI redesign enforces zero browser alert/confirm/prompt, no duplicate + but
   assert.ok(empView.includes('Детальная таблица начислений, удержаний и выплат'));
 
   const settingsView = fs.readFileSync(path.resolve('src/views/SettingsView.tsx'), 'utf8');
-  for (const section of ['Мой аккаунт и пароль', 'Справочники и параметры компании', 'Резервные копии на Яндекс Диск']) {
+  for (const section of ['Мой аккаунт и пароль', 'Справочники и параметры компании', 'Сеть']) {
     assert.ok(settingsView.includes(section), `SettingsView missing section ${section}`);
   }
   assert.equal(settingsView.includes('activeTab'), false, 'Settings must be a single list without tabs');

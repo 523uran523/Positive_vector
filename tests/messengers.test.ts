@@ -117,7 +117,7 @@ test('messengers: привязка через бота, уведомление �
     assert.equal(initial.data.telegram.configured, true);
     assert.equal(initial.data.telegram.linked, false);
     assert.equal(initial.data.telegram.botUsername, 'pozitiv_test_bot');
-    assert.equal(initial.data.max.configured, true);
+    assert.equal(initial.data.max.configured, false);
 
     const link = await client.call('POST', '/api/messengers/link', { channel: 'telegram' });
     assert.equal(link.status, 200);
