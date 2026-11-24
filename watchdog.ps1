@@ -21,10 +21,14 @@ $crm = Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" |
   Where-Object { $_.CommandLine -like '*server.ts*' }
 
 if (-not $crm) {
-  Write-Log 'CRM server is not running - starting'
-  Start-Process -FilePath 'powershell.exe' `
-    -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $root 'start-crm.ps1') `
-    -WorkingDirectory $root -WindowStyle Hidden
+  $task = Get-ScheduledTask -TaskName 'CRM-Auto-Start' -ErrorAction SilentlyContinue
+  if ($task -and $task.State -eq 'Running') {
+    Write-Log 'CRM task is stuck in Running without a node process - stopping it'
+    Stop-ScheduledTask -TaskName 'CRM-Auto-Start'
+    Start-Sleep -Seconds 2
+  }
+  Write-Log 'CRM server is not running - starting CRM-Auto-Start'
+  & schtasks /run /tn 'CRM-Auto-Start' | Out-Null
   $started += 'crm'
 }
 
