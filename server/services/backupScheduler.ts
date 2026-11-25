@@ -53,7 +53,8 @@ export function startBackupScheduler(dbPath: string, uploadDir: string, backupDi
     if (running) return;
     running = true;
     try {
-      await runDailyBackup(dbPath, uploadDir, backupDir);
+      const result = await runDailyBackup(dbPath, uploadDir, backupDir);
+      if (result.created) console.log('[backup] создана копия', result.name);
     } catch (err) {
       onError?.(err instanceof Error ? err.message : 'Неизвестная ошибка резервного копирования');
     } finally {
