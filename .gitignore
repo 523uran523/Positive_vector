@@ -11,6 +11,7 @@ dev-dist/
 
 # Локальные данные и секреты
 data/
+uploads/
 .env
 *.log
 *.pid
