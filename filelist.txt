@@ -1,7 +1,0 @@
-assets
-migrations
-routes
-scripts
-services
-types
-uploads
