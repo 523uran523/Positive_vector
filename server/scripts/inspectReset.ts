@@ -18,7 +18,7 @@ try {
       users.some(user => user.is_active !== 1 || user.dismissed_at !== null)) {
     throw new Error('Проверьте выбранные учётки: нужны три действующих администратора и один действующий сотрудник.');
   }
-  const preserved = new Set(['users', 'user_permissions', 'settings', 'yandex_connection', 'schema_migrations']);
+  const preserved = new Set(['users', 'user_permissions', 'settings', 'schema_migrations']);
   const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as Array<{name:string}>;
   console.log('Учётные записи для сохранения:', users.map(user => `${user.login} (${user.role})`).join(', '));
   for (const {name} of tables) {

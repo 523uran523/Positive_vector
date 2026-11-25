@@ -11,7 +11,6 @@ import { cleanDeletedFiles } from './server/services/fileCleanup.ts';
 import { startBackupScheduler } from './server/services/backupScheduler.ts';
 import { startWeeklyCleanup } from './server/services/serverCleanup.ts';
 import { notifyAdmins } from './server/security.ts';
-import { createYandexOAuth } from './server/services/yandexOAuth.ts';
 import { isAnyMessengerConfigured, setupMessengerWebhooks } from './server/services/messengers.ts';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -36,8 +35,7 @@ async function startServer() {
       });
   }
 
-  const yandex=createYandexOAuth(db);
-  const app = createApp(db,yandex);
+  const app = createApp(db);
   const httpServer = http.createServer(app);
   const uploadRequestTimeoutMs = Number(process.env.UPLOAD_REQUEST_TIMEOUT_MS ?? 0);
   httpServer.requestTimeout =
@@ -53,7 +51,7 @@ async function startServer() {
       lastBackupAlert=today;
       try {notifyAdmins(db,'backup_error','Не создана резервная копия','Проверьте свободное место и доступность хранилища.');} catch { /* Logging still records the failure. */ }
     }
-  },()=>yandex.cloud());
+  });
   const deployRoot = process.env.DEPLOY_ROOT || path.resolve(__dirname);
   const stopCleanup = startWeeklyCleanup(deployRoot, (message) => {
     console.error('[cleanup]', message);

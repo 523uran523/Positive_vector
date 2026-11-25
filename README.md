@@ -42,7 +42,7 @@
 - **Backend**: Node.js (`>= 22.13` со встроенным `node:sqlite`), Express, TypeScript (`tsx`)
 - **База данных**: SQLite (`node:sqlite`, режим `WAL`, `PRAGMA foreign_keys = ON`, миграции `server/migrations/001..023`, `BEGIN IMMEDIATE` транзакции)
 - **Авторизация и безопасность**: `crypto.scryptSync`, HTTP-only cookie (`pv_session`), CSRF-токены (`X-CSRF-Token`), ограничение попыток входа (`login_attempts`), серверный RBAC
-- **Файлы, бэкапы и экспорт**: `multer` (хранение в `UPLOAD_DIR` с проверкой прав доступа), экспорт в `.xlsx` (`xlsx`), локальные бэкапы (ежедневные и еженедельные с 30-дневной ротацией)
+- **Файлы, бэкапы и экспорт**: `multer` (хранение в `UPLOAD_DIR` с проверкой прав доступа), экспорт в `.xlsx` (`xlsx`), локальные бэкапы (ежедневно в 04:00 МСК, хранятся 3 последних дня)
 
 ## Структура проекта
 
@@ -56,6 +56,8 @@
 │   ├── security.ts             # scrypt, сессии, RBAC, аудит, уведомления
 │   ├── sync.ts                 # Обработка офлайн-очереди и идемпотентный повтор операций
 │   ├── app.ts                  # Express-приложение и маршрутизация API
+│   ├── routes/                 # REST API (auth, users, clients, orders, quickTasks, shifts, salaries, warehouse, finance, documents, reports, chat, notifications, settings, export, push, deploy)
+│   ├── services/               # Бизнес-логика (warehouseService, materialBatches, reservations, backup, backupScheduler, push)
 │   ├── migrations/             # SQL-миграции 001_init.sql .. 023_refunds_and_constraints.sql
 │   └── scripts/                # CLI: migrate.ts, createAdmin.ts, seedDemo.ts, backup.ts, resetData.ts
 ├── src/

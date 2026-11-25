@@ -4,6 +4,15 @@ dist_backup/
 server_backup/
 *.tar.gz
 
+# Зависимости и артефакты сборки
+node_modules/
+dist/
+dev-dist/
+
+# Локальные данные и секреты
+data/
+.env
+*.log
+
 # Временные скрипты отладки сервера
 .tmp_*
-dev-dist/

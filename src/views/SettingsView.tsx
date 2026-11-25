@@ -48,7 +48,7 @@ export function SettingsView({
 }: SettingsViewProps) {
   const isAdmin = user.role === 'admin';
   const { theme, setTheme } = useTheme();
-  const [confirmDisconnectYandex, setConfirmDisconnectYandex] = useState(false);
+  // no Yandex disconnect needed
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({
     appearance: true,
     network: true,
@@ -87,8 +87,7 @@ export function SettingsView({
   const [settingsMsg, setSettingsMsg] = useState('');
   const [pushMsg, setPushMsg] = useState('');
   const [pushBusy, setPushBusy] = useState(false);
-  const [yandexStatus,setYandexStatus] = useState<{configured:boolean;connected:boolean}|null>(null);
-  const [yandexMessage,setYandexMessage] = useState(()=>new URLSearchParams(window.location.search).get('yandex_connection')==='connected'?'Яндекс Диск подключён.':new URLSearchParams(window.location.search).has('yandex_connection')?'Не удалось подключить Яндекс Диск. Попробуйте ещё раз.':'');
+  // nothing - no Yandex Disk status
 
   // Deploy from GitHub
   const [deployBusy, setDeployBusy] = useState(false);
@@ -119,39 +118,6 @@ export function SettingsView({
       setPushMsg(err instanceof Error ? err.message : 'Не удалось включить push-уведомления.');
     } finally {
       setPushBusy(false);
-    }
-  };
-
-  const loadYandex=async()=>{
-    try {setYandexStatus(await apiRequest('/api/integrations/yandex/status',{useCache:false}));}
-    catch(err){setYandexMessage(err instanceof Error?err.message:'Не удалось проверить подключение.');}
-  };
-  useEffect(()=>{if(isAdmin) void loadYandex();},[isAdmin]);
-  const connectYandex=async()=>{
-    setYandexMessage('');setBusy(true);
-    try {
-      const result=await apiRequest<{url:string}>('/api/integrations/yandex/start',{method:'POST',body:{},skipOfflineQueue:true});
-      const url=new URL(result.url);
-      if(url.origin!=='https://oauth.yandex.ru' || url.pathname!=='/authorize') throw new Error('Некорректная ссылка авторизации.');
-      window.location.assign(url.href);
-    } catch(err){setYandexMessage(err instanceof Error?err.message:'Не удалось начать подключение.');setBusy(false);}
-  };
-  const disconnectYandex = async () => {
-    setBusy(true);
-    setYandexMessage('');
-    try {
-      await apiRequest('/api/integrations/yandex/disconnect', {
-        method: 'POST',
-        body: {},
-        skipOfflineQueue: true,
-      });
-      setConfirmDisconnectYandex(false);
-      await loadYandex();
-      setYandexMessage('Диск отключён. Сохранённые копии не удалены.');
-    } catch (err) {
-      setYandexMessage(err instanceof Error ? err.message : 'Не удалось отключить Диск.');
-    } finally {
-      setBusy(false);
     }
   };
 
@@ -622,7 +588,7 @@ export function SettingsView({
             )}
           </div>
 
-          {/* 4. Сеть: Telegram, Яндекс Диск, обновления */}
+          {/* 4. Сеть: Telegram, обновления */}
           <div className="rounded-2xl border border-black/[0.06] bg-white dark:border-white/[0.08] dark:bg-[#15171C]">
             <button
               type="button"
@@ -734,59 +700,8 @@ export function SettingsView({
                 </div>
 
                 <div className="space-y-2.5">
-                  <div className="text-xs font-bold text-zinc-500">Яндекс Диск</div>
-                  {yandexStatus && (
-                    <p className="text-sm">
-                      {yandexStatus.connected
-                        ? 'Диск подключён.'
-                        : yandexStatus.configured
-                          ? 'Диск не подключён.'
-                          : 'Требуется настройка приложения Яндекса на сервере.'}
-                    </p>
-                  )}
-                  {yandexMessage && <p role="status" className="text-sm text-blue-600 dark:text-blue-300">{yandexMessage}</p>}
-                  {yandexStatus?.connected ? (
-                    confirmDisconnectYandex ? (
-                      <div className="flex flex-wrap items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs">
-                        <span className="text-amber-900 dark:text-amber-200">
-                          Отключить автоматические копии на Яндекс Диск?
-                        </span>
-                        <button
-                          type="button"
-                          disabled={busy}
-                          onClick={() => void disconnectYandex()}
-                          className="rounded-lg bg-red-600 px-3 py-1.5 font-semibold text-white"
-                        >
-                          Отключить точно
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setConfirmDisconnectYandex(false)}
-                          className="rounded-lg border border-black/[0.1] px-3 py-1.5 text-zinc-600 dark:border-white/[0.12] dark:text-zinc-300"
-                        >
-                          Отмена
-                        </button>
-                      </div>
-                    ) : (
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onClick={() => setConfirmDisconnectYandex(true)}
-                        className="rounded-xl border border-zinc-400 px-4 py-2 text-sm"
-                      >
-                        Отключить Диск
-                      </button>
-                    )
-                  ) : (
-                    <button
-                      type="button"
-                      disabled={busy || !yandexStatus?.configured}
-                      onClick={() => void connectYandex()}
-                      className="rounded-xl bg-[#0071E3] px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
-                    >
-                      Подключить Яндекс Диск
-                    </button>
-                  )}
+                  <div className="text-xs font-bold text-zinc-500">Резервное копирование</div>
+                  <p className="text-sm text-zinc-600 dark:text-zinc-400">Локальная копия создаётся каждый день в 04:00 МСК на втором диске сервера (папка D:\PositiveVectorBackups). Хранятся копии за последние 3 дня, более старые удаляются автоматически.</p>
                 </div>
 
                 <div className="space-y-2.5 border-t border-black/[0.05] pt-4 dark:border-white/[0.06]">

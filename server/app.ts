@@ -19,13 +19,11 @@ import { createWarehouseRouter } from './routes/warehouse.ts';
 import { createChatRouter } from './routes/chat.ts';
 import { createQuickTasksRouter } from './routes/quickTasks.ts';
 import { createDocumentsRouter } from './routes/documents.ts';
-import { createYandexOAuth } from './services/yandexOAuth.ts';
-import { createYandexIntegrationRouter } from './routes/yandexIntegration.ts';
 import { createPushRouter } from './routes/push.ts';
 import { createDeployRouter } from './routes/deploy.ts';
 import { createMessengersRouter } from './routes/messengers.ts';
 
-export function createApp(db: DatabaseSync,oauth=createYandexOAuth(db)): express.Express {
+export function createApp(db: DatabaseSync): express.Express {
   const app = express();
   app.disable('x-powered-by');
   app.set('trust proxy', process.env.TRUST_PROXY === 'false' ? false : 1);
@@ -91,7 +89,6 @@ export function createApp(db: DatabaseSync,oauth=createYandexOAuth(db)): express
   app.use('/api/chat', createChatRouter(db));
   app.use('/api/quick-tasks', createQuickTasksRouter(db));
   app.use('/api/documents', createDocumentsRouter(db));
-  app.use('/api/integrations/yandex', createYandexIntegrationRouter(db,oauth));
   app.use('/api/users', createUsersRouter(db));
   app.use('/api/clients', createClientsRouter(db));
   app.use('/api/reports', createReportsRouter(db));

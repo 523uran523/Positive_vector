@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { openDatabase, runMigrations } from '../server/db.ts';
 import { createBackup, restoreBackup, verifyBackup } from '../server/services/backup.ts';
+import { runDailyBackup } from '../server/services/backupScheduler.ts';
 import { cleanDeletedFiles, scheduleFileDeletion } from '../server/services/fileCleanup.ts';
 
 test('WAL backup restores database and attachment checksums, file cleanup survives retry',async()=>{
@@ -53,6 +54,28 @@ test('WAL backup restores database and attachment checksums, file cleanup surviv
     db.close();
     const resolved=path.resolve(root);
     assert.ok(resolved.startsWith(path.resolve(os.tmpdir())+path.sep) && path.basename(root).startsWith('pv-backup-test-'));
+    fs.rmSync(resolved,{recursive:true,force:true});
+  }
+});
+
+test('daily backup keeps only the three most recent copies and skips repeats for the same day',async()=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'pv-backup-retention-'));
+  const dbPath=path.join(root,'source.sqlite'),uploads=path.join(root,'uploads'),backups=path.join(root,'backups');
+  fs.mkdirSync(uploads);const db=openDatabase(dbPath);runMigrations(db);db.close();
+  try {
+    for(let day=1;day<=5;day+=1){
+      const now=new Date(Date.UTC(2026,0,day,2,0));
+      assert.equal((await runDailyBackup(dbPath,uploads,backups,now)).created,true);
+    }
+    const kept=fs.readdirSync(backups).sort();
+    assert.equal(kept.length,3);
+    assert.ok(kept.every(name=>/^pv-daily-2026-01-0[345]-[0-9a-f]{8}$/.test(name)),kept.join(','));
+    const again=await runDailyBackup(dbPath,uploads,backups,new Date(Date.UTC(2026,0,5,2,0)));
+    assert.equal(again.created,false);
+    assert.equal(fs.readdirSync(backups).length,3);
+  } finally {
+    const resolved=path.resolve(root);
+    assert.ok(resolved.startsWith(path.resolve(os.tmpdir())+path.sep) && path.basename(root).startsWith('pv-backup-retention-'));
     fs.rmSync(resolved,{recursive:true,force:true});
   }
 });

@@ -25,7 +25,6 @@ const PRESERVED_TABLES = new Set([
   'users',
   'user_permissions',
   'settings',
-  'yandex_connection',
   'schema_migrations',
 ]);
 
@@ -170,13 +169,6 @@ export async function resetOperationalData(options: ResetDataOptions): Promise<R
         if (PRESERVED_TABLES.has(table) || CLEAR_ORDER.includes(table) || table === 'chat_rooms') continue;
         const safe = table.replace(/"/g, '""');
         db.exec(`DELETE FROM "${safe}"`);
-      }
-
-      if (existingTables.has('yandex_connection')) {
-        db.prepare(
-          `UPDATE yandex_connection SET connected_by = NULL
-           WHERE connected_by IS NOT NULL AND connected_by NOT IN (${idPlaceholders})`
-        ).run(...keptIds);
       }
 
       db.prepare(`DELETE FROM user_permissions WHERE user_id NOT IN (${idPlaceholders})`).run(...keptIds);
